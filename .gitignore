@@ -1,0 +1,14 @@
+.DS_Store
+*.xlsx
+*.xls
+~$*
+*.pdf
+*.ofx
+*.json
+*.py
+*.sql
+github-backup/
+.claude/
+INSTRUCOES.md
+GUIA_DESENVOLVEDOR_COMPRAS_ESTOQUE.md
+importar_*.js

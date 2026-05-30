@@ -1,0 +1,2083 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Financeiro do Restaurante</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ========== TELA DE CONFIGURAÇÃO ========== -->
+  <div id="tela-config" class="tela-config hidden">
+    <div class="config-card">
+      <div class="config-logo"><img src="logo.png" alt="Logo" /></div>
+      <h1>Financeiro do Restaurante</h1>
+      <p>Para começar, informe as credenciais do seu projeto Supabase.<br>
+         Siga o arquivo <strong>INSTRUCOES.md</strong> para obtê-las.</p>
+      <div class="form-group">
+        <label>URL do Projeto Supabase</label>
+        <input type="text" id="config-url" placeholder="https://xxxx.supabase.co" />
+      </div>
+      <div class="form-group">
+        <label>Chave Anon (anon key)</label>
+        <input type="text" id="config-key" placeholder="eyJhbGci..." />
+      </div>
+      <button class="btn btn-primary btn-block" onclick="salvarConfig()">
+        <i class="fas fa-save"></i> Salvar e Continuar
+      </button>
+    </div>
+  </div>
+
+  <!-- ========== TELA DE LOGIN ========== -->
+  <div id="tela-login" class="tela-config hidden">
+    <div class="config-card">
+      <div class="config-logo"><img src="logo.png" alt="Logo" /></div>
+      <h1>Financeiro do Restaurante</h1>
+      <p>Entre com seu e-mail e senha para acessar o sistema.</p>
+      <div class="form-group">
+        <label>E-mail</label>
+        <input type="email" id="login-email" placeholder="seu@email.com" onkeydown="if(event.key==='Enter') entrar()" />
+      </div>
+      <div class="form-group">
+        <label>Senha</label>
+        <input type="password" id="login-senha" placeholder="Sua senha" onkeydown="if(event.key==='Enter') entrar()" />
+      </div>
+      <button id="btn-entrar" class="btn btn-primary btn-block" onclick="entrar()">
+        <i class="fas fa-sign-in-alt"></i> Entrar
+      </button>
+      <p style="margin-top:16px; font-size:13px; color:#999;">
+        <a href="#" onclick="resetarConfig()" style="color:#c0392b;">Alterar configurações do Supabase</a>
+      </p>
+    </div>
+  </div>
+
+  <!-- ========== APLICATIVO PRINCIPAL ========== -->
+  <div id="app" class="app hidden">
+
+    <!-- BARRA LATERAL -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="logo.png" alt="Logo" class="sidebar-logo-img" />
+      </div>
+
+      <div class="sidebar-usuario">
+        <i class="fas fa-user-circle"></i>
+        <span id="nome-usuario-sidebar">...</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item ativo" onclick="return irPara('inicio', this)">
+          <i class="fas fa-home"></i><span>Início</span>
+        </a>
+        <a href="#" class="nav-item" onclick="return irPara('dashboard', this)">
+          <i class="fas fa-chart-pie"></i><span>Dashboard</span>
+        </a>
+
+        <!-- GESTÃO -->
+        <div class="nav-grupo" id="grupo-gestao">
+          <div class="nav-grupo-header" onclick="toggleNavGrupo('gestao')">
+            <i class="fas fa-briefcase nav-grupo-icone"></i>
+            <span>Gestão</span>
+            <i class="fas fa-chevron-down nav-grupo-seta"></i>
+          </div>
+          <div class="nav-grupo-itens" id="grupo-gestao-itens">
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('pagar', this)">
+              <i class="fas fa-arrow-circle-up"></i><span>Contas a Pagar</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('receber', this)">
+              <i class="fas fa-arrow-circle-down"></i><span>Contas a Receber</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar', this)">
+              <i class="fas fa-file-import"></i><span>Importar Extrato</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('conciliacao', this)">
+              <i class="fas fa-balance-scale"></i><span>Conciliação</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('transferencias', this)">
+              <i class="fas fa-exchange-alt"></i><span>Transferências</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('orcamento', this)">
+              <i class="fas fa-calculator"></i><span>Orçamento</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- CADASTROS -->
+        <div class="nav-grupo" id="grupo-cadastros">
+          <div class="nav-grupo-header" onclick="toggleNavGrupo('cadastros')">
+            <i class="fas fa-database nav-grupo-icone"></i>
+            <span>Cadastros</span>
+            <i class="fas fa-chevron-down nav-grupo-seta"></i>
+          </div>
+          <div class="nav-grupo-itens" id="grupo-cadastros-itens">
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('plano-contas', this)">
+              <i class="fas fa-sitemap"></i><span>Plano de Contas</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('unidades', this)">
+              <i class="fas fa-store"></i><span>Unidades</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('bancos', this)">
+              <i class="fas fa-university"></i><span>Bancos</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('fornecedores', this)">
+              <i class="fas fa-truck"></i><span>Fornecedores</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('centros-custo', this)">
+              <i class="fas fa-building"></i><span>Centro de Custos</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('formas-pagamento', this)">
+              <i class="fas fa-credit-card"></i><span>Formas de Pagamento</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- RELATÓRIOS -->
+        <div class="nav-grupo" id="grupo-relatorios">
+          <div class="nav-grupo-header" onclick="toggleNavGrupo('relatorios')">
+            <i class="fas fa-chart-bar nav-grupo-icone"></i>
+            <span>Relatórios</span>
+            <i class="fas fa-chevron-down nav-grupo-seta"></i>
+          </div>
+          <div class="nav-grupo-itens" id="grupo-relatorios-itens">
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('dre', this)">
+              <i class="fas fa-file-invoice-dollar"></i><span>DRE</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('relatorios', this)">
+              <i class="fas fa-chart-bar"></i><span>Contábil</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- CONFIGURAÇÕES -->
+        <div class="nav-grupo" id="grupo-configuracoes">
+          <div class="nav-grupo-header" onclick="toggleNavGrupo('configuracoes')">
+            <i class="fas fa-cog nav-grupo-icone"></i>
+            <span>Configurações</span>
+            <i class="fas fa-chevron-down nav-grupo-seta"></i>
+          </div>
+          <div class="nav-grupo-itens" id="grupo-configuracoes-itens">
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('usuarios', this)">
+              <i class="fas fa-users"></i><span>Usuários</span>
+            </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('configuracoes', this)">
+              <i class="fas fa-hdd"></i><span>Backup</span>
+            </a>
+          </div>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <a href="#" class="nav-item nav-sair" onclick="sair(); return false;">
+          <i class="fas fa-sign-out-alt"></i><span>Sair</span>
+        </a>
+      </div>
+    </aside>
+
+    <!-- CONTEÚDO PRINCIPAL -->
+    <main class="conteudo">
+      <button class="btn-menu-mobile" onclick="toggleSidebar()">
+        <i class="fas fa-bars"></i>
+      </button>
+
+      <!-- ===== INÍCIO ===== -->
+      <section id="pagina-inicio" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-home"></i> Sistema Financeiro Tambaqui de Banda</h2>
+        </div>
+
+        <!-- Linha 1: Saldos por banco -->
+        <div class="bi-kpi-grid">
+          <div class="bi-kpi bi-kpi-banco">
+            <div class="bi-kpi-icone" style="background:#fff;border:1px solid #f0f0f0;"><img src="logo-santander.jpeg" alt="Santander" style="width:36px;height:36px;object-fit:contain;border-radius:4px;"></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Saldo Santander</span>
+              <span class="bi-kpi-valor" id="inicio-saldo-santander">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="bi-kpi bi-kpi-receita">
+            <div class="bi-kpi-icone"><i class="fas fa-money-bill-wave"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Saldo Dinheiro</span>
+              <span class="bi-kpi-valor" id="inicio-saldo-caixa">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="bi-kpi bi-kpi-banco bi-kpi-hoverable">
+            <div class="bi-kpi-icone"><i class="fas fa-piggy-bank"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Saldo Outros Bancos <i class="fas fa-info-circle" style="font-size:11px;color:#aaa;"></i></span>
+              <span class="bi-kpi-valor" id="inicio-saldo-outros">R$ 0,00</span>
+            </div>
+            <div class="bi-tooltip-bancos" id="inicio-tooltip-outros"></div>
+          </div>
+        </div>
+
+        <!-- Linha 2: Realizado hoje -->
+        <div class="bi-secao-titulo" style="margin-top:16px;"><i class="fas fa-sun"></i> Hoje</div>
+        <div class="bi-kpi-grid">
+          <div class="bi-kpi bi-kpi-receita">
+            <div class="bi-kpi-icone" style="background:#fff;border:1px solid #f0f0f0;"><img src="logo-santander.jpeg" alt="Santander" style="width:36px;height:36px;object-fit:contain;border-radius:4px;"></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Receita do Dia — Santander</span>
+              <span class="bi-kpi-valor" id="inicio-rec-real-santander">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="bi-kpi bi-kpi-pagar-hoje">
+            <div class="bi-kpi-icone"><i class="fas fa-calendar-check"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Contas a Pagar Hoje</span>
+              <span class="bi-kpi-valor" id="inicio-pagar-hoje">R$ 0,00</span>
+              <span class="bi-kpi-sub" id="inicio-pagar-hoje-qtd">0 contas</span>
+            </div>
+          </div>
+          <div class="bi-kpi bi-kpi-atraso">
+            <div class="bi-kpi-icone"><i class="fas fa-exclamation-triangle"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Contas em Atraso</span>
+              <span class="bi-kpi-valor" id="inicio-atraso-valor">R$ 0,00</span>
+              <span class="bi-kpi-sub" id="inicio-atraso-qtd">0 contas</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Linha 3: Previsão Semanal -->
+        <div class="bi-secao-titulo" style="margin-top:16px;"><i class="fas fa-calendar-week"></i> Previsão — Esta Semana</div>
+        <div class="bi-kpi-grid">
+          <div class="bi-kpi bi-kpi-banco">
+            <div class="bi-kpi-icone" style="background:#fff;border:1px solid #f0f0f0;"><img src="logo-santander.jpeg" alt="Santander" style="width:36px;height:36px;object-fit:contain;border-radius:4px;"></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Receita Prevista — Santander</span>
+              <span class="bi-kpi-valor" id="inicio-prev-santander">R$ 0,00</span>
+              <span class="bi-kpi-sub">média últimas 4 semanas</span>
+            </div>
+          </div>
+          <div class="bi-kpi bi-kpi-receita">
+            <div class="bi-kpi-icone"><i class="fas fa-money-bill-wave"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Dinheiro Previsto — Caixa</span>
+              <span class="bi-kpi-valor" id="inicio-prev-caixa">R$ 0,00</span>
+              <span class="bi-kpi-sub">média últimas 4 semanas</span>
+            </div>
+          </div>
+          <div class="bi-kpi bi-kpi-pagar-hoje">
+            <div class="bi-kpi-icone"><i class="fas fa-calendar-check"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Contas a Pagar Semana</span>
+              <span class="bi-kpi-valor" id="inicio-pagar-semana">R$ 0,00</span>
+              <span class="bi-kpi-sub" id="inicio-pagar-semana-qtd">0 contas</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Linha 4: Receita por Unidade -->
+        <div class="bi-secao-titulo" style="margin-top:16px;">
+          <i class="fas fa-store"></i> Receita por Unidade — <span id="inicio-unidade-mes"></span>
+        </div>
+        <div id="inicio-receita-unidades" class="bi-kpi-grid">
+          <div class="bi-kpi" style="opacity:.5;">
+            <div class="bi-kpi-icone"><i class="fas fa-spinner fa-spin"></i></div>
+            <div class="bi-kpi-info"><span class="bi-kpi-label">Carregando...</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== DASHBOARD BI ===== -->
+      <section id="pagina-dashboard" class="pagina">
+        <!-- CABEÇALHO -->
+        <div class="pagina-header">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h2 style="margin:0;"><i class="fas fa-chart-pie"></i> Dashboard Financeiro</h2>
+            <span class="bi-periodo-label" id="bi-periodo-label"></span>
+          </div>
+          <div id="bi-loading-ind" style="display:none;align-items:center;gap:6px;">
+            <i class="fas fa-spinner fa-spin" style="color:#c0392b;font-size:13px;"></i>
+            <span style="font-size:12px;color:rgba(255,255,255,.5);">Carregando...</span>
+          </div>
+        </div>
+
+        <!-- FILTROS FIXOS -->
+        <div id="bi-painel-filtros" class="bi-painel-filtros">
+          <div class="bi-painel-inner">
+
+            <!-- ANO -->
+            <div class="bi-dd" id="bi-dd-ano">
+              <button class="bi-dd-trigger" onclick="biToggleDropdown('bi-dd-ano')">
+                <span class="bi-dd-label">Ano</span>
+                <span class="bi-dd-valor" id="bi-dd-ano-val">2026</span>
+                <i class="fas fa-chevron-down bi-dd-icon"></i>
+              </button>
+              <div class="bi-dd-panel">
+                <div class="bi-dd-panel-header">
+                  <span class="bi-dd-panel-titulo">Selecione o ano</span>
+                </div>
+                <div class="bi-chips-row" id="bi-f-anos">
+                  <button class="bi-chip" data-ano="2024" onclick="biSelecionarAno(2024,this)">2024</button>
+                  <button class="bi-chip" data-ano="2025" onclick="biSelecionarAno(2025,this)">2025</button>
+                  <button class="bi-chip ativo" data-ano="2026" onclick="biSelecionarAno(2026,this)">2026</button>
+                  <button class="bi-chip" data-ano="2027" onclick="biSelecionarAno(2027,this)">2027</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- PERÍODO -->
+            <div class="bi-dd" id="bi-dd-periodo">
+              <button class="bi-dd-trigger" onclick="biToggleDropdown('bi-dd-periodo')">
+                <span class="bi-dd-label">Período</span>
+                <span class="bi-dd-valor" id="bi-dd-periodo-val">Todos os meses</span>
+                <i class="fas fa-chevron-down bi-dd-icon"></i>
+              </button>
+              <div class="bi-dd-panel">
+                <div class="bi-dd-panel-header">
+                  <span class="bi-dd-panel-titulo">Meses</span>
+                  <button class="bi-pf-link" onclick="biToggleTodosMeses()">Todos</button>
+                </div>
+                <div class="bi-chips-row" id="bi-f-meses"></div>
+              </div>
+            </div>
+
+            <!-- UNIDADE -->
+            <div class="bi-dd" id="bi-dd-unidade">
+              <button class="bi-dd-trigger" onclick="biToggleDropdown('bi-dd-unidade')">
+                <span class="bi-dd-label">Unidade</span>
+                <span class="bi-dd-valor" id="bi-dd-unidade-val">Todas</span>
+                <i class="fas fa-chevron-down bi-dd-icon"></i>
+              </button>
+              <div class="bi-dd-panel">
+                <div class="bi-dd-panel-header">
+                  <span class="bi-dd-panel-titulo">Unidades</span>
+                  <button class="bi-pf-link" onclick="biToggleTodasUnidades()">Todas</button>
+                </div>
+                <div class="bi-chips-row" id="bi-f-unidades"></div>
+              </div>
+            </div>
+
+            <!-- CATEGORIA -->
+            <div class="bi-dd" id="bi-dd-categoria">
+              <button class="bi-dd-trigger" onclick="biToggleDropdown('bi-dd-categoria')">
+                <span class="bi-dd-label">Categoria</span>
+                <span class="bi-dd-valor" id="bi-dd-categoria-val">Todas</span>
+                <i class="fas fa-chevron-down bi-dd-icon"></i>
+              </button>
+              <div class="bi-dd-panel">
+                <div class="bi-dd-panel-header">
+                  <span class="bi-dd-panel-titulo">Categorias</span>
+                  <button class="bi-pf-link" onclick="biToggleTodasCategorias()">Todas</button>
+                </div>
+                <div class="bi-chips-row" id="bi-f-grupos"></div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- KPI CARDS -->
+        <div class="bi-kpi-novo-row" id="bi-kpi-novo-row"></div>
+
+        <!-- GRÁFICOS -->
+        <div class="bi-g-grid">
+          <div class="bi-g-card bi-g-span2">
+            <div class="bi-g-titulo"><i class="fas fa-chart-bar" style="color:#1a7a3c;margin-right:6px;"></i>Receitas × Despesas por Mês</div>
+            <canvas id="bg-recdesp"></canvas>
+          </div>
+          <div class="bi-g-card">
+            <div class="bi-g-titulo"><i class="fas fa-balance-scale" style="color:#1a3a7a;margin-right:6px;"></i>Resultado Mensal</div>
+            <canvas id="bg-resultado"></canvas>
+          </div>
+          <div class="bi-g-card bi-g-span3">
+            <div class="bi-g-titulo"><i class="fas fa-chart-line" style="color:#3498db;margin-right:6px;"></i>Resultado Acumulado no Ano</div>
+            <canvas id="bg-acumulado"></canvas>
+          </div>
+          <div class="bi-g-card bi-g-span2">
+            <div class="bi-g-titulo"><i class="fas fa-list-alt" style="color:#e67e22;margin-right:6px;"></i>Gastos por Categoria</div>
+            <canvas id="bg-categorias"></canvas>
+          </div>
+          <div class="bi-g-card">
+            <div class="bi-g-titulo"><i class="fas fa-truck" style="color:#9b59b6;margin-right:6px;"></i>Top Fornecedores</div>
+            <canvas id="bg-fornecedores"></canvas>
+          </div>
+          <div class="bi-g-card bi-g-span3">
+            <div class="bi-g-titulo"><i class="fas fa-bullseye" style="color:#c0392b;margin-right:6px;"></i>Orçado × Realizado por Grupo</div>
+            <canvas id="bg-orcado"></canvas>
+          </div>
+        </div>
+
+        <!-- Elementos ocultos para compatibilidade -->
+        <div style="display:none">
+          <input id="bi-data-ini" /><input id="bi-data-fim" />
+          <select id="filtro-unidade-dashboard"></select>
+          <div id="lista-vencendo"></div><div id="saldos-por-conta"></div>
+          <span id="total-cmv"></span><span id="margem-operacional"></span>
+        </div>
+      </section>
+
+      <!-- ===== CONTAS A PAGAR ===== -->
+      <section id="pagina-pagar" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-arrow-circle-up"></i> Contas a Pagar</h2>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <div id="total-selecionadas-wrap" style="display:none; background:#eafaf1; border:1.5px solid #27ae60; border-radius:8px; padding:6px 14px; font-size:13px; color:#1a6e3b; font-weight:600; white-space:nowrap;">
+              <i class="fas fa-calculator" style="margin-right:5px;"></i>
+              Total selecionado: <span id="total-selecionadas-valor">R$ 0,00</span>
+            </div>
+            <button class="btn btn-success btn-sm" id="btn-pagar-lote" onclick="abrirModalPagarLote()" style="display:none">
+              <i class="fas fa-check-double"></i> Pagar Selecionadas (<span id="qtd-selecionadas">0</span>)
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="abrirImportarExcelPagar()" style="color:#217346;border-color:#217346;">
+              <i class="fas fa-file-excel"></i> Importar Planilha
+            </button>
+            <input type="file" id="arquivo-excel-pagar" accept=".xlsx,.xls" style="display:none" onchange="lerArquivoExcelPagar(this)">
+            <button class="btn btn-danger" onclick="abrirModal('modal-pagar')">
+              <i class="fas fa-plus"></i> Nova Conta
+            </button>
+          </div>
+        </div>
+        <div class="filtros" style="flex-wrap:wrap; gap:8px;">
+          <select id="filtro-status-pagar">
+            <option value="">Todos os status</option>
+            <option value="pendente">Pendente</option>
+            <option value="pago">Pago</option>
+            <option value="vencido">Vencido</option>
+          </select>
+          <div style="display:flex; align-items:center; gap:5px;">
+            <select id="filtro-tipo-data-pagar" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;color:#555;">
+              <option value="vencimento">Vencimento</option>
+              <option value="data_pagamento">Pagamento</option>
+            </select>
+            <span style="font-size:13px; color:#666; white-space:nowrap;">De:</span>
+            <input type="date" id="filtro-de-pagar" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
+            <span style="font-size:13px; color:#666; white-space:nowrap;">Até:</span>
+            <input type="date" id="filtro-ate-pagar" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
+          </div>
+          <select id="filtro-fornecedor-pagar">
+            <option value="">Todos os fornecedores</option>
+          </select>
+          <select id="filtro-grupo-pagar">
+            <option value="">Todos os grupos</option>
+          </select>
+          <div class="filtro-banco-wrapper" id="filtro-banco-wrapper-pagar">
+            <button type="button" class="filtro-banco-btn" id="filtro-banco-btn-pagar" onclick="toggleFiltrosBancos('pagar')">
+              <i class="fas fa-university"></i>
+              <span id="filtro-banco-label-pagar">Todos os bancos</span>
+              <i class="fas fa-chevron-down" style="font-size:10px; color:#aaa; margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-banco-dropdown-pagar" style="display:none;"></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="carregarLancamentos('pagar')">
+            <i class="fas fa-search"></i> Buscar
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="limparFiltros('pagar')">
+            <i class="fas fa-times"></i> Limpar
+          </button>
+        </div>
+        <div class="resumo-lancamentos" id="resumo-pagar">
+          <div class="resumo-card total">
+            <span class="resumo-card-label">Total filtrado</span>
+            <span class="resumo-card-valor" id="resumo-pagar-total">—</span>
+            <span class="resumo-card-qtd"  id="resumo-pagar-total-qtd"></span>
+          </div>
+          <div class="resumo-card aberto">
+            <span class="resumo-card-label">Em aberto</span>
+            <span class="resumo-card-valor" id="resumo-pagar-aberto">—</span>
+            <span class="resumo-card-qtd"  id="resumo-pagar-aberto-qtd"></span>
+          </div>
+          <div class="resumo-card vencido">
+            <span class="resumo-card-label">Em atraso</span>
+            <span class="resumo-card-valor" id="resumo-pagar-vencido">—</span>
+            <span class="resumo-card-qtd"  id="resumo-pagar-vencido-qtd"></span>
+          </div>
+          <div class="resumo-card pago">
+            <span class="resumo-card-label">Pago</span>
+            <span class="resumo-card-valor" id="resumo-pagar-pago">—</span>
+            <span class="resumo-card-qtd"  id="resumo-pagar-pago-qtd"></span>
+          </div>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th style="width:36px;"><input type="checkbox" id="cb-todos-pagar" onchange="selecionarTodosParaPagar(this.checked)"></th>
+                <th class="th-sort" onclick="ordenarTabela('pagar','fornecedor')">Fornecedor <span class="sort-icon" id="sort-pagar-fornecedor"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('pagar','descricao')">Descrição <span class="sort-icon" id="sort-pagar-descricao"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('pagar','categoria')">Categoria <span class="sort-icon" id="sort-pagar-categoria"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('pagar','vencimento')">Vencimento <span class="sort-icon" id="sort-pagar-vencimento">▲</span></th>
+                <th class="th-sort" style="white-space:nowrap;min-width:110px;" onclick="ordenarTabela('pagar','valor')">Valor Total <span class="sort-icon" id="sort-pagar-valor">▲</span></th>
+                <th class="th-sort" onclick="ordenarTabela('pagar','status')">Status <span class="sort-icon" id="sort-pagar-status"></span></th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-pagar">
+              <tr><td colspan="8" class="sem-dados">Nenhuma conta encontrada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== CONTAS A RECEBER ===== -->
+      <section id="pagina-receber" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-arrow-circle-down"></i> Contas a Receber</h2>
+          <button class="btn btn-success" onclick="abrirModal('modal-receber')">
+            <i class="fas fa-plus"></i> Nova Entrada
+          </button>
+        </div>
+        <div class="filtros" style="flex-wrap:wrap; gap:8px;">
+          <select id="filtro-status-receber">
+            <option value="">Todos os status</option>
+            <option value="pendente">Pendente</option>
+            <option value="pago">Recebido</option>
+            <option value="vencido">Vencido</option>
+          </select>
+          <div style="display:flex; align-items:center; gap:5px;">
+            <span style="font-size:13px; color:#666; white-space:nowrap;">De:</span>
+            <input type="date" id="filtro-de-receber" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
+            <span style="font-size:13px; color:#666; white-space:nowrap;">Até:</span>
+            <input type="date" id="filtro-ate-receber" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
+          </div>
+          <select id="filtro-fornecedor-receber">
+            <option value="">Todos os fornecedores</option>
+          </select>
+          <select id="filtro-grupo-receber">
+            <option value="">Todos os grupos</option>
+          </select>
+          <div class="filtro-banco-wrapper" id="filtro-banco-wrapper-receber">
+            <button type="button" class="filtro-banco-btn" id="filtro-banco-btn-receber" onclick="toggleFiltrosBancos('receber')">
+              <i class="fas fa-university"></i>
+              <span id="filtro-banco-label-receber">Todos os bancos</span>
+              <i class="fas fa-chevron-down" style="font-size:10px; color:#aaa; margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-banco-dropdown-receber" style="display:none;"></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="carregarLancamentos('receber')">
+            <i class="fas fa-search"></i> Buscar
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="limparFiltros('receber')">
+            <i class="fas fa-times"></i> Limpar
+          </button>
+        </div>
+        <div class="resumo-lancamentos" id="resumo-receber">
+          <div class="resumo-card total">
+            <span class="resumo-card-label">Total filtrado</span>
+            <span class="resumo-card-valor" id="resumo-receber-total">—</span>
+            <span class="resumo-card-qtd"  id="resumo-receber-total-qtd"></span>
+          </div>
+          <div class="resumo-card aberto">
+            <span class="resumo-card-label">A receber</span>
+            <span class="resumo-card-valor" id="resumo-receber-aberto">—</span>
+            <span class="resumo-card-qtd"  id="resumo-receber-aberto-qtd"></span>
+          </div>
+          <div class="resumo-card pago">
+            <span class="resumo-card-label">Recebido</span>
+            <span class="resumo-card-valor" id="resumo-receber-pago">—</span>
+            <span class="resumo-card-qtd"  id="resumo-receber-pago-qtd"></span>
+          </div>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th class="th-sort" onclick="ordenarTabela('receber','unidade')">Unidade <span class="sort-icon" id="sort-receber-unidade"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('receber','descricao')">Descrição <span class="sort-icon" id="sort-receber-descricao"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('receber','categoria')">Categoria <span class="sort-icon" id="sort-receber-categoria"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('receber','vencimento')">Vencimento <span class="sort-icon" id="sort-receber-vencimento">▲</span></th>
+                <th class="th-sort" onclick="ordenarTabela('receber','valor')">Valor Total <span class="sort-icon" id="sort-receber-valor">▲</span></th>
+                <th class="th-sort" onclick="ordenarTabela('receber','status')">Status <span class="sort-icon" id="sort-receber-status"></span></th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-receber">
+              <tr><td colspan="6" class="sem-dados">Nenhuma entrada encontrada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== PLANO DE CONTAS ===== -->
+      <section id="pagina-plano-contas" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-sitemap"></i> Plano de Contas</h2>
+          <button class="btn btn-primary" onclick="abrirModalPlanoConta()">
+            <i class="fas fa-plus"></i> Novo
+          </button>
+        </div>
+        <div class="plano-tabs">
+          <button class="tab-btn ativo" onclick="mostrarTabPlano('pagar', this)">
+            <i class="fas fa-arrow-up"></i> Despesas
+          </button>
+          <button class="tab-btn" onclick="mostrarTabPlano('receber', this)">
+            <i class="fas fa-arrow-down"></i> Receitas
+          </button>
+        </div>
+        <div class="tabela-box" style="margin-top: 0; border-radius: 0 12px 12px 12px;">
+          <div id="lista-plano-contas">
+            <p class="sem-dados">Carregando...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== BANCOS ===== -->
+      <!-- ===== UNIDADES ===== -->
+      <section id="pagina-unidades" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-store"></i> Unidades</h2>
+          <button class="btn btn-primary" onclick="abrirModalUnidade()">
+            <i class="fas fa-plus"></i> Nova Unidade
+          </button>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Nome</th><th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-unidades">
+              <tr><td colspan="2" class="sem-dados">Nenhuma unidade cadastrada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="pagina-bancos" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-university"></i> Bancos</h2>
+          <button class="btn btn-primary" onclick="abrirModalBanco()">
+            <i class="fas fa-plus"></i> Novo Banco
+          </button>
+        </div>
+        <div class="info-box">
+          <i class="fas fa-lightbulb"></i>
+          Dica: cadastre <strong>Caixa</strong> como um banco para registrar entradas e saídas em dinheiro físico.
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Nome</th><th>Agência</th><th>Conta</th>
+                <th>Tipo</th><th>Saldo Inicial</th><th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-bancos">
+              <tr><td colspan="6" class="sem-dados">Nenhum banco cadastrado.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== FORNECEDORES ===== -->
+      <section id="pagina-fornecedores" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-truck"></i> Fornecedores</h2>
+          <button class="btn btn-primary" onclick="abrirModalFornecedor()">
+            <i class="fas fa-plus"></i> Novo Fornecedor
+          </button>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Nome</th><th>CNPJ / CPF</th><th>Categoria Padrão</th><th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-fornecedores">
+              <tr><td colspan="4" class="sem-dados">Nenhum fornecedor cadastrado.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== CENTRO DE CUSTOS ===== -->
+      <section id="pagina-centros-custo" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-building"></i> Centro de Custos</h2>
+          <button class="btn btn-primary" onclick="abrirModalCentroCusto()">
+            <i class="fas fa-plus"></i> Novo Centro
+          </button>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr><th>Nome</th><th>Ações</th></tr>
+            </thead>
+            <tbody id="tbody-centros-custo">
+              <tr><td colspan="2" class="sem-dados">Nenhum centro de custo cadastrado.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== FORMAS DE PAGAMENTO ===== -->
+      <section id="pagina-formas-pagamento" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-credit-card"></i> Formas de Pagamento</h2>
+          <button class="btn btn-primary" onclick="abrirModalFormaPagamento()">
+            <i class="fas fa-plus"></i> Nova Forma
+          </button>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr><th>Nome</th><th>Ações</th></tr>
+            </thead>
+            <tbody id="tbody-formas-pagamento">
+              <tr><td colspan="2" class="sem-dados">Nenhuma forma de pagamento cadastrada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== TRANSFERÊNCIAS ===== -->
+      <section id="pagina-transferencias" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-exchange-alt"></i> Transferências entre Contas</h2>
+          <button class="btn btn-primary" onclick="abrirModalTransferencia()">
+            <i class="fas fa-plus"></i> Nova Transferência
+          </button>
+        </div>
+        <div class="filtros">
+          <select id="filtro-mes-transferencias" onchange="carregarTransferencias()"></select>
+        </div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Data</th><th>De</th><th>Para</th><th>Valor</th><th>Descrição</th><th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-transferencias">
+              <tr><td colspan="6" class="sem-dados">Nenhuma transferência encontrada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== ORÇAMENTO ===== -->
+      <section id="pagina-orcamento" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-calculator"></i> Orçamento</h2>
+        </div>
+        <div class="plano-tabs">
+          <button class="tab-btn ativo" onclick="alternarModoOrcamento('mensal', this)">
+            <i class="fas fa-calendar-alt"></i> Por Mês
+          </button>
+          <button class="tab-btn" onclick="alternarModoOrcamento('planilha', this)">
+            <i class="fas fa-table"></i> Planilha 12 Meses
+          </button>
+        </div>
+        <div class="filtros" style="border-radius:0 12px 0 0; margin-top:0;">
+          <select id="filtro-unidade-orcamento" onchange="carregarOrcamentoModo()">
+            <option value="">Todas as unidades</option>
+          </select>
+          <select id="filtro-ano-orcamento" onchange="carregarOrcamentoModo()"></select>
+          <select id="filtro-tipo-orcamento" onchange="carregarOrcamentoModo()">
+            <option value="pagar">Despesas</option>
+            <option value="receber">Receitas</option>
+          </select>
+          <select id="filtro-mes-orcamento" onchange="carregarOrcamento()">
+            <option value="0">Anual (todos os meses)</option>
+            <option value="1">Janeiro</option><option value="2">Fevereiro</option>
+            <option value="3">Março</option><option value="4">Abril</option>
+            <option value="5">Maio</option><option value="6">Junho</option>
+            <option value="7">Julho</option><option value="8">Agosto</option>
+            <option value="9">Setembro</option><option value="10">Outubro</option>
+            <option value="11">Novembro</option><option value="12">Dezembro</option>
+          </select>
+        </div>
+        <div class="info-box">
+          <i class="fas fa-lightbulb"></i>
+          Digite o valor orçado em cada categoria. O sistema salva automaticamente ao sair do campo.
+        </div>
+        <div class="tabela-box" id="tabela-orcamento-wrapper" style="border-radius:0 0 12px 12px; margin-top:0;">
+          <div id="tabela-orcamento">
+            <p class="sem-dados">Selecione o ano e tipo acima para ver o orçamento.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== IMPORTAR EXTRATO ===== -->
+      <section id="pagina-importar" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-file-import"></i> Importar Extrato Bancário</h2>
+        </div>
+        <div class="info-box">
+          <strong><i class="fas fa-info-circle"></i> Como usar:</strong><br>
+          1. Selecione o banco do extrato abaixo.<br>
+          2. No internet banking do seu banco, baixe o extrato no formato <strong>OFX</strong> ou exporte a planilha <strong>Excel (.xlsx)</strong>.<br>
+          3. Clique em "Selecionar arquivo" e escolha o arquivo baixado.<br>
+          4. Revise as transações, atribua categorias e clique em "Importar Selecionados".<br>
+          <small style="color:#555;">Se um fornecedor for reconhecido pelo nome, a categoria é preenchida automaticamente.</small>
+        </div>
+        <div class="filtros" style="align-items: center;">
+          <select id="banco-importar" style="min-width: 200px;">
+            <option value="">Selecione o banco...</option>
+          </select>
+          <label for="arquivo-ofx" class="btn btn-outline" style="cursor:pointer; margin:0;">
+            <i class="fas fa-upload"></i> Selecionar arquivo (OFX ou Excel)
+          </label>
+          <input type="file" id="arquivo-ofx" accept=".ofx,.OFX,.xlsx,.xls" style="display:none" onchange="carregarArquivoImportar(this)" />
+          <span id="nome-arquivo-ofx" style="font-size:13px; color:#888;"></span>
+        </div>
+
+        <div id="preview-importar" class="hidden">
+          <div class="pagina-header" style="margin-bottom: 12px;">
+            <span id="resumo-ofx" style="font-weight:600; color:#555;"></span>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-outline btn-sm" onclick="selecionarTodosOFX(true)">Selecionar Todos</button>
+              <button class="btn btn-outline btn-sm" onclick="selecionarTodosOFX(false)">Desmarcar Todos</button>
+              <button id="btn-importar-ofx" class="btn btn-primary" onclick="importarTransacoes()">
+                <i class="fas fa-check"></i> Importar Selecionados
+              </button>
+            </div>
+          </div>
+          <div class="tabela-box" style="margin-top:0;">
+            <table class="tabela">
+              <thead>
+                <tr>
+                  <th style="width:40px;"><input type="checkbox" id="cb-todos-ofx" onchange="selecionarTodosOFX(this.checked)" checked></th>
+                  <th>Data</th><th>Descrição</th><th>Valor</th><th>Tipo</th><th>Categoria</th><th>Unidade</th><th>Conciliar com</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-importar"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== CONCILIAÇÃO DIÁRIA ===== -->
+      <section id="pagina-conciliacao" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-balance-scale"></i> Conciliação Diária</h2>
+        </div>
+
+        <!-- Filtros -->
+        <div class="filtros-bar" style="flex-wrap:wrap;gap:8px;align-items:flex-end;">
+          <select id="concil-mes" style="min-width:110px;">
+            <option value="1">Janeiro</option><option value="2">Fevereiro</option>
+            <option value="3">Março</option><option value="4">Abril</option>
+            <option value="5" selected>Maio</option><option value="6">Junho</option>
+            <option value="7">Julho</option><option value="8">Agosto</option>
+            <option value="9">Setembro</option><option value="10">Outubro</option>
+            <option value="11">Novembro</option><option value="12">Dezembro</option>
+          </select>
+          <select id="concil-ano" style="min-width:80px;">
+            <option value="2026" selected>2026</option>
+            <option value="2025">2025</option>
+            <option value="2027">2027</option>
+          </select>
+
+          <!-- Unidades multi-select -->
+          <div class="dropdown-multi" style="position:relative;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleConcilDropdown('unidades')" id="concil-btn-unidades" style="min-width:140px;display:flex;align-items:center;gap:6px;">
+              <i class="fas fa-store"></i> <span id="concil-label-unidades">Todas as unidades</span> <i class="fas fa-chevron-down" style="margin-left:auto;font-size:10px;"></i>
+            </button>
+            <div id="concil-drop-unidades" class="dropdown-multi-lista hidden" style="position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:#fff;border:1px solid #ddd;border-radius:8px;padding:8px;min-width:200px;box-shadow:0 4px 12px rgba(0,0,0,.12);">
+              <label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:13px;">
+                <input type="checkbox" id="concil-uni-todos" checked onchange="toggleTodosConcil('unidades')"> Todas
+              </label>
+              <div id="concil-lista-unidades"></div>
+            </div>
+          </div>
+
+          <!-- Bancos multi-select -->
+          <div class="dropdown-multi" style="position:relative;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleConcilDropdown('bancos')" id="concil-btn-bancos" style="min-width:140px;display:flex;align-items:center;gap:6px;">
+              <i class="fas fa-university"></i> <span id="concil-label-bancos">Todos os bancos</span> <i class="fas fa-chevron-down" style="margin-left:auto;font-size:10px;"></i>
+            </button>
+            <div id="concil-drop-bancos" class="dropdown-multi-lista hidden" style="position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:#fff;border:1px solid #ddd;border-radius:8px;padding:8px;min-width:200px;box-shadow:0 4px 12px rgba(0,0,0,.12);">
+              <label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:13px;">
+                <input type="checkbox" id="concil-banco-todos" checked onchange="toggleTodosConcil('bancos')"> Todos
+              </label>
+              <div id="concil-lista-bancos"></div>
+            </div>
+          </div>
+
+          <button class="btn btn-primary" onclick="carregarConciliacao()">
+            <i class="fas fa-search"></i> Buscar
+          </button>
+        </div>
+
+        <!-- Cards resumo -->
+        <div class="bi-kpi-grid" style="margin:16px 0 8px;">
+          <div class="bi-kpi" style="border-left:4px solid #27ae60;">
+            <div class="bi-kpi-icone" style="background:#eafaf1;color:#27ae60;"><i class="fas fa-arrow-down"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Total Receitas</span>
+              <span class="bi-kpi-valor" id="concil-total-rec" style="color:#27ae60;">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="bi-kpi" style="border-left:4px solid #e74c3c;">
+            <div class="bi-kpi-icone" style="background:#fdf0f0;color:#e74c3c;"><i class="fas fa-arrow-up"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Total Despesas</span>
+              <span class="bi-kpi-valor" id="concil-total-desp" style="color:#e74c3c;">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="bi-kpi" style="border-left:4px solid #2980b9;">
+            <div class="bi-kpi-icone" style="background:#eaf4fd;color:#2980b9;"><i class="fas fa-equals"></i></div>
+            <div class="bi-kpi-info">
+              <span class="bi-kpi-label">Resultado</span>
+              <span class="bi-kpi-valor" id="concil-total-res">R$ 0,00</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabela diária -->
+        <div class="tabela-container" style="max-height:calc(100vh - 280px);overflow-y:auto;">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th style="width:60px;text-align:center;">Dia</th>
+                <th style="text-align:right;">Receitas</th>
+                <th style="text-align:right;">Despesas</th>
+                <th style="text-align:right;">Resultado</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-conciliacao">
+              <tr><td colspan="4" class="sem-dados">Selecione o período e clique em Buscar.</td></tr>
+            </tbody>
+            <tfoot id="tfoot-conciliacao"></tfoot>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== RELATÓRIOS ===== -->
+      <section id="pagina-relatorios" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-chart-bar"></i> Relatórios</h2>
+        </div>
+        <div class="filtros">
+          <select id="filtro-unidade-relatorio" onchange="carregarRelatorio()">
+            <option value="">Todas as unidades</option>
+          </select>
+          <select id="filtro-ano-relatorio" onchange="carregarRelatorio()"></select>
+        </div>
+        <div class="cards-grid">
+          <div class="card card-pagar">
+            <div class="card-icone"><i class="fas fa-arrow-up"></i></div>
+            <div class="card-info">
+              <span class="card-label">Total Despesas (ano)</span>
+              <span class="card-valor" id="relatorio-total-pagar">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="card card-receber">
+            <div class="card-icone"><i class="fas fa-arrow-down"></i></div>
+            <div class="card-info">
+              <span class="card-label">Total Entradas (ano)</span>
+              <span class="card-valor" id="relatorio-total-receber">R$ 0,00</span>
+            </div>
+          </div>
+          <div class="card card-saldo">
+            <div class="card-icone"><i class="fas fa-piggy-bank"></i></div>
+            <div class="card-info">
+              <span class="card-label">Resultado (ano)</span>
+              <span class="card-valor" id="relatorio-resultado">R$ 0,00</span>
+            </div>
+          </div>
+        </div>
+        <div class="graficos-grid">
+          <div class="grafico-box grafico-largo">
+            <h3>Entradas vs Saídas por Mês</h3>
+            <canvas id="grafico-relatorio-mensal"></canvas>
+          </div>
+          <div class="grafico-box">
+            <h3>Despesas por Categoria</h3>
+            <canvas id="grafico-relatorio-categorias"></canvas>
+          </div>
+          <div class="grafico-box">
+            <h3>Entradas por Categoria</h3>
+            <canvas id="grafico-relatorio-receitas"></canvas>
+          </div>
+        </div>
+
+        <!-- ===== RELATÓRIO DE CONCILIAÇÃO ===== -->
+        <div style="margin-top:32px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+            <h3 style="margin:0;font-size:16px;color:#1a1a2e;font-weight:700;">
+              <i class="fas fa-file-invoice" style="color:#c0392b;margin-right:6px;"></i>
+              Relatório de Conciliação
+            </h3>
+            <span style="font-size:12px;color:#888;">para envio à contabilidade</span>
+          </div>
+
+          <div class="filtros" style="flex-wrap:wrap;gap:8px;align-items:flex-end;">
+            <div style="display:flex;flex-direction:column;gap:4px;">
+              <label style="font-size:12px;color:#666;">De</label>
+              <input type="date" id="rel-concil-de" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;" />
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px;">
+              <label style="font-size:12px;color:#666;">Até</label>
+              <input type="date" id="rel-concil-ate" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;" />
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px;">
+              <label style="font-size:12px;color:#666;">Banco</label>
+              <select id="rel-concil-banco" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;min-width:160px;">
+                <option value="">Todos os bancos</option>
+              </select>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px;">
+              <label style="font-size:12px;color:#666;">Tipo</label>
+              <select id="rel-concil-tipo" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;">
+                <option value="">Todos</option>
+                <option value="pagar">Contas a Pagar</option>
+                <option value="receber">Contas a Receber</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" onclick="carregarRelatorioConciliacao()" style="align-self:flex-end;">
+              <i class="fas fa-search"></i> Gerar Relatório
+            </button>
+          </div>
+
+          <div id="rel-concil-resultado" style="display:none;margin-top:20px;">
+            <!-- KPIs resumo -->
+            <div id="rel-concil-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;"></div>
+
+            <!-- Tabela -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <span id="rel-concil-titulo" style="font-size:13px;color:#555;font-weight:600;"></span>
+              <button class="btn btn-outline btn-sm" onclick="imprimirRelatorioConciliacao()" style="color:#c0392b;border-color:#c0392b;">
+                <i class="fas fa-print"></i> Imprimir / PDF
+              </button>
+            </div>
+            <div style="overflow-x:auto;">
+              <table id="rel-concil-tabela" style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead>
+                  <tr style="background:#f0f0f0;text-align:left;">
+                    <th style="padding:8px 10px;white-space:nowrap;">Data Pgto</th>
+                    <th style="padding:8px 10px;">Fornecedor</th>
+                    <th style="padding:8px 10px;">Descrição</th>
+                    <th style="padding:8px 10px;">Categoria</th>
+                    <th style="padding:8px 10px;">Banco</th>
+                    <th style="padding:8px 10px;text-align:right;white-space:nowrap;">Valor</th>
+                    <th style="padding:8px 10px;">Tipo</th>
+                    <th style="padding:8px 10px;">Origem</th>
+                  </tr>
+                </thead>
+                <tbody id="rel-concil-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== USUÁRIOS ===== -->
+      <section id="pagina-usuarios" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-users"></i> Usuários</h2>
+        </div>
+
+        <div class="card-usuario-atual">
+          <i class="fas fa-user-circle" style="font-size:48px; color:#c0392b;"></i>
+          <div style="flex:1;">
+            <div id="meu-nome" style="font-weight:700; font-size:18px; color:#1a1a2e;">...</div>
+            <div id="meu-email" style="color:#888; font-size:14px; margin-top:4px;">...</div>
+          </div>
+          <button class="btn btn-outline" onclick="abrirModalAlterarSenha()">
+            <i class="fas fa-key"></i> Alterar Minha Senha
+          </button>
+        </div>
+
+        <div class="tabela-box" style="margin-top:20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="margin:0;"><i class="fas fa-list"></i> Todos os Usuários</h3>
+            <button id="btn-convidar" class="btn btn-primary" onclick="abrirModalConvidar()" style="display:none;">
+              <i class="fas fa-user-plus"></i> Convidar Funcionário
+            </button>
+          </div>
+          <div id="lista-usuarios">
+            <p class="sem-dados">Carregando...</p>
+          </div>
+          <div class="info-box" style="margin-top: 16px;">
+            <i class="fas fa-info-circle"></i>
+            O funcionário receberá um <strong>e-mail de confirmação</strong> do Supabase. Após confirmar, ele entra com a senha que você definir aqui.
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ===== CONFIGURAÇÕES ===== -->
+      <!-- ===== DRE ===== -->
+      <!-- ===== DRE ===== -->
+      <section id="pagina-dre" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-file-invoice-dollar"></i> DRE — Demonstração do Resultado</h2>
+        </div>
+
+        <!-- FILTROS -->
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;padding:12px 16px;background:#f8f9fa;border-radius:10px;border:1px solid #eee;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;color:#666;">Mês:</span>
+            <select id="dre-mes" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+              <option value="1">Janeiro</option><option value="2">Fevereiro</option><option value="3">Março</option>
+              <option value="4">Abril</option><option value="5">Maio</option><option value="6">Junho</option>
+              <option value="7">Julho</option><option value="8">Agosto</option><option value="9">Setembro</option>
+              <option value="10">Outubro</option><option value="11">Novembro</option><option value="12">Dezembro</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;color:#666;">Ano:</span>
+            <select id="dre-ano" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+              <option value="2024">2024</option><option value="2025">2025</option>
+              <option value="2026" selected>2026</option><option value="2027">2027</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;color:#666;">Unidade:</span>
+            <select id="dre-unidade" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;min-width:180px;">
+              <option value="">Consolidado</option>
+            </select>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="carregarDre()">
+            <i class="fas fa-search"></i> Gerar DRE
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="window.print()">
+            <i class="fas fa-print"></i> Imprimir
+          </button>
+        </div>
+
+        <!-- ABAS -->
+        <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:2px solid #eee;">
+          <button id="dre-tab-btn-demonstrativo" class="dre-tab ativo" onclick="trocarAbaDre('demonstrativo')">
+            <i class="fas fa-table"></i> Demonstrativo
+          </button>
+          <button id="dre-tab-btn-bi" class="dre-tab" onclick="trocarAbaDre('bi')">
+            <i class="fas fa-chart-line"></i> Análise BI
+          </button>
+        </div>
+
+        <!-- ABA: DEMONSTRATIVO -->
+        <div id="dre-aba-demonstrativo">
+          <div id="dre-kpis" style="margin-bottom:16px;"></div>
+          <div id="dre-tabela"><p class="sem-dados">Selecione o período e clique em <strong>Gerar DRE</strong>.</p></div>
+        </div>
+
+        <!-- ABA: ANÁLISE BI -->
+        <div id="dre-aba-bi" style="display:none;">
+          <div class="dre-bi-grid">
+            <div class="dre-bi-card">
+              <h4 class="dre-bi-titulo"><i class="fas fa-water" style="color:#1a3a7a;"></i> Composição do Resultado</h4>
+              <canvas id="dre-chart-waterfall"></canvas>
+            </div>
+            <div class="dre-bi-card">
+              <h4 class="dre-bi-titulo"><i class="fas fa-chart-pie" style="color:#c0392b;"></i> Composição das Despesas</h4>
+              <canvas id="dre-chart-despesas"></canvas>
+            </div>
+            <div class="dre-bi-card dre-bi-full">
+              <h4 class="dre-bi-titulo"><i class="fas fa-chart-line" style="color:#1a7a3c;"></i> Evolução Mensal — Receita / Despesas / EBITDA</h4>
+              <canvas id="dre-chart-evolucao"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="pagina-configuracoes" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-hdd"></i> Backup</h2>
+        </div>
+
+        <!-- BACKUP E RESTAURAÇÃO -->
+        <div class="tabela-box">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <h3 style="margin:0;"><i class="fas fa-shield-alt" style="color:#27ae60;"></i> Backup e Restauração</h3>
+          </div>
+          <p style="font-size:13px;color:#666;margin:0 0 16px;">
+            Faça um backup completo antes de grandes importações. Se algo der errado, restaure com um clique.
+          </p>
+
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;">
+            <button class="btn btn-success" onclick="fazerBackup()" id="btn-fazer-backup">
+              <i class="fas fa-download"></i> Fazer Backup Agora
+            </button>
+            <div>
+              <input type="file" id="arquivo-backup" accept=".json" style="display:none" onchange="lerArquivoBackup(this)">
+              <button class="btn btn-outline" onclick="document.getElementById('arquivo-backup').click()" style="color:#e67e22;border-color:#e67e22;">
+                <i class="fas fa-upload"></i> Carregar Backup para Restaurar
+              </button>
+            </div>
+          </div>
+
+          <!-- Preview do backup carregado -->
+          <div id="backup-preview" style="display:none;background:#fff8e1;border:1px solid #f39c12;border-radius:10px;padding:16px;">
+            <div style="font-weight:700;font-size:14px;margin-bottom:12px;color:#b7770d;">
+              <i class="fas fa-exclamation-triangle"></i> Confirmar Restauração
+            </div>
+            <div id="backup-info" style="font-size:13px;color:#555;margin-bottom:14px;"></div>
+            <div style="background:#fef0ee;border:1px solid #e74c3c;border-radius:8px;padding:10px 14px;font-size:12px;color:#c0392b;margin-bottom:14px;">
+              <i class="fas fa-exclamation-circle"></i>
+              <strong>Atenção:</strong> A restauração apaga os dados atuais e os substitui pelos dados do backup.
+              Essa ação não pode ser desfeita. Certifique-se de ter feito um novo backup dos dados atuais antes de continuar.
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-danger" onclick="confirmarRestaurarBackup('lancamentos')" id="btn-restaurar-lanc">
+                <i class="fas fa-undo"></i> Restaurar só Lançamentos
+              </button>
+              <button class="btn btn-danger" onclick="confirmarRestaurarBackup('completo')" id="btn-restaurar-completo" style="background:#8e44ad;border-color:#8e44ad;">
+                <i class="fas fa-database"></i> Restauração Completa
+              </button>
+              <button class="btn btn-outline" onclick="document.getElementById('backup-preview').style.display='none'">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
+          <!-- Log de progresso -->
+          <div id="backup-log" style="display:none;margin-top:14px;background:#f8f9fa;border-radius:8px;padding:12px 14px;font-size:12px;color:#555;font-family:monospace;max-height:180px;overflow-y:auto;"></div>
+        </div>
+
+        <!-- REDEFINIR CONEXÃO SUPABASE -->
+        <div class="tabela-box" style="margin-top:24px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <h3 style="margin:0;"><i class="fas fa-plug" style="color:#3498db;"></i> Conexão com o Banco de Dados</h3>
+          </div>
+          <p style="font-size:13px;color:#666;margin:0 0 16px;">
+            Use esta opção apenas se precisar reconectar o sistema a um projeto Supabase diferente.
+          </p>
+          <button class="btn btn-outline" onclick="resetarConfig()" style="color:#e74c3c;border-color:#e74c3c;">
+            <i class="fas fa-unlink"></i> Redefinir Conexão Supabase
+          </button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ========== MODAL: NOVA CONTA A PAGAR ========== -->
+  <div id="modal-pagar" class="modal-fundo hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3><i class="fas fa-arrow-up"></i> Conta a Pagar</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-pagar')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="pagar-id" />
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:#f0f7ff; border:1px dashed #3498db; border-radius:8px; padding:10px 14px; margin-bottom:14px;">
+          <label for="pdf-pedido-input" class="btn btn-outline btn-sm" style="cursor:pointer; margin:0; white-space:nowrap;">
+            <i class="fas fa-file-pdf" style="color:#e74c3c;"></i> Inserir PDF
+          </label>
+          <input type="file" id="pdf-pedido-input" accept=".pdf" style="display:none" onchange="lerPedidoPDF(this)" />
+          <label for="foto-pedido-input" class="btn btn-outline btn-sm" style="cursor:pointer; margin:0; white-space:nowrap;">
+            <i class="fas fa-camera" style="color:#27ae60;"></i> Tirar Foto
+          </label>
+          <input type="file" id="foto-pedido-input" accept="image/*" capture="environment" style="display:none" onchange="lerFotoDocumento(this)" />
+          <span style="font-size:12px; color:#555;">PDF ou foto do pedido, boleto ou nota fiscal</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Descrição *</label>
+            <input type="text" id="pagar-descricao" placeholder="Ex: Aluguel de maio" />
+          </div>
+          <div class="form-group">
+            <label>Valor da Nota (R$) *</label>
+            <input type="text" inputmode="decimal" id="pagar-valor" class="input-moeda" placeholder="0,00"
+              oninput="calcularTotalLancamento('pagar')" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Acréscimo / Juros (R$)</label>
+            <input type="text" inputmode="decimal" id="pagar-acrescimo" class="input-moeda" placeholder="0,00"
+              oninput="calcularTotalLancamento('pagar')" />
+          </div>
+          <div class="form-group">
+            <label>Desconto (R$)</label>
+            <input type="text" inputmode="decimal" id="pagar-desconto" class="input-moeda" placeholder="0,00"
+              oninput="calcularTotalLancamento('pagar')" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Valor Total (R$)</label>
+          <input type="number" id="pagar-valor-total" class="input-valor-total" readonly placeholder="calculado automaticamente" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Vencimento *</label>
+            <input type="date" id="pagar-vencimento" />
+          </div>
+          <div class="form-group">
+            <label>Categoria</label>
+            <select id="pagar-plano-conta"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Fornecedor</label>
+          <select id="pagar-fornecedor"></select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Número do Pedido / NF</label>
+            <div id="pagar-nfs-container">
+              <div class="nf-linha">
+                <input type="text" id="pagar-numero-pedido" class="pagar-nf-input"
+                  placeholder="Ex: NF 00123" onblur="verificarDuplicadoPedido('pagar')" />
+                <button type="button" class="btn-nf-add" onclick="adicionarCampoNF()" title="Adicionar outra NF">
+                  <i class="fas fa-plus"></i>
+                </button>
+              </div>
+            </div>
+            <div id="aviso-duplicado-pagar" class="hidden"
+              style="margin-top:6px; padding:8px 12px; background:#fff3cd; border:1px solid #ffc107;
+                     border-radius:6px; font-size:13px; color:#856404;">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Unidade</label>
+            <select id="pagar-unidade"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Banco / Caixa</label>
+            <select id="pagar-banco"></select>
+          </div>
+          <div class="form-group">
+            <label>Centro de Custo</label>
+            <select id="pagar-centro-custo"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <select id="pagar-status">
+            <option value="pendente">Pendente</option>
+            <option value="pago">Pago</option>
+          </select>
+        </div>
+        <div class="form-group" id="grupo-data-pagamento-pagar" style="display:none">
+          <label>Data do Pagamento</label>
+          <input type="date" id="pagar-data-pagamento" />
+        </div>
+        <div class="form-group">
+          <label>Observações</label>
+          <textarea id="pagar-observacoes" rows="2" placeholder="Opcional..."></textarea>
+        </div>
+
+        <!-- Rateio -->
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="pagar-tem-rateio" onchange="toggleRateio('pagar')">
+            <span>Dividir esta conta entre categorias (Rateio)</span>
+          </label>
+        </div>
+        <div id="rateio-pagar-section" class="rateio-section hidden">
+          <div class="rateio-header">
+            <strong><i class="fas fa-code-branch"></i> Distribuição por Categoria</strong>
+            <button type="button" class="btn btn-sm btn-outline" onclick="adicionarLinhaRateio('pagar')">
+              <i class="fas fa-plus"></i> Adicionar linha
+            </button>
+          </div>
+          <div id="rateio-pagar-itens"></div>
+          <div class="rateio-total">
+            Total do rateio: <strong id="rateio-pagar-total">R$ 0,00</strong>
+            <span id="rateio-pagar-aviso" class="rateio-aviso hidden">⚠ Total diferente do valor da conta</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-pagar')">Cancelar</button>
+        <button class="btn btn-danger" onclick="salvarLancamento('pagar', this)">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: NOVA CONTA A RECEBER ========== -->
+  <div id="modal-receber" class="modal-fundo hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3><i class="fas fa-arrow-down"></i> Conta a Receber</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-receber')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="receber-id" />
+        <input type="hidden" id="receber-descricao" value="" />
+        <div class="form-row">
+          <div class="form-group">
+            <label>Unidade</label>
+            <select id="receber-unidade"></select>
+          </div>
+          <div class="form-group">
+            <label>Valor da Nota (R$) *</label>
+            <input type="text" inputmode="decimal" id="receber-valor" class="input-moeda" placeholder="0,00"
+              oninput="calcularTotalLancamento('receber')" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Acréscimo / Juros (R$)</label>
+            <input type="text" inputmode="decimal" id="receber-acrescimo" class="input-moeda" placeholder="0,00"
+              oninput="calcularTotalLancamento('receber')" />
+          </div>
+          <div class="form-group">
+            <label>Desconto (R$)</label>
+            <input type="text" inputmode="decimal" id="receber-desconto" class="input-moeda" placeholder="0,00"
+              oninput="calcularTotalLancamento('receber')" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Valor Total (R$)</label>
+          <input type="number" id="receber-valor-total" class="input-valor-total" readonly placeholder="calculado automaticamente" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Data Prevista *</label>
+            <input type="date" id="receber-vencimento" />
+          </div>
+          <div class="form-group">
+            <label>Categoria</label>
+            <select id="receber-plano-conta"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Banco / Caixa</label>
+          <select id="receber-banco"></select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Status</label>
+            <select id="receber-status">
+              <option value="pendente">Pendente</option>
+              <option value="pago">Recebido</option>
+            </select>
+          </div>
+          <div class="form-group" id="grupo-data-pagamento-receber" style="display:none">
+            <label>Data do Recebimento</label>
+            <input type="date" id="receber-data-pagamento" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Observações</label>
+          <textarea id="receber-observacoes" rows="2" placeholder="Opcional..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-receber')">Cancelar</button>
+        <button class="btn btn-success" onclick="salvarLancamento('receber', this)">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: PLANO DE CONTAS ========== -->
+  <div id="modal-plano-conta" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-sitemap"></i> Plano de Contas</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-plano-conta')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-plano-conta-id" />
+        <div class="form-group">
+          <label>Tipo *</label>
+          <select id="modal-plano-conta-tipo" onchange="atualizarModalNivel()">
+            <option value="pagar">Despesa</option>
+            <option value="receber">Receita</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Nível *</label>
+          <select id="modal-plano-conta-nivel" onchange="atualizarModalNivel()">
+            <option value="grupo">Grupo (ex: Custos Operacionais)</option>
+            <option value="sub">Subcategoria (ex: Fornecedores)</option>
+          </select>
+        </div>
+        <div class="form-group" id="modal-plano-conta-grupo-container" style="display:none">
+          <label>Grupo pai *</label>
+          <select id="modal-plano-conta-grupo"></select>
+        </div>
+        <div class="form-group">
+          <label>Nome *</label>
+          <input type="text" id="modal-plano-conta-nome" placeholder="Ex: Fornecedores - Alimentos" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-plano-conta')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarPlanoConta()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: FORNECEDOR ========== -->
+  <div id="modal-fornecedor" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-truck"></i> Fornecedor</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-fornecedor')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-fornecedor-id" />
+        <div class="form-group">
+          <label>Nome *</label>
+          <input type="text" id="modal-fornecedor-nome" placeholder="Ex: Distribuidora do João" />
+        </div>
+        <div class="form-group">
+          <label>CNPJ / CPF</label>
+          <input type="text" id="modal-fornecedor-cnpj" placeholder="Ex: 12.345.678/0001-90" />
+        </div>
+        <div class="form-group">
+          <label>Categoria Padrão de Despesa</label>
+          <select id="modal-fornecedor-plano-conta"></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-fornecedor')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarFornecedor()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: CENTRO DE CUSTO ========== -->
+  <div id="modal-centro-custo" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-building"></i> Centro de Custo</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-centro-custo')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-centro-custo-id" />
+        <div class="form-group">
+          <label>Nome *</label>
+          <input type="text" id="modal-centro-custo-nome" placeholder="Ex: Cozinha, Salão, Delivery" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-centro-custo')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarCentroCusto()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: FORMA DE PAGAMENTO ========== -->
+  <div id="modal-forma-pagamento" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-credit-card"></i> Forma de Pagamento</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-forma-pagamento')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-forma-pagamento-id" />
+        <div class="form-group">
+          <label>Nome *</label>
+          <input type="text" id="modal-forma-pagamento-nome" placeholder="Ex: PIX, Boleto, Dinheiro" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-forma-pagamento')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarFormaPagamento()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: BANCO ========== -->
+  <div id="modal-banco" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-university"></i> Banco</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-banco')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-banco-id" />
+        <div class="form-group">
+          <label>Nome do Banco *</label>
+          <input type="text" id="modal-banco-nome" placeholder="Ex: Bradesco, Itaú, Sicoob, Caixa..." />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Agência</label>
+            <input type="text" id="modal-banco-agencia" placeholder="Ex: 1234" />
+          </div>
+          <div class="form-group">
+            <label>Conta</label>
+            <input type="text" id="modal-banco-conta" placeholder="Ex: 12345-6" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tipo de Conta</label>
+            <select id="modal-banco-tipo">
+              <option value="corrente">Corrente</option>
+              <option value="poupanca">Poupança</option>
+              <option value="investimento">Investimento</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Saldo Inicial (R$)</label>
+            <input type="text" inputmode="decimal" id="modal-banco-saldo" class="input-moeda" placeholder="0,00" />
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-banco')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarBanco()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: UNIDADE ========== -->
+  <div id="modal-unidade" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-store"></i> Unidade</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-unidade')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-unidade-id" />
+        <div class="form-group">
+          <label>Nome da Unidade *</label>
+          <input type="text" id="modal-unidade-nome" placeholder="Ex: Matriz, Filial Centro, Loja Norte..." />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-unidade')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarUnidade()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: TRANSFERÊNCIA ========== -->
+  <div id="modal-transferencia" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-exchange-alt"></i> Transferência entre Contas</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-transferencia')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="modal-transf-id" />
+        <div class="form-row">
+          <div class="form-group">
+            <label>Conta de Origem *</label>
+            <select id="modal-transf-origem"></select>
+          </div>
+          <div class="form-group">
+            <label>Conta de Destino *</label>
+            <select id="modal-transf-destino"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Valor (R$) *</label>
+            <input type="text" inputmode="decimal" id="modal-transf-valor" class="input-moeda" placeholder="0,00" />
+          </div>
+          <div class="form-group">
+            <label>Data *</label>
+            <input type="date" id="modal-transf-data" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Descrição</label>
+          <input type="text" id="modal-transf-descricao" placeholder="Ex: Reforço de caixa" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-transferencia')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarTransferencia()">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: ALTERAR SENHA ========== -->
+  <!-- ========== MODAL: CONCILIAÇÃO MÚLTIPLA ========== -->
+  <div id="modal-conciliacao-multipla" class="modal-fundo hidden">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-layer-group"></i> Conciliar com Múltiplos Lançamentos</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-conciliacao-multipla')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div id="cm-info" style="background:#f8f9fa;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;"></div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap;">
+          <span style="font-weight:600;font-size:13px;">Selecione os lançamentos:</span>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
+            <label style="font-size:12px;color:#666;white-space:nowrap;">Filtrar por data:</label>
+            <input type="date" id="cm-filtro-data"
+              oninput="renderizarListaCM(this.value)"
+              style="padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+            <button onclick="document.getElementById('cm-filtro-data').value='';renderizarListaCM('')"
+              style="background:none;border:none;color:#999;cursor:pointer;font-size:14px;padding:2px 4px;" title="Limpar filtro">✕</button>
+          </div>
+        </div>
+        <div id="cm-lista" style="max-height:320px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:0 8px;"></div>
+        <div id="cm-total" style="margin-top:12px;padding:10px;background:#f8f9fa;border-radius:8px;font-size:13px;text-align:right;"></div>
+        <div id="cm-desconto-wrap" style="display:none;margin-top:10px;padding:10px 14px;background:#fff8e1;border:1px solid #f39c12;border-radius:8px;">
+          <div style="font-size:12px;color:#b7770d;margin-bottom:8px;font-weight:600;">
+            <i class="fas fa-exclamation-triangle"></i> Total maior que o extrato. Informe o desconto/ajuste para confirmar:
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">
+            <label style="font-size:13px;color:#555;">Desconto / Ajuste (R$):</label>
+            <input type="text" id="cm-desconto"
+              style="width:130px;padding:6px 10px;border:1px solid #f39c12;border-radius:6px;font-size:13px;text-align:right;"
+              placeholder="0,00"
+              oninput="atualizarTotalCM()">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-conciliacao-multipla')">Cancelar</button>
+        <button id="btn-confirmar-cm" class="btn btn-primary" onclick="confirmarConciliacaoMultipla()" disabled>
+          <i class="fas fa-check"></i> Confirmar Vínculo
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: DIVIDIR RECEITA POR UNIDADE ========== -->
+  <div id="modal-divisao-unidade" class="modal-fundo hidden">
+    <div class="modal" style="max-width:640px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-sitemap" style="color:#8e44ad;"></i> Dividir Receita por Unidade</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-divisao-unidade')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div id="du-info" style="background:#f8f9fa;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;"></div>
+        <div style="font-size:12px;color:#888;margin-bottom:10px;">
+          Defina quanto de cada receita pertence a cada unidade. O total deve ser igual ao valor do extrato.
+        </div>
+        <div style="display:flex;gap:8px;font-size:12px;font-weight:600;color:#555;margin-bottom:6px;padding:0 2px;">
+          <span style="flex:1.5;min-width:130px;">Unidade *</span>
+          <span style="flex:1.5;min-width:130px;">Categoria</span>
+          <span style="width:100px;text-align:right;">Valor *</span>
+          <span style="width:24px;"></span>
+        </div>
+        <div id="du-linhas"></div>
+        <button onclick="adicionarLinhaDivisao()" class="btn btn-outline btn-sm" style="margin-top:6px;">
+          <i class="fas fa-plus"></i> Adicionar unidade
+        </button>
+        <div id="du-total" style="margin-top:12px;padding:10px;background:#f8f9fa;border-radius:8px;font-size:13px;text-align:right;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-divisao-unidade')">Cancelar</button>
+        <button class="btn btn-primary" style="background:#8e44ad;border-color:#8e44ad;" onclick="confirmarDivisaoUnidade()">
+          <i class="fas fa-check"></i> Confirmar Divisão
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: REGISTRAR PAGAMENTO PARCIAL ========== -->
+  <div id="modal-registrar-pagamento" class="modal-fundo hidden">
+    <div class="modal modal-pequeno" style="max-width:480px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-money-bill-wave" style="color:#2980b9;"></i> Registrar Pagamento</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-registrar-pagamento')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div style="background:#f8f9fa;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:13px;">
+          <div style="font-weight:600;margin-bottom:8px;" id="rp-descricao"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
+            <div>
+              <div style="font-size:11px;color:#888;margin-bottom:2px;">Valor total</div>
+              <div style="font-weight:600;" id="rp-valor-total"></div>
+            </div>
+            <div>
+              <div style="font-size:11px;color:#888;margin-bottom:2px;">Já pago</div>
+              <div style="font-weight:600;color:#27ae60;" id="rp-valor-pago"></div>
+            </div>
+            <div>
+              <div style="font-size:11px;color:#888;margin-bottom:2px;">Saldo restante</div>
+              <div style="font-weight:600;color:#e67e22;" id="rp-restante"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Valor pago agora *</label>
+            <input type="text" id="rp-valor" class="input-moeda"
+              style="text-align:right;"
+              placeholder="0,00"
+              oninput="atualizarRegistroPagamento()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Data *</label>
+            <input type="date" id="rp-data" class="form-control">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Conta de pagamento *</label>
+          <select id="rp-banco" class="form-control" onchange="atualizarRegistroPagamento()">
+            <option value="">Selecione a conta...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Categoria (opcional)</label>
+          <select id="rp-plano-conta" class="form-control">
+            <option value="">Manter categoria atual</option>
+          </select>
+        </div>
+        <div id="rp-msg" style="margin-top:10px;font-size:12px;padding:8px 10px;border-radius:6px;background:#f8f9fa;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-registrar-pagamento')">Cancelar</button>
+        <button id="btn-confirmar-rp" class="btn btn-primary" style="background:#2980b9;border-color:#2980b9;" onclick="confirmarRegistroPagamento()">
+          <i class="fas fa-check"></i> Confirmar Pagamento
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: IMPORTAR EXCEL - CONTAS A PAGAR ========== -->
+  <div id="modal-importar-excel-pagar" class="modal-fundo hidden">
+    <div class="modal" style="max-width:900px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-file-excel" style="color:#217346;"></i> Importar Planilha — Contas a Pagar</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-importar-excel-pagar')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+          <span style="font-size:13px;color:#555;">Filtrar por vencimento:</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:12px;color:#888;">De:</span>
+            <input type="date" id="excel-filtro-de" value="2026-05-27" oninput="filtrarPreviewExcel()" style="padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:12px;color:#888;">Até:</span>
+            <input type="date" id="excel-filtro-ate" value="2026-05-30" oninput="filtrarPreviewExcel()" style="padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+          </div>
+          <button onclick="document.getElementById('excel-filtro-de').value='';document.getElementById('excel-filtro-ate').value='';filtrarPreviewExcel()" style="background:none;border:none;color:#999;cursor:pointer;font-size:13px;padding:2px 4px;">✕ Limpar</button>
+        </div>
+        <div id="excel-import-info" style="font-size:13px;margin-bottom:10px;padding:8px 12px;background:#f8f9fa;border-radius:6px;"></div>
+        <div style="overflow-x:auto;max-height:400px;overflow-y:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead style="position:sticky;top:0;background:#fff;z-index:1;">
+              <tr style="background:#f0f0f0;text-align:left;">
+                <th style="padding:8px 10px;white-space:nowrap;">Vencimento</th>
+                <th style="padding:8px 10px;">Descrição</th>
+                <th style="padding:8px 10px;">Fornecedor</th>
+                <th style="padding:8px 10px;">Categoria</th>
+                <th style="padding:8px 10px;text-align:right;">Valor</th>
+                <th style="padding:8px 10px;">Centro Custo</th>
+                <th style="padding:8px 10px;">Observação</th>
+              </tr>
+            </thead>
+            <tbody id="excel-preview-tbody"></tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:#aaa;margin-top:8px;">
+          <i class="fas fa-circle" style="color:#e74c3c;"></i> Categoria não encontrada — será importado sem categoria &nbsp;
+          <i class="fas fa-circle" style="color:#e67e22;"></i> Fornecedor/Centro Custo não encontrado — será importado sem vínculo
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-importar-excel-pagar')">Cancelar</button>
+        <button id="btn-confirmar-excel" class="btn btn-primary" style="background:#217346;border-color:#217346;" onclick="confirmarImportacaoExcelPagar()">
+          <i class="fas fa-file-excel"></i> Importar Agora
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: HISTÓRICO DE PAGAMENTOS ========== -->
+  <div id="modal-historico-pagamentos" class="modal-fundo hidden">
+    <div class="modal" style="max-width:680px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-receipt" style="color:#8e44ad;"></i> Histórico de Pagamentos</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-historico-pagamentos')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div style="background:#f8f9fa;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div style="font-weight:600;font-size:14px;" id="hp-descricao"></div>
+          <div style="font-size:13px;color:#555;">Valor total: <strong id="hp-valor-total"></strong></div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="background:#f0f0f0;text-align:left;">
+                <th style="padding:8px 10px;">Data</th>
+                <th style="padding:8px 10px;text-align:right;">Valor</th>
+                <th style="padding:8px 10px;">Conta</th>
+                <th style="padding:8px 10px;">Categoria</th>
+                <th style="padding:8px 10px;">Origem</th>
+              </tr>
+            </thead>
+            <tbody id="hp-tabela"></tbody>
+          </table>
+        </div>
+        <div id="hp-status" style="margin-top:12px;padding:10px 14px;background:#f8f9fa;border-radius:8px;font-size:13px;text-align:right;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-historico-pagamentos')">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: DAR BAIXA COM DESCONTO ========== -->
+  <div id="modal-baixa-desconto" class="modal-fundo hidden">
+    <div class="modal modal-pequeno" style="max-width:460px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-hand-holding-usd" style="color:#e67e22;"></i> Dar Baixa com Desconto</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-baixa-desconto')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div style="background:#f8f9fa;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:13px;">
+          <div style="font-weight:600;margin-bottom:8px;" id="bd-descricao"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
+            <div>
+              <div style="font-size:11px;color:#888;margin-bottom:2px;">Valor do pedido</div>
+              <div style="font-weight:600;" id="bd-valor-total"></div>
+            </div>
+            <div>
+              <div style="font-size:11px;color:#888;margin-bottom:2px;">Já pago (OFX)</div>
+              <div style="font-weight:600;color:#27ae60;" id="bd-valor-pago"></div>
+            </div>
+            <div>
+              <div style="font-size:11px;color:#888;margin-bottom:2px;">Saldo restante</div>
+              <div style="font-weight:600;color:#e67e22;" id="bd-restante"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Desconto / Ajuste (R$)</label>
+          <input type="text" id="bd-desconto" class="input-moeda"
+            style="text-align:right;"
+            placeholder="0,00"
+            oninput="atualizarBaixaDesconto()">
+          <div style="font-size:11px;color:#888;margin-top:4px;">Deixe igual ao saldo restante para encerrar a conta. Pode ser menor se houver novo pagamento parcial previsto.</div>
+        </div>
+        <div id="bd-msg" style="margin-top:10px;font-size:12px;padding:8px 10px;border-radius:6px;background:#f8f9fa;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-baixa-desconto')">Cancelar</button>
+        <button id="btn-confirmar-baixa" class="btn btn-primary" style="background:#e67e22;border-color:#e67e22;" onclick="confirmarBaixaDesconto()">
+          <i class="fas fa-check"></i> Confirmar Baixa
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: CONVIDAR FUNCIONÁRIO ========== -->
+  <div id="modal-convidar" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-user-plus"></i> Convidar Funcionário</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-convidar')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div class="form-group">
+          <label>Nome Completo *</label>
+          <input type="text" id="convidar-nome" placeholder="Ex: Maria da Silva" />
+        </div>
+        <div class="form-group">
+          <label>E-mail *</label>
+          <input type="email" id="convidar-email" placeholder="funcionario@email.com" />
+        </div>
+        <div class="form-group">
+          <label>Senha Inicial *</label>
+          <input type="password" id="convidar-senha" placeholder="Mínimo 6 caracteres" />
+        </div>
+        <div class="form-group">
+          <label>Confirmar Senha *</label>
+          <input type="password" id="convidar-confirmar-senha" placeholder="Repita a senha" />
+        </div>
+        <div class="info-box" style="margin-top:8px;">
+          <i class="fas fa-envelope"></i>
+          O funcionário receberá um e-mail para confirmar o acesso. Após confirmar, ele entra com a senha definida aqui e pode alterá-la depois.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-convidar')">Cancelar</button>
+        <button class="btn btn-primary" onclick="convidarFuncionario()">
+          <i class="fas fa-paper-plane"></i> Enviar Convite
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-alterar-senha" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-key"></i> Alterar Senha</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-alterar-senha')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div class="form-group">
+          <label>Nova Senha *</label>
+          <input type="password" id="nova-senha" placeholder="Mínimo 6 caracteres" />
+        </div>
+        <div class="form-group">
+          <label>Confirmar Nova Senha *</label>
+          <input type="password" id="confirmar-senha" placeholder="Repita a nova senha" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-alterar-senha')">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarAlteracaoSenha()">
+          <i class="fas fa-save"></i> Salvar Nova Senha
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: CONFIRMAR EXCLUSÃO ========== -->
+  <div id="modal-excluir" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-trash"></i> Confirmar Exclusão</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-excluir')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <p>Tem certeza que deseja excluir este registro?</p>
+        <p class="aviso-exclusao">Esta ação não pode ser desfeita.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-excluir')">Cancelar</button>
+        <button class="btn btn-danger" onclick="confirmarExclusao()">
+          <i class="fas fa-trash"></i> Excluir
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: PAGAR EM LOTE ========== -->
+  <div id="modal-pagar-lote" class="modal-fundo hidden">
+    <div class="modal modal-pequeno">
+      <div class="modal-header">
+        <h3><i class="fas fa-check-double"></i> Pagar Contas Selecionadas</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-pagar-lote')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <p style="margin-bottom:16px; color:#555;">
+          Marcando <strong id="lote-qtd">0</strong> conta(s) como <strong>Paga(s)</strong>.
+        </p>
+        <div class="form-group">
+          <label>Data do Pagamento *</label>
+          <input type="date" id="lote-data-pagamento" />
+        </div>
+        <div class="form-group">
+          <label>Banco / Caixa (opcional)</label>
+          <select id="lote-banco"></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-pagar-lote')">Cancelar</button>
+        <button class="btn btn-success" onclick="confirmarPagamentoLote()">
+          <i class="fas fa-check"></i> Confirmar Pagamento
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast de notificação -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="supabase.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
