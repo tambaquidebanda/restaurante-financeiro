@@ -3634,6 +3634,12 @@ function carregarArquivoImportar(input) {
   const file = input.files[0];
   if (!file) return;
 
+  if (!document.getElementById('banco-importar').value) {
+    mostrarToast('Selecione o banco antes de escolher o arquivo!', 'erro');
+    input.value = '';
+    return;
+  }
+
   document.getElementById('nome-arquivo-ofx').textContent = file.name;
   const ext = file.name.split('.').pop().toLowerCase();
 
@@ -4955,6 +4961,7 @@ async function importarTransacoes() {
   const bancoId      = document.getElementById('banco-importar').value || null;
   const selecionadas = transacoesOFX.filter(t => t.selecionado);
 
+  if (!bancoId) { mostrarToast('Selecione o banco antes de importar!', 'erro'); restaurarBtn(); return; }
   if (!selecionadas.length) { mostrarToast('Selecione ao menos uma transação!', 'erro'); restaurarBtn(); return; }
 
   try {
