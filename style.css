@@ -1187,6 +1187,8 @@ body {
   padding: 0;
 }
 .bi-pf-link:hover { color: #e74c3c; text-decoration: underline; }
+.bi-pf-link-limpar { color: #999; }
+.bi-pf-link-limpar:hover { color: #666; }
 
 /* Chips dentro dos dropdowns — tema claro */
 .bi-chips-row { display: grid; gap: 5px; }

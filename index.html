@@ -336,7 +336,10 @@
               <div class="bi-dd-panel">
                 <div class="bi-dd-panel-header">
                   <span class="bi-dd-panel-titulo">Meses</span>
-                  <button class="bi-pf-link" onclick="biToggleTodosMeses()">Todos</button>
+                  <div style="display:flex;gap:8px;">
+                    <button class="bi-pf-link" onclick="biToggleTodosMeses()">Todos</button>
+                    <button class="bi-pf-link bi-pf-link-limpar" onclick="biLimparMeses()">Limpar</button>
+                  </div>
                 </div>
                 <div class="bi-chips-row" id="bi-f-meses"></div>
               </div>
@@ -352,7 +355,10 @@
               <div class="bi-dd-panel">
                 <div class="bi-dd-panel-header">
                   <span class="bi-dd-panel-titulo">Unidades</span>
-                  <button class="bi-pf-link" onclick="biToggleTodasUnidades()">Todas</button>
+                  <div style="display:flex;gap:8px;">
+                    <button class="bi-pf-link" onclick="biToggleTodasUnidades()">Todas</button>
+                    <button class="bi-pf-link bi-pf-link-limpar" onclick="biLimparUnidades()">Limpar</button>
+                  </div>
                 </div>
                 <div class="bi-chips-row" id="bi-f-unidades"></div>
               </div>
@@ -368,7 +374,10 @@
               <div class="bi-dd-panel">
                 <div class="bi-dd-panel-header">
                   <span class="bi-dd-panel-titulo">Categorias</span>
-                  <button class="bi-pf-link" onclick="biToggleTodasCategorias()">Todas</button>
+                  <div style="display:flex;gap:8px;">
+                    <button class="bi-pf-link" onclick="biToggleTodasCategorias()">Todas</button>
+                    <button class="bi-pf-link bi-pf-link-limpar" onclick="biLimparCategorias()">Limpar</button>
+                  </div>
                 </div>
                 <div class="bi-chips-row" id="bi-f-grupos"></div>
               </div>
@@ -439,12 +448,14 @@
           </div>
         </div>
         <div class="filtros" style="flex-wrap:wrap; gap:8px;">
-          <select id="filtro-status-pagar">
-            <option value="">Todos os status</option>
-            <option value="pendente">Pendente</option>
-            <option value="pago">Pago</option>
-            <option value="vencido">Vencido</option>
-          </select>
+          <div class="filtro-banco-wrapper">
+            <button type="button" class="filtro-banco-btn" id="filtro-status-btn-pagar" onclick="toggleFiltroMulti('pagar','status')">
+              <i class="fas fa-tag"></i>
+              <span id="filtro-status-label-pagar">Todos os status</span>
+              <i class="fas fa-chevron-down" style="font-size:10px;color:#aaa;margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-status-dropdown-pagar" style="display:none;"></div>
+          </div>
           <div style="display:flex; align-items:center; gap:5px;">
             <select id="filtro-tipo-data-pagar" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;color:#555;">
               <option value="vencimento">Vencimento</option>
@@ -455,12 +466,22 @@
             <span style="font-size:13px; color:#666; white-space:nowrap;">Até:</span>
             <input type="date" id="filtro-ate-pagar" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
           </div>
-          <select id="filtro-fornecedor-pagar">
-            <option value="">Todos os fornecedores</option>
-          </select>
-          <select id="filtro-grupo-pagar">
-            <option value="">Todos os grupos</option>
-          </select>
+          <div class="filtro-banco-wrapper">
+            <button type="button" class="filtro-banco-btn" id="filtro-fornecedor-btn-pagar" onclick="toggleFiltroMulti('pagar','fornecedor')">
+              <i class="fas fa-truck"></i>
+              <span id="filtro-fornecedor-label-pagar">Todos os fornecedores</span>
+              <i class="fas fa-chevron-down" style="font-size:10px;color:#aaa;margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-fornecedor-dropdown-pagar" style="display:none;"></div>
+          </div>
+          <div class="filtro-banco-wrapper">
+            <button type="button" class="filtro-banco-btn" id="filtro-grupo-btn-pagar" onclick="toggleFiltroMulti('pagar','grupo')">
+              <i class="fas fa-layer-group"></i>
+              <span id="filtro-grupo-label-pagar">Todos os grupos</span>
+              <i class="fas fa-chevron-down" style="font-size:10px;color:#aaa;margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-grupo-dropdown-pagar" style="display:none;"></div>
+          </div>
           <div class="filtro-banco-wrapper" id="filtro-banco-wrapper-pagar">
             <button type="button" class="filtro-banco-btn" id="filtro-banco-btn-pagar" onclick="toggleFiltrosBancos('pagar')">
               <i class="fas fa-university"></i>
@@ -528,24 +549,36 @@
           </button>
         </div>
         <div class="filtros" style="flex-wrap:wrap; gap:8px;">
-          <select id="filtro-status-receber">
-            <option value="">Todos os status</option>
-            <option value="pendente">Pendente</option>
-            <option value="pago">Recebido</option>
-            <option value="vencido">Vencido</option>
-          </select>
+          <div class="filtro-banco-wrapper">
+            <button type="button" class="filtro-banco-btn" id="filtro-status-btn-receber" onclick="toggleFiltroMulti('receber','status')">
+              <i class="fas fa-tag"></i>
+              <span id="filtro-status-label-receber">Todos os status</span>
+              <i class="fas fa-chevron-down" style="font-size:10px;color:#aaa;margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-status-dropdown-receber" style="display:none;"></div>
+          </div>
           <div style="display:flex; align-items:center; gap:5px;">
             <span style="font-size:13px; color:#666; white-space:nowrap;">De:</span>
             <input type="date" id="filtro-de-receber" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
             <span style="font-size:13px; color:#666; white-space:nowrap;">Até:</span>
             <input type="date" id="filtro-ate-receber" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px;" />
           </div>
-          <select id="filtro-fornecedor-receber">
-            <option value="">Todos os fornecedores</option>
-          </select>
-          <select id="filtro-grupo-receber">
-            <option value="">Todos os grupos</option>
-          </select>
+          <div class="filtro-banco-wrapper">
+            <button type="button" class="filtro-banco-btn" id="filtro-fornecedor-btn-receber" onclick="toggleFiltroMulti('receber','fornecedor')">
+              <i class="fas fa-truck"></i>
+              <span id="filtro-fornecedor-label-receber">Todos os fornecedores</span>
+              <i class="fas fa-chevron-down" style="font-size:10px;color:#aaa;margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-fornecedor-dropdown-receber" style="display:none;"></div>
+          </div>
+          <div class="filtro-banco-wrapper">
+            <button type="button" class="filtro-banco-btn" id="filtro-grupo-btn-receber" onclick="toggleFiltroMulti('receber','grupo')">
+              <i class="fas fa-layer-group"></i>
+              <span id="filtro-grupo-label-receber">Todos os grupos</span>
+              <i class="fas fa-chevron-down" style="font-size:10px;color:#aaa;margin-left:2px;"></i>
+            </button>
+            <div class="filtro-banco-dropdown" id="filtro-grupo-dropdown-receber" style="display:none;"></div>
+          </div>
           <div class="filtro-banco-wrapper" id="filtro-banco-wrapper-receber">
             <button type="button" class="filtro-banco-btn" id="filtro-banco-btn-receber" onclick="toggleFiltrosBancos('receber')">
               <i class="fas fa-university"></i>
@@ -585,6 +618,7 @@
                 <th class="th-sort" onclick="ordenarTabela('receber','unidade')">Unidade <span class="sort-icon" id="sort-receber-unidade"></span></th>
                 <th class="th-sort" onclick="ordenarTabela('receber','descricao')">Descrição <span class="sort-icon" id="sort-receber-descricao"></span></th>
                 <th class="th-sort" onclick="ordenarTabela('receber','categoria')">Categoria <span class="sort-icon" id="sort-receber-categoria"></span></th>
+                <th class="th-sort" onclick="ordenarTabela('receber','banco')">Banco <span class="sort-icon" id="sort-receber-banco"></span></th>
                 <th class="th-sort" onclick="ordenarTabela('receber','vencimento')">Vencimento <span class="sort-icon" id="sort-receber-vencimento">▲</span></th>
                 <th class="th-sort" onclick="ordenarTabela('receber','valor')">Valor Total <span class="sort-icon" id="sort-receber-valor">▲</span></th>
                 <th class="th-sort" onclick="ordenarTabela('receber','status')">Status <span class="sort-icon" id="sort-receber-status"></span></th>
@@ -592,7 +626,7 @@
               </tr>
             </thead>
             <tbody id="tbody-receber">
-              <tr><td colspan="6" class="sem-dados">Nenhuma entrada encontrada.</td></tr>
+              <tr><td colspan="8" class="sem-dados">Nenhuma entrada encontrada.</td></tr>
             </tbody>
           </table>
         </div>

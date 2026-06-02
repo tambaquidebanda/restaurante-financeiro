@@ -156,15 +156,25 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Ao voltar para a aba/app, força renovação do token
+  // Ao voltar para a aba/app, verifica sessão sem forçar refresh desnecessário
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState !== 'visible') return;
     if (document.getElementById('app')?.classList.contains('hidden')) return;
     try {
-      const { data: { session } } = await obterSupabase().auth.refreshSession();
+      const { data: { session } } = await obterSupabase().auth.getSession();
       if (!session) {
         mostrarToast('Sessão expirada. Faça login novamente.', 'erro');
         setTimeout(() => mostrarTela('login'), 1500);
+        return;
+      }
+      // Só renova se o token já expirou — o SDK cuida do refresh automático
+      const agora = Math.floor(Date.now() / 1000);
+      if (session.expires_at < agora) {
+        const { data: { session: s2 } } = await obterSupabase().auth.refreshSession();
+        if (!s2) {
+          mostrarToast('Sessão expirada. Faça login novamente.', 'erro');
+          setTimeout(() => mostrarTela('login'), 1500);
+        }
       }
     } catch (e) {}
   });
@@ -198,15 +208,15 @@ async function garantirSessao() {
     const timeout8s = ms => new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms));
     const { data: { session } } = await Promise.race([db.auth.getSession(), timeout8s(8000)]);
     if (session) {
-      // Renova preventivamente se faltar menos de 5 minutos para expirar
       const agora = Math.floor(Date.now() / 1000);
-      if (session.expires_at > agora + 300) return true;
+      // Token ainda válido — SDK renova automaticamente em background
+      if (session.expires_at > agora) return true;
+      // Token já expirou — tenta renovar agora
+      const { data: { session: s2 } } = await Promise.race([db.auth.refreshSession(), timeout8s(8000)]);
+      if (s2) return true;
     }
-    // Sessão expirada ou próxima do fim — tenta renovar
-    const { data: { session: s2 } } = await Promise.race([db.auth.refreshSession(), timeout8s(8000)]);
-    if (s2) return true;
   } catch (e) {}
-  mostrarToast('Sua sessão expirou. Fazendo login novamente...', 'erro');
+  mostrarToast('Sua sessão expirou. Faça login novamente.', 'erro');
   setTimeout(() => mostrarTela('login'), 1500);
   return false;
 }
@@ -993,6 +1003,7 @@ const _BI_MESES_ABREV = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','
 function _biAtualizarLabelPeriodo() {
   const el = document.getElementById('bi-dd-periodo-val');
   if (!el) return;
+  if (_biFiltros.meses.size === 0)  { el.textContent = 'Nenhum'; return; }
   if (_biFiltros.meses.size === 12) { el.textContent = 'Todos os meses'; return; }
   const nomes = [..._biFiltros.meses].sort((a,b)=>a-b).map(m => _BI_MESES_ABREV[m-1]);
   el.textContent = nomes.length <= 3 ? nomes.join(', ') : nomes.slice(0,3).join(', ') + ` +${nomes.length-3}`;
@@ -1060,6 +1071,26 @@ function biToggleGrupo(id, btn) {
 function biToggleTodasCategorias() {
   _biFiltros.excGrupos.clear();
   document.querySelectorAll('#bi-f-grupos .bi-chip').forEach(b => b.classList.add('ativo'));
+  _biAtualizarLabelCategoria();
+  _biDebounce();
+}
+function biLimparMeses() {
+  _biFiltros.meses.clear();
+  document.querySelectorAll('#bi-f-meses .bi-chip').forEach(b => b.classList.remove('ativo'));
+  _biAtualizarLabelPeriodo();
+  _biDebounce();
+}
+function biLimparUnidades() {
+  const todos = [...document.querySelectorAll('#bi-f-unidades .bi-chip')].map(b => b.dataset.id);
+  _biFiltros.excUnidades = new Set(todos);
+  document.querySelectorAll('#bi-f-unidades .bi-chip').forEach(b => b.classList.remove('ativo'));
+  _biAtualizarLabelUnidade();
+  _biDebounce();
+}
+function biLimparCategorias() {
+  const todos = [...document.querySelectorAll('#bi-f-grupos .bi-chip')].map(b => b.dataset.id);
+  _biFiltros.excGrupos = new Set(todos);
+  document.querySelectorAll('#bi-f-grupos .bi-chip').forEach(b => b.classList.remove('ativo'));
   _biAtualizarLabelCategoria();
   _biDebounce();
 }
@@ -1206,19 +1237,19 @@ function _biGraficoOrcadoRealizado(m) {
 function _biG(id, tipo, data, extra={}) {
   const ctx=document.getElementById(id); if(!ctx) return;
   if(_biCharts[id]) _biCharts[id].destroy();
-  const tickColor = 'rgba(255,255,255,.6)';
-  const gridColor = 'rgba(255,255,255,.07)';
-  const darkScale = (cb) => ({ ticks:{ color:tickColor, callback:cb }, grid:{ color:gridColor } });
+  const gridColor = 'rgba(0,0,0,.06)';
+  const tickColor = '#999';
+  const lightScale = (cb) => ({ ticks:{ color:tickColor, callback:cb }, grid:{ color:gridColor } });
   const cbY = extra?.scales?.y?.ticks?.callback;
   const cbX = extra?.scales?.x?.ticks?.callback;
   const scales = extra.indexAxis === 'y'
-    ? { x:{ ...darkScale(cbX) }, y:{ ...darkScale(cbY), ticks:{ color:tickColor } } }
-    : { x:{ ...darkScale(cbX) }, y:{ ...darkScale(cbY) } };
+    ? { x:{ ...lightScale(cbX) }, y:{ ...lightScale(cbY), ticks:{ color:tickColor } } }
+    : { x:{ ...lightScale(cbX) }, y:{ ...lightScale(cbY) } };
   const { scales:_, ...extraRest } = extra;
   _biCharts[id]=new Chart(ctx,{type:tipo,data,options:{
     responsive:true, animation:{duration:250},
     plugins:{
-      legend:{ position:'top', labels:{ color:'rgba(255,255,255,.8)', font:{size:11} } },
+      legend:{ position:'top', labels:{ color:'#444', font:{size:11} } },
       tooltip:{ callbacks:{ label:c=>` ${formatarMoeda(c.raw)}` } }
     },
     scales,
@@ -1648,23 +1679,37 @@ async function renderizarSaldosBancos() {
 // LANÇAMENTOS
 // =========================================================
 function preencherFiltrosLancamentos(tipo) {
-  const elForn = document.getElementById(`filtro-fornecedor-${tipo}`);
-  if (elForn) {
-    const atual = elForn.value;
-    elForn.innerHTML = '<option value="">Todos os fornecedores</option>' +
-      fornecedores.map(f => `<option value="${f.id}">${f.nome}</option>`).join('');
-    elForn.value = atual;
+  // Status dropdown
+  const elStatusDropdown = document.getElementById(`filtro-status-dropdown-${tipo}`);
+  if (elStatusDropdown && !elStatusDropdown.innerHTML) {
+    const statusOpcoes = tipo === 'receber'
+      ? [{ value: 'pendente', label: 'Pendente' }, { value: 'pago', label: 'Recebido' }, { value: 'vencido', label: 'Vencido' }]
+      : [{ value: 'pendente', label: 'Pendente' }, { value: 'pago', label: 'Pago'     }, { value: 'vencido', label: 'Vencido' }];
+    elStatusDropdown.innerHTML = statusOpcoes.map(s =>
+      `<label><input type="checkbox" value="${s.value}" onchange="atualizarLabelStatus('${tipo}')"> ${s.label}</label>`
+    ).join('');
   }
 
-  const elGrupo = document.getElementById(`filtro-grupo-${tipo}`);
-  if (elGrupo) {
-    const atual  = elGrupo.value;
+  // Fornecedor dropdown
+  const elFornDropdown = document.getElementById(`filtro-fornecedor-dropdown-${tipo}`);
+  if (elFornDropdown) {
+    const marcados = obterSelecionadosMulti(tipo, 'fornecedor');
+    elFornDropdown.innerHTML = fornecedores.map(f =>
+      `<label><input type="checkbox" value="${f.id}" onchange="atualizarLabelFornecedor('${tipo}')"${marcados.includes(f.id) ? ' checked' : ''}> ${f.nome}</label>`
+    ).join('');
+  }
+
+  // Grupo dropdown
+  const elGrupoDropdown = document.getElementById(`filtro-grupo-dropdown-${tipo}`);
+  if (elGrupoDropdown) {
+    const marcados = obterSelecionadosMulti(tipo, 'grupo');
     const grupos = planoContas.filter(p => !p.grupo_id && p.tipo === tipo);
-    elGrupo.innerHTML = '<option value="">Todos os grupos</option>' +
-      grupos.map(g => `<option value="${g.id}">${g.nome}</option>`).join('');
-    elGrupo.value = atual;
+    elGrupoDropdown.innerHTML = grupos.map(g =>
+      `<label><input type="checkbox" value="${g.id}" onchange="atualizarLabelGrupo('${tipo}')"${marcados.includes(g.id) ? ' checked' : ''}> ${g.nome}</label>`
+    ).join('');
   }
 
+  // Banco dropdown
   const elDropdown = document.getElementById(`filtro-banco-dropdown-${tipo}`);
   if (elDropdown && bancosCadastrados.length) {
     const marcados = obterBancosSelecionados(tipo);
@@ -1680,6 +1725,60 @@ function toggleFiltrosBancos(tipo) {
   const aberto = dropdown.style.display !== 'none';
   document.querySelectorAll('.filtro-banco-dropdown').forEach(d => d.style.display = 'none');
   if (!aberto) dropdown.style.display = 'block';
+}
+
+function toggleFiltroMulti(tipo, campo) {
+  const dropdown = document.getElementById(`filtro-${campo}-dropdown-${tipo}`);
+  if (!dropdown) return;
+  const aberto = dropdown.style.display !== 'none';
+  document.querySelectorAll('.filtro-banco-dropdown').forEach(d => d.style.display = 'none');
+  if (!aberto) dropdown.style.display = 'block';
+}
+
+function obterSelecionadosMulti(tipo, campo) {
+  const dropdown = document.getElementById(`filtro-${campo}-dropdown-${tipo}`);
+  if (!dropdown) return [];
+  return Array.from(dropdown.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
+}
+
+function atualizarLabelStatus(tipo) {
+  const selecionados = obterSelecionadosMulti(tipo, 'status');
+  const label = document.getElementById(`filtro-status-label-${tipo}`);
+  const btn   = document.getElementById(`filtro-status-btn-${tipo}`);
+  if (!label || !btn) return;
+  const nomes = tipo === 'receber'
+    ? { pendente: 'Pendente', pago: 'Recebido', vencido: 'Vencido' }
+    : { pendente: 'Pendente', pago: 'Pago',     vencido: 'Vencido' };
+  if (!selecionados.length) { label.textContent = 'Todos os status'; btn.classList.remove('ativo'); }
+  else if (selecionados.length === 1) { label.textContent = nomes[selecionados[0]] || selecionados[0]; btn.classList.add('ativo'); }
+  else { label.textContent = `${selecionados.length} status`; btn.classList.add('ativo'); }
+}
+
+function atualizarLabelFornecedor(tipo) {
+  const selecionados = obterSelecionadosMulti(tipo, 'fornecedor');
+  const label = document.getElementById(`filtro-fornecedor-label-${tipo}`);
+  const btn   = document.getElementById(`filtro-fornecedor-btn-${tipo}`);
+  if (!label || !btn) return;
+  if (!selecionados.length) { label.textContent = 'Todos os fornecedores'; btn.classList.remove('ativo'); }
+  else if (selecionados.length === 1) {
+    const f = fornecedores.find(x => x.id === selecionados[0]);
+    label.textContent = f ? f.nome : '1 fornecedor';
+    btn.classList.add('ativo');
+  } else { label.textContent = `${selecionados.length} fornecedores`; btn.classList.add('ativo'); }
+}
+
+function atualizarLabelGrupo(tipo) {
+  const selecionados = obterSelecionadosMulti(tipo, 'grupo');
+  const label = document.getElementById(`filtro-grupo-label-${tipo}`);
+  const btn   = document.getElementById(`filtro-grupo-btn-${tipo}`);
+  if (!label || !btn) return;
+  const grupos = planoContas.filter(p => !p.grupo_id);
+  if (!selecionados.length) { label.textContent = 'Todos os grupos'; btn.classList.remove('ativo'); }
+  else if (selecionados.length === 1) {
+    const g = grupos.find(x => x.id === selecionados[0]);
+    label.textContent = g ? g.nome : '1 grupo';
+    btn.classList.add('ativo');
+  } else { label.textContent = `${selecionados.length} grupos`; btn.classList.add('ativo'); }
 }
 
 function obterBancosSelecionados(tipo) {
@@ -1708,8 +1807,16 @@ function atualizarLabelBancos(tipo) {
 
 
 function limparFiltros(tipo) {
-  const ids = [`filtro-status-${tipo}`, `filtro-fornecedor-${tipo}`, `filtro-grupo-${tipo}`];
-  ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  // Limpa todos os dropdowns multi-seleção
+  ['status', 'fornecedor', 'grupo', 'banco'].forEach(campo => {
+    const dropdown = document.getElementById(`filtro-${campo}-dropdown-${tipo}`);
+    if (dropdown) dropdown.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+  });
+  atualizarLabelStatus(tipo);
+  atualizarLabelFornecedor(tipo);
+  atualizarLabelGrupo(tipo);
+  atualizarLabelBancos(tipo);
+
   const hoje   = new Date();
   const ano    = hoje.getFullYear();
   const mes    = String(hoje.getMonth() + 1).padStart(2, '0');
@@ -1720,37 +1827,34 @@ function limparFiltros(tipo) {
   if (elAte) elAte.value = ultimo;
   const elTipoData = document.getElementById(`filtro-tipo-data-${tipo}`);
   if (elTipoData) elTipoData.value = 'vencimento';
-  const dropdown = document.getElementById(`filtro-banco-dropdown-${tipo}`);
-  if (dropdown) dropdown.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
-  atualizarLabelBancos(tipo);
   carregarLancamentos(tipo);
 }
 
 async function carregarLancamentos(tipo) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
-  const statusFiltro  = document.getElementById(`filtro-status-${tipo}`)?.value;
-  const deFiltro      = document.getElementById(`filtro-de-${tipo}`)?.value;
-  const ateFiltro     = document.getElementById(`filtro-ate-${tipo}`)?.value;
-  const campoData     = document.getElementById(`filtro-tipo-data-${tipo}`)?.value || 'vencimento';
-  const fornFiltro    = document.getElementById(`filtro-fornecedor-${tipo}`)?.value;
-  const grupoFiltro   = document.getElementById(`filtro-grupo-${tipo}`)?.value;
-  const bancosFiltro  = obterBancosSelecionados(tipo);
+  const statusFiltros  = obterSelecionadosMulti(tipo, 'status');
+  const deFiltro       = document.getElementById(`filtro-de-${tipo}`)?.value;
+  const ateFiltro      = document.getElementById(`filtro-ate-${tipo}`)?.value;
+  const campoData      = document.getElementById(`filtro-tipo-data-${tipo}`)?.value || 'vencimento';
+  const fornFiltros    = obterSelecionadosMulti(tipo, 'fornecedor');
+  const grupoFiltros   = obterSelecionadosMulti(tipo, 'grupo');
+  const bancosFiltro   = obterBancosSelecionados(tipo);
 
   let query = db.from('lancamentos')
     .select('*, plano_contas(nome, grupo_id), bancos(nome), fornecedores(nome), unidades(nome)')
     .eq('tipo', tipo)
     .order('vencimento', { ascending: true });
 
-  if (statusFiltro) query = query.eq('status', statusFiltro);
+  if (statusFiltros.length) query = query.in('status', statusFiltros);
 
   if (deFiltro)  query = query.gte(campoData, deFiltro);
   if (ateFiltro) query = query.lte(campoData, ateFiltro);
 
-  if (fornFiltro) query = query.eq('fornecedor_id', fornFiltro);
+  if (fornFiltros.length) query = query.in('fornecedor_id', fornFiltros);
 
-  if (grupoFiltro) {
-    const subcatIds = planoContas.filter(p => p.grupo_id === grupoFiltro).map(p => p.id);
+  if (grupoFiltros.length) {
+    const subcatIds = planoContas.filter(p => grupoFiltros.includes(p.grupo_id)).map(p => p.id);
     if (subcatIds.length) query = query.in('plano_conta_id', subcatIds);
     else query = query.eq('plano_conta_id', 'nenhum');
   }
@@ -1766,12 +1870,12 @@ async function carregarLancamentos(tipo) {
         .select('valor, status, vencimento')
         .eq('tipo', tipo)
         .range(pagina * PAGE, (pagina + 1) * PAGE - 1);
-      if (statusFiltro) q2 = q2.eq('status', statusFiltro);
-      if (deFiltro)     q2 = q2.gte(campoData, deFiltro);
-      if (ateFiltro)    q2 = q2.lte(campoData, ateFiltro);
-      if (fornFiltro)   q2 = q2.eq('fornecedor_id', fornFiltro);
-      if (grupoFiltro) {
-        const sc = planoContas.filter(p => p.grupo_id === grupoFiltro).map(p => p.id);
+      if (statusFiltros.length) q2 = q2.in('status', statusFiltros);
+      if (deFiltro)             q2 = q2.gte(campoData, deFiltro);
+      if (ateFiltro)            q2 = q2.lte(campoData, ateFiltro);
+      if (fornFiltros.length)   q2 = q2.in('fornecedor_id', fornFiltros);
+      if (grupoFiltros.length) {
+        const sc = planoContas.filter(p => grupoFiltros.includes(p.grupo_id)).map(p => p.id);
         if (sc.length) q2 = q2.in('plano_conta_id', sc);
         else q2 = q2.eq('plano_conta_id', 'nenhum');
       }
@@ -1786,7 +1890,7 @@ async function carregarLancamentos(tipo) {
   }
 
   const tbody   = document.getElementById(`tbody-${tipo}`);
-  const colspan = tipo === 'pagar' ? '8' : '6';
+  const colspan = '8';
   if (tbody) tbody.innerHTML = `<tr><td colspan="${colspan}" class="sem-dados"><i class="fas fa-spinner fa-spin" style="margin-right:6px;color:#c0392b;"></i>Carregando...</td></tr>`;
 
   let data, error, todosParaTotais;
@@ -1853,7 +1957,7 @@ async function carregarLancamentos(tipo) {
 function renderizarLinhasLancamentos(tipo, lancamentos) {
   const hoje   = new Date().toISOString().split('T')[0];
   const tbody  = document.getElementById(`tbody-${tipo}`);
-  const colspan = tipo === 'pagar' ? '8' : '7';
+  const colspan = '8';
   const labelPagar = tipo === 'pagar' ? 'Pago' : 'Recebido';
   if (!tbody) return;
 
@@ -1877,6 +1981,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
     else if (col === 'unidade') { va = (a.unidades?.nome || '').toLowerCase(); vb = (b.unidades?.nome || '').toLowerCase(); }
     else if (col === 'descricao') { va = (a.descricao || '').toLowerCase(); vb = (b.descricao || '').toLowerCase(); }
     else if (col === 'categoria') { va = (a.plano_contas?.nome || '').toLowerCase(); vb = (b.plano_contas?.nome || '').toLowerCase(); }
+    else if (col === 'banco') { va = (a.bancos?.nome || '').toLowerCase(); vb = (b.bancos?.nome || '').toLowerCase(); }
     else if (col === 'vencimento') { va = a.vencimento || ''; vb = b.vencimento || ''; }
     else if (col === 'valor') { va = Number(a.valor); vb = Number(b.valor); }
     else if (col === 'status') { va = a.status || ''; vb = b.status || ''; }
@@ -1927,9 +2032,10 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
         <div class="desc-principal">${l.descricao}</div>
         ${subInfos.map(s => `<div class="desc-sub">${s}</div>`).join('')}
       </td>`;
-    const fornCell = `<td style="font-size:13px;color:#555;">${l.fornecedores?.nome || '-'}</td>`;
-    const uniCell  = `<td style="font-size:13px;color:#555;">${l.unidades?.nome || '-'}</td>`;
-    const catCell  = `<td>${l.plano_contas?.nome || (l.tem_rateio ? '<em style="color:#2980b9">Rateio</em>' : '-')}</td>`;
+    const fornCell  = `<td style="font-size:13px;color:#555;">${l.fornecedores?.nome || '-'}</td>`;
+    const uniCell   = `<td style="font-size:13px;color:#555;">${l.unidades?.nome || '-'}</td>`;
+    const bancoCell = `<td style="font-size:13px;color:#555;">${l.bancos?.nome || '-'}</td>`;
+    const catCell   = `<td>${l.plano_contas?.nome || (l.tem_rateio ? '<em style="color:#2980b9">Rateio</em>' : '-')}</td>`;
     const datCell  = `<td>${formatarData(l.vencimento)}</td>`;
     const valCell  = `<td style="white-space:nowrap;"><strong>${formatarMoeda(l.valor)}</strong></td>`;
     const stCell   = `<td><span class="badge badge-${statusReal}">${badgeTexto}</span></td>`;
@@ -1942,7 +2048,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
         ${fornCell}${descCell}${catCell}${datCell}${valCell}${stCell}${actCell}
       </tr>`;
     } else {
-      return `<tr>${uniCell}${descCell}${catCell}${datCell}${valCell}${stCell}${actCell}</tr>`;
+      return `<tr>${uniCell}${descCell}${catCell}${bancoCell}${datCell}${valCell}${stCell}${actCell}</tr>`;
     }
   }).join('');
 
@@ -1959,7 +2065,7 @@ function ordenarTabela(tipo, col) {
   }
 
   // Atualiza ícones
-  ['fornecedor','unidade','descricao','categoria','vencimento','valor','status'].forEach(c => {
+  ['fornecedor','unidade','descricao','categoria','banco','vencimento','valor','status'].forEach(c => {
     const el = document.getElementById(`sort-${tipo}-${c}`);
     if (el) el.textContent = '';
   });
@@ -3698,7 +3804,7 @@ async function verificarDuplicatas(transacoes) {
     const minData = semMatch.reduce((min, t) => t.data < min ? t.data : min, '9999-12-31');
     const maxData = semMatch.reduce((max, t) => t.data > max ? t.data : max, '0000-01-01');
     const { data: pagos } = await db.from('lancamentos')
-      .select('id, valor, data_pagamento, tipo')
+      .select('id, valor, valor_pago, data_pagamento, tipo')
       .eq('status', 'pago')
       .eq('banco_id', bancoId)
       .gte('data_pagamento', minData)
@@ -3711,7 +3817,8 @@ async function verificarDuplicatas(transacoes) {
         const match = pagos.find(p =>
           !usados.has(p.id) &&
           p.tipo === t.tipo &&
-          Math.abs(Number(p.valor) - t.valor) < 0.01 &&
+          (Math.abs(Number(p.valor) - t.valor) < 0.01 ||
+           Math.abs(Number(p.valor_pago || p.valor) - t.valor) < 0.01) &&
           (p.data_pagamento || '').substring(0, 10) === t.data
         );
         if (match) {
@@ -4105,7 +4212,32 @@ async function confirmarImportacaoExcelPagar() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Importando...'; }
   try {
     const db = obterSupabase();
-    const registros = linhas.map(l => ({
+
+    // Verifica duplicatas: busca lançamentos já existentes no mesmo período
+    const minData = linhas.reduce((min, l) => l.vencimento < min ? l.vencimento : min, '9999-12-31');
+    const maxData = linhas.reduce((max, l) => l.vencimento > max ? l.vencimento : max, '0000-01-01');
+    const { data: jaExistem } = await db.from('lancamentos')
+      .select('descricao, vencimento, valor')
+      .eq('tipo', 'pagar')
+      .gte('vencimento', minData)
+      .lte('vencimento', maxData);
+
+    const chaves = new Set((jaExistem || []).map(l =>
+      `${(l.descricao || '').trim().toLowerCase()}|${l.vencimento}|${Number(l.valor).toFixed(2)}`
+    ));
+
+    const linhasNovas = linhas.filter(l =>
+      !chaves.has(`${(l.descricao || '').trim().toLowerCase()}|${l.vencimento}|${Number(l.valor).toFixed(2)}`)
+    );
+    const duplicadas = linhas.length - linhasNovas.length;
+
+    if (!linhasNovas.length) {
+      mostrarToast(`Todas as ${linhas.length} linha(s) já existem no sistema. Nada foi importado.`, 'erro');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-file-excel"></i> Importar Agora'; }
+      return;
+    }
+
+    const registros = linhasNovas.map(l => ({
       descricao:       l.descricao,
       valor:           l.valor,
       desconto:        l.desconto || 0,
@@ -4117,10 +4249,12 @@ async function confirmarImportacaoExcelPagar() {
       centro_custo_id: l.centro_custo_id || null,
       numero_pedido:   l.observacao      || null,
     }));
-    const { error } = await q(db.from('lancamentos').insert(registros))
+    const { error } = await q(db.from('lancamentos').insert(registros));
     if (error) throw error;
     fecharModal('modal-importar-excel-pagar');
-    mostrarToast(`${linhas.length} conta(s) a pagar importada(s) com sucesso!`, 'sucesso');
+    let msg = `${linhasNovas.length} conta(s) a pagar importada(s) com sucesso!`;
+    if (duplicadas > 0) msg += ` ${duplicadas} ignorada(s) por já existirem no sistema.`;
+    mostrarToast(msg, 'sucesso');
     carregarLancamentos('pagar');
   } catch (e) {
     mostrarToast('Erro ao importar. Tente novamente.', 'erro');
