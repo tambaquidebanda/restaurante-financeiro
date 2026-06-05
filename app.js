@@ -4294,6 +4294,33 @@ function htmlConciliacaoCell(t, i) {
       </div>`;
   }
 
+  if (t.agrupado_em_idx !== undefined) {
+    const principal = transacoesOFX[t.agrupado_em_idx];
+    return `
+      <div style="font-size:12px;font-weight:600;color:#2980b9;margin-bottom:4px;">
+        <i class="fas fa-object-group"></i> Agrupada com outro lote
+      </div>
+      <div style="font-size:11px;color:#555;margin-bottom:6px;word-break:break-word;">
+        ${principal ? principal.descricao_original || principal.descricao : ''}
+      </div>
+      <button class="btn btn-sm" style="background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;cursor:pointer;border-radius:6px;padding:2px 8px;font-size:12px;" onclick="desfazerAgrupamento(${t.agrupado_em_idx})">✕ Desfazer</button>`;
+  }
+
+  if (t.agrupamento_indices?.length > 0) {
+    const n = t.agrupamento_indices.length + 1;
+    return `
+      <div style="font-size:12px;font-weight:600;color:#2980b9;margin-bottom:4px;">
+        <i class="fas fa-object-group"></i> Grupo de ${n} lotes — ${formatarMoeda(t.valor)}
+      </div>
+      <div style="font-size:11px;color:#777;margin-bottom:6px;">Valor combinado de ${n} transações do extrato</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" style="font-size:11px;" onclick="abrirConciliacaoMultipla(${i})">
+          <i class="fas fa-layer-group"></i> Múltiplos
+        </button>
+        <button class="btn btn-sm" style="background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;cursor:pointer;border-radius:6px;padding:2px 8px;font-size:12px;" onclick="desfazerAgrupamento(${i})">✕ Desfazer grupo</button>
+      </div>`;
+  }
+
   if (t.lancamentos_ids && t.lancamentos_ids.length > 0) {
     const total = t.lancamentos_ids.reduce((s, id) => {
       const l = lancamentosPendentes.find(l => l.id === id);
@@ -4359,6 +4386,9 @@ function htmlConciliacaoCell(t, i) {
     <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" style="font-size:11px;" onclick="abrirConciliacaoMultipla(${i})">
         <i class="fas fa-layer-group"></i> Múltiplos
+      </button>
+      <button class="btn btn-outline btn-sm" style="font-size:11px;color:#2980b9;border-color:#2980b9;" onclick="abrirAgrupar(${i})">
+        <i class="fas fa-object-group"></i> Agrupar
       </button>
       ${t.tipo === 'receber' ? `<button class="btn btn-outline btn-sm" style="font-size:11px;color:#8e44ad;border-color:#8e44ad;" onclick="abrirDivisaoUnidade(${i})">
         <i class="fas fa-sitemap"></i> Dividir Unidade
@@ -4605,8 +4635,11 @@ function abrirConciliacaoMultipla(i) {
   _concilMultiplaIdx = i;
   const t = transacoesOFX[i];
 
+  const grupoTag = t.agrupamento_indices?.length
+    ? `&nbsp;<span style="font-size:11px;background:#d6eaf8;color:#2980b9;padding:2px 6px;border-radius:4px;"><i class="fas fa-object-group"></i> Grupo de ${1 + t.agrupamento_indices.length} lotes</span>`
+    : '';
   document.getElementById('cm-info').innerHTML = `
-    <strong>${t.descricao}</strong><br>
+    <strong>${t.descricao_original || t.descricao}</strong>${grupoTag}<br>
     <span style="color:#888;">${formatarData(t.data)}</span> &nbsp;|&nbsp;
     <strong style="color:${t.tipo === 'pagar' ? '#e74c3c' : '#27ae60'}">${formatarMoeda(t.valor)}</strong>`;
 
@@ -4697,6 +4730,118 @@ function confirmarConciliacaoMultipla() {
 function limparConciliacaoMultipla(i) {
   transacoesOFX[i].lancamentos_ids = [];
   renderizarCelulaConciliacao(i);
+}
+
+// ── Agrupar transações do extrato ────────────────────────────────────────────
+let _agruparIdx = null;
+
+function abrirAgrupar(i) {
+  _agruparIdx = i;
+  const t = transacoesOFX[i];
+  document.getElementById('ag-info').innerHTML = `
+    <strong>${t.descricao_original || t.descricao}</strong><br>
+    <span style="color:#888;">${formatarData(t.data)}</span> &nbsp;|&nbsp;
+    <strong style="color:#e74c3c;">${formatarMoeda(t.valor)}</strong>`;
+
+  const jaAgrupados = new Set(t.agrupamento_indices || []);
+  const candidatas = transacoesOFX
+    .map((tx, idx) => ({ tx, idx }))
+    .filter(({ tx, idx }) =>
+      idx !== i &&
+      tx.tipo === t.tipo &&
+      tx.selecionado &&
+      !tx.transferencia_destino_id &&
+      tx.agrupado_em_idx === undefined &&
+      !tx.agrupamento_indices?.length
+    );
+
+  document.getElementById('ag-lista').innerHTML = candidatas.length
+    ? candidatas.map(({ tx, idx }) => `
+        <label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #f0f0f0;cursor:pointer;">
+          <input type="checkbox" value="${idx}" ${jaAgrupados.has(idx) ? 'checked' : ''}
+            onchange="atualizarTotalAgrupar()" style="flex-shrink:0;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;word-break:break-word;">${tx.descricao}</div>
+            <div style="font-size:12px;color:#888;">${formatarData(tx.data)}</div>
+          </div>
+          <strong style="color:#e74c3c;flex-shrink:0;white-space:nowrap;">${formatarMoeda(tx.valor)}</strong>
+        </label>`).join('')
+    : '<p class="sem-dados">Nenhuma outra transação disponível para agrupar.</p>';
+
+  atualizarTotalAgrupar();
+  document.getElementById('modal-agrupar').classList.remove('hidden');
+}
+
+function atualizarTotalAgrupar() {
+  const i = _agruparIdx;
+  if (i === null) return;
+  const t = transacoesOFX[i];
+  const checks = document.querySelectorAll('#ag-lista input[type="checkbox"]:checked');
+  const somaExtras = Array.from(checks).reduce((s, cb) => {
+    return s + (transacoesOFX[Number(cb.value)]?.valor || 0);
+  }, 0);
+  const total = t.valor + somaExtras;
+  const n = 1 + checks.length;
+  document.getElementById('ag-total').innerHTML =
+    `Total do grupo (${n} transação${n > 1 ? 'ões' : ''}): <span style="color:#2980b9;">${formatarMoeda(total)}</span>`;
+  document.getElementById('btn-confirmar-ag').disabled = checks.length === 0;
+}
+
+function confirmarAgrupar() {
+  const i = _agruparIdx;
+  if (i === null) return;
+  const t = transacoesOFX[i];
+  const checks = document.querySelectorAll('#ag-lista input[type="checkbox"]:checked');
+  const indices = Array.from(checks).map(cb => Number(cb.value));
+  if (!indices.length) return;
+
+  // Limpa agrupamento anterior, se houver
+  desfazerAgrupamento(i, true);
+
+  // Salva descrição e valor originais antes de sobrescrever
+  if (!t.descricao_original) t.descricao_original = t.descricao;
+  if (!t.valor_original)     t.valor_original     = t.valor;
+
+  const somaExtras = indices.reduce((s, idx) => s + (transacoesOFX[idx]?.valor || 0), 0);
+  t.valor               = t.valor_original + somaExtras;
+  t.descricao           = `GRUPO (${1 + indices.length} lotes): ${t.descricao_original}`;
+  t.agrupamento_indices = indices;
+  t.fitIds_grupo        = [
+    t.fitId,
+    ...indices.map(idx => transacoesOFX[idx]?.fitId).filter(Boolean)
+  ];
+
+  // Marca secundárias como absorvidas
+  indices.forEach(idx => {
+    if (transacoesOFX[idx]) transacoesOFX[idx].agrupado_em_idx = i;
+  });
+
+  fecharModal('modal-agrupar');
+  renderizarCelulaConciliacao(i);
+  indices.forEach(idx => renderizarCelulaConciliacao(idx));
+  mostrarToast(`${1 + indices.length} lotes agrupados — total ${formatarMoeda(t.valor)}.`, 'sucesso');
+}
+
+function desfazerAgrupamento(i, silencioso = false) {
+  const t = transacoesOFX[i];
+  if (!t) return;
+  // Restaura secundárias
+  (t.agrupamento_indices || []).forEach(idx => {
+    if (transacoesOFX[idx]) {
+      delete transacoesOFX[idx].agrupado_em_idx;
+      renderizarCelulaConciliacao(idx);
+    }
+  });
+  // Restaura valores originais do primário
+  if (t.valor_original !== undefined) t.valor = t.valor_original;
+  if (t.descricao_original)           t.descricao = t.descricao_original;
+  delete t.valor_original;
+  delete t.descricao_original;
+  delete t.agrupamento_indices;
+  delete t.fitIds_grupo;
+  t.lancamentos_ids = [];
+  renderizarCelulaConciliacao(i);
+  if (!silencioso) mostrarToast('Agrupamento desfeito.', 'sucesso');
 }
 
 // ── Dar Baixa com Desconto (pagamento parcial) ─────────────────────────────
@@ -4970,7 +5115,8 @@ async function importarTransacoes() {
   if (!await garantirSessao()) { restaurarBtn(); return; }
 
   const bancoId      = document.getElementById('banco-importar').value || null;
-  const selecionadas = transacoesOFX.filter(t => t.selecionado);
+  // Transações absorvidas por um grupo são processadas pelo lote principal
+  const selecionadas = transacoesOFX.filter(t => t.selecionado && t.agrupado_em_idx === undefined);
 
   if (!bancoId) { mostrarToast('Selecione o banco antes de importar!', 'erro'); restaurarBtn(); return; }
   if (!selecionadas.length) { mostrarToast('Selecione ao menos uma transação!', 'erro'); restaurarBtn(); return; }
@@ -5019,10 +5165,14 @@ async function importarTransacoes() {
   }
 
   // Conciliação múltipla: marca todas as contas vinculadas como pagas
+  // Se for um grupo de lotes, distribui os ofx_ids para evitar reimportação de todos os lotes
   for (const t of aMultiplos) {
-    for (const lancId of t.lancamentos_ids) {
+    const todosOFXIds = (t.fitIds_grupo?.length ? t.fitIds_grupo : [t.fitId]).filter(Boolean);
+    for (let j = 0; j < t.lancamentos_ids.length; j++) {
+      const lancId    = t.lancamentos_ids[j];
+      const ofxIdUsar = todosOFXIds.length ? todosOFXIds[j % todosOFXIds.length] : null;
       const { error } = await db.from('lancamentos')
-        .update({ status: 'pago', data_pagamento: t.data, banco_id: bancoId, ofx_id: t.fitId || null })
+        .update({ status: 'pago', data_pagamento: t.data, banco_id: bancoId, ofx_id: ofxIdUsar })
         .eq('id', lancId);
       if (error) { erros++; continue; }
       const lancRef = lancamentosPendentes.find(l => l.id === lancId);
@@ -5033,7 +5183,7 @@ async function importarTransacoes() {
         banco_id:       bancoId,
         plano_conta_id: lancRef?.plano_conta_id || null,
         origem:         'ofx',
-        ofx_id:         t.fitId || null
+        ofx_id:         ofxIdUsar
       }));
     }
   }
