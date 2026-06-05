@@ -222,6 +222,15 @@ async function garantirSessao() {
 }
 
 async function iniciarApp(usuario) {
+  // Verifica permissão — bloqueia se sistemas estiver definido e não incluir 'financeiro'
+  const sistemas = usuario.user_metadata?.sistemas;
+  if (sistemas && !sistemas.includes('financeiro')) {
+    await fazerLogout();
+    mostrarToast('Você não tem acesso ao sistema Financeiro.', 'erro');
+    setTimeout(() => mostrarTela('login'), 1500);
+    return;
+  }
+
   mostrarTela('app');
   const nome = usuario.user_metadata?.nome || usuario.email.split('@')[0];
   document.getElementById('nome-usuario-sidebar').textContent = nome;
@@ -5149,18 +5158,41 @@ async function carregarUsuarios() {
     return;
   }
 
+  // Busca sistemas via admin API
+  const sbAdmin = window.supabase.createClient(SB_URL, SB_SERVICE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
+  const { data: authData } = await sbAdmin.auth.admin.listUsers();
+  const authUsers = authData?.users || [];
+
   container.innerHTML = `
     <table class="tabela">
-      <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Cadastrado em</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Sistemas</th><th>Cadastrado em</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
       <tbody>
-        ${perfis.map(p => `
+        ${perfis.map(p => {
+          const au = authUsers.find(u => u.email === p.email);
+          const sistemas = au?.user_metadata?.sistemas;
+          const sisBadges = sistemas
+            ? sistemas.map(s => s === 'financeiro'
+                ? '<span style="background:#27ae60;color:white;padding:2px 8px;border-radius:10px;font-size:.75rem;margin-right:3px;">Financeiro</span>'
+                : '<span style="background:#2980b9;color:white;padding:2px 8px;border-radius:10px;font-size:.75rem;margin-right:3px;">Compras</span>'
+              ).join('')
+            : '<span style="background:#95a5a6;color:white;padding:2px 8px;border-radius:10px;font-size:.75rem;">Todos</span>';
+          const canEdit = isAdmin && p.id !== usuario.id && !p.is_admin;
+          const metaNome = encodeURIComponent(p.nome);
+          return `
           <tr>
             <td>${p.nome}</td>
             <td>${p.email}</td>
             <td>${p.is_admin ? '<span style="color:#c0392b;font-weight:700;">Administrador</span>' : 'Funcionário'}</td>
+            <td>${sisBadges}</td>
             <td>${formatarData(p.criado_em?.split('T')[0])}</td>
-            ${isAdmin ? `<td>${p.id !== usuario.id && !p.is_admin ? `<button class="btn btn-danger btn-sm" onclick="abrirExcluirUsuario('${p.id}','${p.nome.replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>` : ''}</td>` : ''}
-          </tr>`).join('')}
+            ${isAdmin ? `<td style="white-space:nowrap">
+              ${canEdit ? `<button class="btn btn-sm" style="background:#8e44ad;color:white;margin-right:4px;" title="Permissões" onclick="abrirPermissoesFinanceiro('${p.id}','${p.email}','${metaNome}',${JSON.stringify(sistemas||null)})"><i class="fas fa-shield-alt"></i></button>` : ''}
+              ${canEdit ? `<button class="btn btn-danger btn-sm" onclick="abrirExcluirUsuario('${p.id}','${p.nome.replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>` : ''}
+            </td>` : ''}
+          </tr>`;
+        }).join('')}
       </tbody>
     </table>`;
 }
@@ -5182,6 +5214,49 @@ function abrirExcluirUsuario(id, nome) {
   document.getElementById('modal-excluir').classList.remove('hidden');
 }
 
+function abrirPermissoesFinanceiro(id, email, metaNome, sistemas) {
+  document.getElementById('perm-fin-id').value        = id;
+  document.getElementById('perm-fin-meta-nome').value = decodeURIComponent(metaNome);
+  document.getElementById('perm-fin-nome').textContent = `${decodeURIComponent(metaNome)} (${email})`;
+  document.getElementById('perm-fin-financeiro').checked = !sistemas || sistemas.includes('financeiro');
+  document.getElementById('perm-fin-estoque').checked    = !sistemas || sistemas.includes('estoque');
+  document.getElementById('perm-fin-msg').textContent    = '';
+  document.getElementById('modal-permissoes').classList.remove('hidden');
+}
+
+async function salvarPermissoesFinanceiro() {
+  const id   = document.getElementById('perm-fin-id').value;
+  const nome = document.getElementById('perm-fin-meta-nome').value;
+  const msg  = document.getElementById('perm-fin-msg');
+
+  const sistemas = [];
+  if (document.getElementById('perm-fin-financeiro').checked) sistemas.push('financeiro');
+  if (document.getElementById('perm-fin-estoque').checked)    sistemas.push('estoque');
+
+  if (!sistemas.length) {
+    msg.textContent = 'Selecione ao menos um sistema.';
+    msg.style.color = '#c0392b';
+    return;
+  }
+
+  const sbAdmin = window.supabase.createClient(SB_URL, SB_SERVICE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
+
+  const { error } = await sbAdmin.auth.admin.updateUserById(id, {
+    user_metadata: { nome, sistemas }
+  });
+
+  if (error) { msg.textContent = error.message; msg.style.color = '#c0392b'; return; }
+
+  msg.textContent  = 'Permissões salvas!';
+  msg.style.color  = '#27ae60';
+  setTimeout(() => {
+    fecharModal('modal-permissoes');
+    carregarUsuarios();
+  }, 1200);
+}
+
 function abrirModalConvidar() {
   document.getElementById('convidar-nome').value = '';
   document.getElementById('convidar-email').value = '';
@@ -5201,15 +5276,20 @@ async function convidarFuncionario() {
   if (!senha || senha.length < 6) { mostrarToast('A senha deve ter ao menos 6 caracteres.', 'erro'); return; }
   if (senha !== confirmar) { mostrarToast('As senhas não coincidem.', 'erro'); return; }
 
-  // Usa um cliente temporário para não sobrescrever a sessão do administrador
-  const clienteTemp = window.supabase.createClient(SB_URL, SB_KEY, {
+  const sistemas = [];
+  if (document.getElementById('convidar-sys-financeiro').checked) sistemas.push('financeiro');
+  if (document.getElementById('convidar-sys-estoque').checked)    sistemas.push('estoque');
+  if (!sistemas.length) { mostrarToast('Selecione ao menos um sistema.', 'erro'); return; }
+
+  const sbAdmin = window.supabase.createClient(SB_URL, SB_SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false }
   });
 
-  const { error } = await clienteTemp.auth.signUp({
+  const { error } = await sbAdmin.auth.admin.createUser({
     email,
     password: senha,
-    options: { data: { nome } }
+    user_metadata: { nome, sistemas },
+    email_confirm: true,
   });
 
   if (error) {
