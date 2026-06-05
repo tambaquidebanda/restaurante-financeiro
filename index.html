@@ -1749,25 +1749,15 @@
   <!-- ========== MODAL: ALTERAR SENHA ========== -->
   <!-- ========== MODAL: CONCILIAÇÃO MÚLTIPLA ========== -->
   <div id="modal-conciliacao-multipla" class="modal-fundo hidden">
-    <div class="modal" style="max-width:660px;">
+    <div class="modal" style="max-width:620px;">
       <div class="modal-header">
         <h3><i class="fas fa-layer-group"></i> Conciliar com Múltiplos Lançamentos</h3>
         <button class="btn-fechar" onclick="fecharModal('modal-conciliacao-multipla')">&times;</button>
       </div>
       <div class="modal-corpo">
-
-        <!-- ── Lado Extrato (banco) ── -->
-        <div style="margin-bottom:14px;">
-          <div style="font-weight:600;font-size:13px;color:#2980b9;margin-bottom:6px;">
-            <i class="fas fa-university"></i> Transações do extrato (banco)
-          </div>
-          <div id="cm-banco-lista" style="border:1px solid #d6eaf8;border-radius:8px;padding:0 8px;max-height:150px;overflow-y:auto;background:#f0f8ff;"></div>
-          <div id="cm-banco-total" style="font-size:12px;color:#2980b9;font-weight:600;margin-top:5px;text-align:right;"></div>
-        </div>
-
-        <!-- ── Lado Sistema (lançamentos) ── -->
+        <div id="cm-info" style="background:#f8f9fa;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;"></div>
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap;">
-          <span style="font-weight:600;font-size:13px;">Lançamentos do sistema:</span>
+          <span style="font-weight:600;font-size:13px;">Selecione os lançamentos:</span>
           <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
             <label style="font-size:12px;color:#666;white-space:nowrap;">Filtrar por data:</label>
             <input type="date" id="cm-filtro-data"
@@ -1777,7 +1767,7 @@
               style="background:none;border:none;color:#999;cursor:pointer;font-size:14px;padding:2px 4px;" title="Limpar filtro">✕</button>
           </div>
         </div>
-        <div id="cm-lista" style="max-height:260px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:0 8px;"></div>
+        <div id="cm-lista" style="max-height:320px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:0 8px;"></div>
         <div id="cm-total" style="margin-top:12px;padding:10px;background:#f8f9fa;border-radius:8px;font-size:13px;text-align:right;"></div>
         <div id="cm-desconto-wrap" style="display:none;margin-top:10px;padding:10px 14px;background:#fff8e1;border:1px solid #f39c12;border-radius:8px;">
           <div style="font-size:12px;color:#b7770d;margin-bottom:8px;font-weight:600;">
