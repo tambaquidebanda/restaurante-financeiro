@@ -232,6 +232,7 @@ async function iniciarApp(usuario) {
   }
 
   mostrarTela('app');
+  verificarIntegracoesPendentes();
   const nome = usuario.user_metadata?.nome || usuario.email.split('@')[0];
   document.getElementById('nome-usuario-sidebar').textContent = nome;
 
@@ -452,11 +453,12 @@ function irPara(pagina, elemento) {
   if (pagina === 'usuarios')         carregarUsuarios();
   if (pagina === 'importar')         { preencherSelectBancoImportar(); carregarLancamentosPendentes(); }
   if (pagina === 'conciliacao')      { preencherFiltrosConciliacao(); carregarConciliacao(); }
+  if (pagina === 'integracoes')      carregarIntegracoes();
 
   // Auto-expandir o grupo accordion correto
   const grupoNavPorPagina = {
     'pagar': 'gestao', 'receber': 'gestao', 'importar': 'gestao',
-    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao',
+    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao',
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros',
     'dre': 'relatorios', 'relatorios': 'relatorios',
@@ -6668,4 +6670,136 @@ function mostrarToast(mensagem, tipo = '') {
   toast.className = 'toast ' + tipo;
   toast.classList.remove('hidden');
   setTimeout(() => toast.classList.add('hidden'), 3500);
+}
+
+
+// =========================================================
+// INTEGRAÇÕES PENDENTES (rascunhos do sistema de compras)
+// =========================================================
+async function carregarIntegracoes() {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+
+  const { data: rascunhos } = await q(db
+    .from('lancamentos_rascunho')
+    .select('*, fornecedores(nome), plano_contas(nome)')
+    .order('criado_em', { ascending: false }));
+
+  const lista    = document.getElementById('integracoes-lista');
+  const vazio    = document.getElementById('integracoes-vazio');
+  const badge    = document.getElementById('badge-integracoes');
+
+  // Atualiza badge no menu
+  if (badge) {
+    const qtd = rascunhos?.length || 0;
+    badge.textContent = qtd;
+    badge.style.display = qtd > 0 ? 'inline' : 'none';
+  }
+
+  if (!rascunhos?.length) {
+    lista.innerHTML = '';
+    if (vazio) vazio.style.display = 'block';
+    return;
+  }
+  if (vazio) vazio.style.display = 'none';
+
+  lista.innerHTML = rascunhos.map(r => {
+    const venc    = (r.vencimento || '').split('-').reverse().join('/');
+    const criado  = new Date(r.criado_em).toLocaleDateString('pt-BR');
+    const forn    = r.fornecedores?.nome || '—';
+    const plano   = r.plano_contas?.nome || '—';
+    return `
+    <div style="background:white;border:1px solid #e0e0e0;border-left:4px solid #f39c12;border-radius:8px;padding:1.2rem;margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-weight:700;font-size:1rem">${r.descricao}</div>
+          <div style="color:#666;font-size:.85rem;margin-top:4px">
+            Pedido: <strong>${r.pedido_num || '—'}</strong> &nbsp;|&nbsp;
+            NF: <strong>${r.numero_pedido || '—'}</strong> &nbsp;|&nbsp;
+            Enviado em: ${criado}
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:1.3rem;font-weight:700;color:#e74c3c">${formatarMoeda(r.valor)}</div>
+          <div style="color:#888;font-size:.8rem">Venc. ${venc}</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0">
+        <div><span style="color:#999;font-size:.75rem">FORNECEDOR</span><div style="font-size:.9rem">${forn}</div></div>
+        <div><span style="color:#999;font-size:.75rem">PLANO DE CONTAS</span><div style="font-size:.9rem">${plano}</div></div>
+        <div><span style="color:#999;font-size:.75rem">TIPO</span><div style="font-size:.9rem">Contas a Pagar</div></div>
+        ${r.observacoes ? `<div><span style="color:#999;font-size:.75rem">OBS</span><div style="font-size:.9rem">${r.observacoes}</div></div>` : ''}
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn btn-success" onclick="aprovarIntegracao('${r.id}','${r.conta_id||''}')">
+          <i class="fas fa-check"></i> Aprovar — Gerar Conta a Pagar
+        </button>
+        <button class="btn btn-danger btn-outline" onclick="rejeitarIntegracao('${r.id}','${r.pedido_num||''}')">
+          <i class="fas fa-times"></i> Rejeitar
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function aprovarIntegracao(rascunhoId, contaId) {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+
+  // Busca o rascunho
+  const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
+  if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
+
+  // Insere em lancamentos
+  const { data: lanc, error } = await q(db.from('lancamentos').insert([{
+    descricao:      r.descricao,
+    valor:          r.valor,
+    vencimento:     r.vencimento,
+    tipo:           r.tipo,
+    status:         r.status,
+    fornecedor_id:  r.fornecedor_id,
+    plano_conta_id: r.plano_conta_id,
+    numero_pedido:  r.numero_pedido,
+    observacoes:    r.observacoes,
+    acrescimo:      r.acrescimo || 0,
+    desconto:       r.desconto  || 0,
+    data_pagamento: null,
+  }]).select('id').single());
+
+  if (error) { mostrarToast('Erro ao aprovar: ' + error.message, 'erro'); return; }
+
+  // Atualiza cmp_contas_pagar com lancamento_id
+  if (contaId && lanc?.id) {
+    await q(db.from('cmp_contas_pagar').update({ lancamento_id: lanc.id }).eq('id', contaId));
+  }
+
+  // Remove rascunho
+  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+
+  mostrarToast('✅ Conta a pagar gerada com sucesso!', 'sucesso');
+  carregarIntegracoes();
+}
+
+async function rejeitarIntegracao(rascunhoId, pedidoNum) {
+  if (!confirm(`Rejeitar a integração do pedido ${pedidoNum}?\nO rascunho será excluído e o estoque permitirá reenviar.`)) return;
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+  mostrarToast('Rascunho rejeitado.', 'sucesso');
+  carregarIntegracoes();
+}
+
+// Verifica integrações pendentes ao carregar o app (para mostrar badge)
+async function verificarIntegracoesPendentes() {
+  try {
+    const db = obterSupabase();
+    const { count } = await db.from('lancamentos_rascunho').select('id', { count: 'exact', head: true });
+    const badge = document.getElementById('badge-integracoes');
+    if (badge && count > 0) {
+      badge.textContent = count;
+      badge.style.display = 'inline';
+    }
+  } catch (_) {}
 }

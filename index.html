@@ -107,6 +107,9 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('orcamento', this)">
               <i class="fas fa-calculator"></i><span>Orçamento</span>
             </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('integracoes', this)" id="nav-integracoes">
+              <i class="fas fa-exchange-alt" style="color:#f39c12"></i><span>Integrações <span id="badge-integracoes" style="display:none;background:#e74c3c;color:white;border-radius:10px;padding:1px 6px;font-size:.7rem;margin-left:4px">0</span></span>
+            </a>
           </div>
         </div>
 
@@ -1275,6 +1278,21 @@
             <i class="fas fa-unlink"></i> Redefinir Conexão Supabase
           </button>
         </div>
+      </section>
+
+      <!-- ========== INTEGRAÇÕES PENDENTES ========== -->
+      <section id="pagina-integracoes" class="pagina" style="display:none">
+        <div class="pagina-header">
+          <h2><i class="fas fa-exchange-alt" style="color:#f39c12"></i> Integrações Pendentes</h2>
+          <p style="color:#888;font-size:.9rem;margin-top:4px">Contas a pagar geradas pelo sistema de Gestão de Compras aguardando aprovação.</p>
+        </div>
+
+        <div id="integracoes-vazio" style="display:none;text-align:center;padding:3rem;color:#aaa">
+          <i class="fas fa-check-circle" style="font-size:3rem;color:#27ae60;margin-bottom:1rem"></i>
+          <p>Nenhuma integração pendente. Tudo aprovado!</p>
+        </div>
+
+        <div id="integracoes-lista"></div>
       </section>
 
     </main>
