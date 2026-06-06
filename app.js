@@ -6853,11 +6853,40 @@ async function carregarIntegracoes() {
   }
   if (vazio) vazio.style.display = 'none';
 
+  // Busca rateios dos rascunhos com rateio
+  const idsComRateio = (rascunhos || []).filter(r => r.tem_rateio).map(r => r.id);
+  let rateioMap = {};
+  if (idsComRateio.length) {
+    const { data: rateios } = await q(db
+      .from('rascunho_rateio_itens')
+      .select('rascunho_id, valor, descricao, plano_contas(nome)')
+      .in('rascunho_id', idsComRateio));
+    (rateios || []).forEach(ri => {
+      if (!rateioMap[ri.rascunho_id]) rateioMap[ri.rascunho_id] = [];
+      rateioMap[ri.rascunho_id].push(ri);
+    });
+  }
+
   lista.innerHTML = rascunhos.map(r => {
     const venc    = (r.vencimento || '').split('-').reverse().join('/');
     const criado  = new Date(r.criado_em).toLocaleDateString('pt-BR');
     const forn    = r.fornecedores?.nome || '—';
     const plano   = r.plano_contas?.nome || '—';
+
+    const rateioHtml = r.tem_rateio && rateioMap[r.id]?.length
+      ? `<div style="margin-top:8px;padding:8px;background:#fff9e6;border-radius:6px;border:1px solid #f39c12">
+           <div style="font-size:.75rem;color:#999;margin-bottom:4px">RATEIO POR CATEGORIA</div>
+           ${rateioMap[r.id].map(ri =>
+             `<div style="display:flex;justify-content:space-between;font-size:.85rem">
+                <span>${ri.plano_contas?.nome || ri.descricao || '—'}</span>
+                <span style="font-weight:600">${formatarMoeda(ri.valor)}</span>
+              </div>`
+           ).join('')}
+         </div>`
+      : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0">
+           <div><span style="color:#999;font-size:.75rem">PLANO DE CONTAS</span><div style="font-size:.9rem">${plano}</div></div>
+         </div>`;
+
     return `
     <div style="background:white;border:1px solid #e0e0e0;border-left:4px solid #f39c12;border-radius:8px;padding:1.2rem;margin-bottom:1rem">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
@@ -6877,10 +6906,10 @@ async function carregarIntegracoes() {
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0">
         <div><span style="color:#999;font-size:.75rem">FORNECEDOR</span><div style="font-size:.9rem">${forn}</div></div>
-        <div><span style="color:#999;font-size:.75rem">PLANO DE CONTAS</span><div style="font-size:.9rem">${plano}</div></div>
         <div><span style="color:#999;font-size:.75rem">TIPO</span><div style="font-size:.9rem">Contas a Pagar</div></div>
         ${r.observacoes ? `<div><span style="color:#999;font-size:.75rem">OBS</span><div style="font-size:.9rem">${r.observacoes}</div></div>` : ''}
       </div>
+      ${rateioHtml}
 
       <div style="display:flex;gap:8px;margin-top:14px">
         <button class="btn btn-success" onclick="aprovarIntegracao('${r.id}','${r.conta_id||''}')">
@@ -6902,6 +6931,13 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
   if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
 
+  // Busca rateio (se tiver)
+  let rateioItens = [];
+  if (r.tem_rateio) {
+    const { data: ri } = await q(db.from('rascunho_rateio_itens').select('*').eq('rascunho_id', rascunhoId));
+    rateioItens = ri || [];
+  }
+
   // Insere em lancamentos
   const { data: lanc, error } = await q(db.from('lancamentos').insert([{
     descricao:      r.descricao,
@@ -6910,22 +6946,35 @@ async function aprovarIntegracao(rascunhoId, contaId) {
     tipo:           r.tipo,
     status:         r.status,
     fornecedor_id:  r.fornecedor_id,
-    plano_conta_id: r.plano_conta_id,
+    plano_conta_id: r.tem_rateio ? null : r.plano_conta_id,
     numero_pedido:  r.numero_pedido,
     observacoes:    r.observacoes,
     acrescimo:      r.acrescimo || 0,
     desconto:       r.desconto  || 0,
     data_pagamento: null,
+    tem_rateio:     r.tem_rateio || false,
   }]).select('id').single());
 
   if (error) { mostrarToast('Erro ao aprovar: ' + error.message, 'erro'); return; }
+
+  // Cria rateio_itens no financeiro
+  if (r.tem_rateio && lanc?.id && rateioItens.length) {
+    await q(db.from('rateio_itens').insert(
+      rateioItens.map(ri => ({
+        lancamento_id:  lanc.id,
+        plano_conta_id: ri.plano_conta_id,
+        valor:          ri.valor,
+        descricao:      ri.descricao,
+      }))
+    ));
+  }
 
   // Atualiza cmp_contas_pagar com lancamento_id
   if (contaId && lanc?.id) {
     await q(db.from('cmp_contas_pagar').update({ lancamento_id: lanc.id }).eq('id', contaId));
   }
 
-  // Remove rascunho
+  // Remove rascunho (cascade apaga rascunho_rateio_itens automaticamente)
   await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
 
   mostrarToast('✅ Conta a pagar gerada com sucesso!', 'sucesso');
