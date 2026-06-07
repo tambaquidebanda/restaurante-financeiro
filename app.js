@@ -6953,6 +6953,7 @@ async function aprovarIntegracao(rascunhoId, contaId) {
     desconto:       r.desconto  || 0,
     data_pagamento: null,
     tem_rateio:     r.tem_rateio || false,
+    unidade_id:     r.unidade_id || null,
   }]).select('id').single());
 
   if (error) { mostrarToast('Erro ao aprovar: ' + error.message, 'erro'); return; }
