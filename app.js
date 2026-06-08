@@ -16,6 +16,8 @@ let tabPlanoAtiva     = 'pagar';
 let planoGrupoIdModal = null;
 let rateioAtualPagar  = [];
 
+let classificacaoHistorica = new Map(); // descricao_norm → plano_conta_id
+
 let graficoCategoriasInst          = null;
 let graficoMensalInst              = null;
 
@@ -240,6 +242,7 @@ async function iniciarApp(usuario) {
   await carregarPlanoContas();
   await carregarBancosCadastrados();
   await carregarFornecedores();
+  await carregarClassificacaoHistorica();
   await carregarCentrosCusto();
   await carregarFormasPagamento();
   preencherFiltrosMes();
@@ -534,6 +537,13 @@ async function carregarFornecedores() {
   const { data } = await q(db.from('fornecedores').select('*, plano_contas(nome)').order('nome'));
   fornecedores = data || [];
   preencherSelectFornecedores();
+}
+
+async function carregarClassificacaoHistorica() {
+  const db = obterSupabase();
+  const { data } = await q(db.from('classificacao_historica').select('descricao_norm,plano_conta_id'));
+  classificacaoHistorica.clear();
+  (data || []).forEach(r => classificacaoHistorica.set(r.descricao_norm, r.plano_conta_id));
 }
 
 async function carregarCentrosCusto() {
@@ -3758,10 +3768,18 @@ function autoMatchCategorias(transacoes) {
 
   transacoes.forEach(t => {
     if (t.plano_conta_id) return;
-    const descNorm   = normalizarTexto(t.descricao);
+    const descNorm = normalizarTexto(t.descricao);
+
+    // 1ª tentativa: histórico de classificações anteriores (memória do usuário)
+    const idHistorico = classificacaoHistorica.get(descNorm);
+    if (idHistorico) {
+      const cat = subcats.find(p => p.id === idHistorico && p.tipo === t.tipo);
+      if (cat) { t.plano_conta_id = cat.id; t.classificado_por_historico = true; return; }
+    }
+
     const candidates = subcats.filter(p => p.tipo === t.tipo);
 
-    // 1ª tentativa: maior pontuação (quantas palavras do nome da categoria aparecem na descrição)
+    // 2ª tentativa: maior pontuação (quantas palavras do nome da categoria aparecem na descrição)
     let melhorScore = 0;
     let match = null;
     for (const cat of candidates) {
@@ -3773,7 +3791,7 @@ function autoMatchCategorias(transacoes) {
       if (score > melhorScore) { melhorScore = score; match = cat; }
     }
 
-    // 2ª tentativa: alias (ex: "antecipacao" na descrição → busca "credito" na categoria)
+    // 3ª tentativa: alias (ex: "antecipacao" na descrição → busca "credito" na categoria)
     if (!match) {
       for (const [trigger, alvo] of Object.entries(aliases)) {
         if (descNorm.includes(trigger)) {
@@ -3785,6 +3803,22 @@ function autoMatchCategorias(transacoes) {
 
     if (match) t.plano_conta_id = match.id;
   });
+}
+
+async function gravarClassificacaoHistorica(transacoes) {
+  const db = obterSupabase();
+  const registros = transacoes
+    .filter(t => t.plano_conta_id && t.descricao)
+    .map(t => ({
+      descricao_norm: normalizarTexto(t.descricao),
+      plano_conta_id: t.plano_conta_id,
+      atualizado_em:  new Date().toISOString()
+    }));
+  if (!registros.length) return;
+  await q(db.from('classificacao_historica')
+    .upsert(registros, { onConflict: 'descricao_norm' }));
+  // Atualiza cache local com as novas classificações
+  registros.forEach(r => classificacaoHistorica.set(r.descricao_norm, r.plano_conta_id));
 }
 
 async function verificarDuplicatasComTimeout(transacoes) {
@@ -4427,7 +4461,9 @@ function renderizarPreviewOFX(transacoes) {
     const corBadge  = t.tipo === 'pagar' ? 'vencido' : 'pago';
     const labelTipo = t.tipo === 'pagar' ? 'Saída' : 'Entrada';
     const valorAtual = labelCatOFX(t.plano_conta_id);
-    const autoMatch  = t.plano_conta_id ? ' <span style="font-size:11px;color:#27ae60;">(auto)</span>' : '';
+    const autoMatch  = t.classificado_por_historico
+      ? ' <span style="font-size:11px;color:#8e44ad;" title="Classificado com base em importações anteriores">📚 histórico</span>'
+      : t.plano_conta_id ? ' <span style="font-size:11px;color:#27ae60;">(auto)</span>' : '';
 
     const uniOpts = `<option value="">— Nenhuma —</option>`
       + unidades.map(u => `<option value="${u.id}" ${t.unidade_id === u.id ? 'selected' : ''}>${u.nome}</option>`).join('');
@@ -5255,6 +5291,9 @@ async function importarTransacoes() {
     const { error } = await q(db.from('lancamentos').insert(novos))
     if (error) erros++;
   }
+
+  // Grava histórico de classificações (best-effort, não bloqueia em caso de erro)
+  await gravarClassificacaoHistorica(selecionadas).catch(() => {});
 
   if (erros) {
     mostrarToast('Erro em algumas transações. Verifique e tente novamente.', 'erro');
