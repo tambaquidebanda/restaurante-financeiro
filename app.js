@@ -17,6 +17,7 @@ let planoGrupoIdModal = null;
 let rateioAtualPagar  = [];
 
 let classificacaoHistorica = new Map(); // descricao_norm → plano_conta_id
+let _hpCtx = { lancamentoId: null, tipo: null }; // contexto do modal Histórico de Pagamentos
 
 let graficoCategoriasInst          = null;
 let graficoMensalInst              = null;
@@ -5058,36 +5059,113 @@ async function confirmarRegistroPagamento() {
 async function verHistoricoPagamentos(id) {
   const db = obterSupabase();
   const [{ data: lanc }, { data: pagtos }] = await Promise.all([
-    db.from('lancamentos').select('descricao, valor, valor_pago, status').eq('id', id).single(),
+    db.from('lancamentos').select('descricao, valor, valor_pago, status, tipo').eq('id', id).single(),
     db.from('pagamentos')
-      .select('valor, data, bancos(nome), plano_contas(nome), origem')
+      .select('id, valor, data, plano_conta_id, bancos(nome), plano_contas(nome), origem')
       .eq('lancamento_id', id)
       .order('data', { ascending: true })
   ]);
+  _hpCtx = { lancamentoId: id, tipo: lanc?.tipo || 'pagar' };
   document.getElementById('hp-descricao').textContent   = lanc?.descricao || '';
   document.getElementById('hp-valor-total').textContent = formatarMoeda(Number(lanc?.valor || 0));
+  _hpRenderTabela(pagtos || [], lanc);
+  document.getElementById('modal-historico-pagamentos').classList.remove('hidden');
+}
+
+function _hpRenderTabela(pagtos, lanc) {
   const origemLabel = { manual: 'Manual', ofx: 'OFX', desconto: 'Desconto/Baixa' };
   const origemCor   = { manual: { bg:'#eafaf1', txt:'#1a6e3b' }, ofx: { bg:'#eaf4fd', txt:'#2980b9' }, desconto: { bg:'#fff3cd', txt:'#b7770d' } };
-  if (!pagtos?.length) {
-    document.getElementById('hp-tabela').innerHTML = `<tr><td colspan="5" class="sem-dados">Nenhum pagamento registrado ainda.</td></tr>`;
+  if (!pagtos.length) {
+    document.getElementById('hp-tabela').innerHTML = `<tr><td colspan="6" class="sem-dados">Nenhum pagamento registrado ainda.</td></tr>`;
   } else {
     document.getElementById('hp-tabela').innerHTML = pagtos.map(p => {
       const cor = origemCor[p.origem] || { bg:'#f0f0f0', txt:'#555' };
-      return `<tr>
+      const podeAgir = p.origem === 'ofx';
+      const acoes = podeAgir ? `
+        <button onclick="hpEditarCategoria('${p.id}','${p.plano_conta_id||''}')"
+          style="background:none;border:none;cursor:pointer;padding:2px 5px;color:#2980b9;" title="Editar categoria">
+          <i class="fas fa-tag"></i>
+        </button>
+        <button onclick="hpDesfazerConciliacao('${p.id}',${Number(p.valor)})"
+          style="background:none;border:none;cursor:pointer;padding:2px 5px;color:#e74c3c;" title="Desfazer conciliação">
+          <i class="fas fa-unlink"></i>
+        </button>` : '<span style="color:#bbb;font-size:11px;">—</span>';
+      return `<tr id="hp-row-${p.id}">
         <td>${formatarData(p.data)}</td>
         <td style="text-align:right;"><strong>${formatarMoeda(Number(p.valor))}</strong></td>
         <td>${p.bancos?.nome || '-'}</td>
-        <td>${p.plano_contas?.nome || '-'}</td>
+        <td id="hp-cat-${p.id}">${p.plano_contas?.nome || '-'}</td>
         <td><span style="font-size:11px;padding:2px 8px;border-radius:10px;background:${cor.bg};color:${cor.txt};font-weight:600;">${origemLabel[p.origem] || p.origem}</span></td>
+        <td style="white-space:nowrap;">${acoes}</td>
       </tr>`;
     }).join('');
   }
-  const valorPago = Number(lanc?.valor_pago || 0);
-  const restante  = Number(lanc?.valor || 0) - valorPago;
-  document.getElementById('hp-status').innerHTML = lanc?.status === 'pago'
-    ? `<span style="color:#27ae60;font-weight:600;"><i class="fas fa-check-circle"></i> Pago integralmente — ${formatarMoeda(valorPago)}</span>`
-    : `<span style="color:#e67e22;font-weight:600;"><i class="fas fa-coins"></i> Pago: ${formatarMoeda(valorPago)} — Restante: ${formatarMoeda(restante)}</span>`;
-  document.getElementById('modal-historico-pagamentos').classList.remove('hidden');
+  if (lanc) {
+    const valorPago = Number(lanc.valor_pago || 0);
+    const restante  = Number(lanc.valor || 0) - valorPago;
+    document.getElementById('hp-status').innerHTML = lanc.status === 'pago'
+      ? `<span style="color:#27ae60;font-weight:600;"><i class="fas fa-check-circle"></i> Pago integralmente — ${formatarMoeda(valorPago)}</span>`
+      : `<span style="color:#e67e22;font-weight:600;"><i class="fas fa-coins"></i> Pago: ${formatarMoeda(valorPago)} — Restante: ${formatarMoeda(restante)}</span>`;
+  }
+}
+
+function hpEditarCategoria(pagamentoId, planoAtualId) {
+  const cell = document.getElementById(`hp-cat-${pagamentoId}`);
+  if (!cell) return;
+  const grupos  = planoContas.filter(p => p.tipo === _hpCtx.tipo && !p.grupo_id);
+  const subcats = planoContas.filter(p => p.tipo === _hpCtx.tipo &&  p.grupo_id);
+  const opts = grupos.map(g => {
+    const filhos = subcats.filter(s => s.grupo_id === g.id);
+    if (!filhos.length) return '';
+    return `<optgroup label="${g.nome}">${filhos.map(s =>
+      `<option value="${s.id}" ${s.id === planoAtualId ? 'selected' : ''}>${s.nome}</option>`
+    ).join('')}</optgroup>`;
+  }).join('');
+  cell.innerHTML = `
+    <div style="display:flex;gap:4px;align-items:center;">
+      <select id="hp-select-cat-${pagamentoId}" style="font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;max-width:160px;">
+        <option value="">— categoria —</option>${opts}
+      </select>
+      <button onclick="hpConfirmarCategoria('${pagamentoId}')"
+        style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:12px;">✓</button>
+      <button onclick="verHistoricoPagamentos('${_hpCtx.lancamentoId}')"
+        style="background:none;border:none;cursor:pointer;color:#888;font-size:13px;">✕</button>
+    </div>`;
+}
+
+async function hpConfirmarCategoria(pagamentoId) {
+  const sel = document.getElementById(`hp-select-cat-${pagamentoId}`);
+  const novoId = sel?.value;
+  if (!novoId) { mostrarToast('Selecione uma categoria.', 'erro'); return; }
+  const db = obterSupabase();
+  const [r1, r2] = await Promise.all([
+    q(db.from('pagamentos').update({ plano_conta_id: novoId }).eq('id', pagamentoId)),
+    q(db.from('lancamentos').update({ plano_conta_id: novoId }).eq('id', _hpCtx.lancamentoId))
+  ]);
+  if (r1.error || r2.error) { mostrarToast('Erro ao salvar categoria.', 'erro'); return; }
+  mostrarToast('Categoria atualizada!', 'sucesso');
+  verHistoricoPagamentos(_hpCtx.lancamentoId);
+}
+
+async function hpDesfazerConciliacao(pagamentoId, valorPagamento) {
+  if (!confirm(`Desfazer a conciliação deste pagamento de ${formatarMoeda(valorPagamento)}?\nO lançamento voltará para Pendente.`)) return;
+  const db = obterSupabase();
+  const { error: errDel } = await q(db.from('pagamentos').delete().eq('id', pagamentoId));
+  if (errDel) { mostrarToast('Erro ao remover pagamento.', 'erro'); return; }
+
+  // Recalcula valor_pago com base nos pagamentos restantes
+  const { data: restantes } = await q(db.from('pagamentos').select('valor').eq('lancamento_id', _hpCtx.lancamentoId));
+  const novoValorPago = (restantes || []).reduce((s, p) => s + Number(p.valor), 0);
+
+  const upd = novoValorPago > 0
+    ? { valor_pago: novoValorPago }
+    : { valor_pago: 0, status: 'pendente', data_pagamento: null, ofx_id: null };
+  await q(db.from('lancamentos').update(upd).eq('id', _hpCtx.lancamentoId));
+
+  mostrarToast('Conciliação desfeita. Lançamento voltou para Pendente.', 'sucesso');
+  fecharModal('modal-historico-pagamentos');
+  await carregarLancamentosPendentes();
+  carregarDashboard();
 }
 
 function abrirTransferencia(i) {
