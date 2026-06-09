@@ -2,6 +2,7 @@
 // SISTEMA FINANCEIRO DO RESTAURANTE v3
 // =========================================================
 
+let _appInicializado  = false; // guard: impede que onAuthStateChange recarregue o app durante uso
 let unidades          = [];
 let planoContas       = [];
 let bancosCadastrados = [];
@@ -155,9 +156,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (db) {
     db.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESH_FAILED') {
+        _appInicializado = false;
         mostrarToast('Sessão encerrada. Faça login novamente.', 'erro');
         setTimeout(() => mostrarTela('login'), 1500);
-      } else if (event === 'SIGNED_IN' && session) {
+      } else if (event === 'SIGNED_IN' && session && !_appInicializado) {
         await iniciarApp(session.user);
       }
     });
@@ -229,9 +231,11 @@ async function garantirSessao() {
 }
 
 async function iniciarApp(usuario) {
+  _appInicializado = true;
   // Verifica permissão — bloqueia se sistemas estiver definido e não incluir 'financeiro'
   const sistemas = usuario.user_metadata?.sistemas;
   if (sistemas && !sistemas.includes('financeiro')) {
+    _appInicializado = false;
     await fazerLogout();
     mostrarToast('Você não tem acesso ao sistema Financeiro.', 'erro');
     setTimeout(() => mostrarTela('login'), 1500);
@@ -272,7 +276,6 @@ async function iniciarApp(usuario) {
     }
   }, 4 * 60 * 1000);
 
-  iniciarAutoRefresh();
 }
 
 // =========================================================
@@ -322,61 +325,6 @@ function preencherNFsPagar(valor) {
 // o usuário se houver modal aberto, campo em foco ou
 // interação recente (últimos 60s) ou página de importação.
 // =========================================================
-let _arUltimaInteracao = Date.now();
-let _arUltimoRefresh   = null;
-
-function iniciarAutoRefresh() {
-  // Registra qualquer interação do usuário
-  ['mousedown','keydown','touchstart','scroll','input'].forEach(ev =>
-    document.addEventListener(ev, () => { _arUltimaInteracao = Date.now(); }, { passive: true })
-  );
-
-  setInterval(_tentarAutoRefresh, 30000);
-}
-
-async function _tentarAutoRefresh() {
-  // 1. Só age em Contas a Pagar ou Receber
-  const paginaAtiva = document.querySelector('.pagina.ativa')?.id;
-  if (!['pagina-pagar','pagina-receber'].includes(paginaAtiva)) return;
-
-  // 2. Páginas bloqueadas
-  const paginasBloqueadas = ['pagina-importar','pagina-conciliacao','pagina-orcamento'];
-  if (paginasBloqueadas.includes(paginaAtiva)) return;
-
-  // 3. Nenhum modal aberto
-  const modalAberto = document.querySelector('.modal-fundo:not(.hidden)');
-  if (modalAberto) return;
-
-  // 4. Nenhum campo em foco
-  const tag = document.activeElement?.tagName;
-  if (['INPUT','TEXTAREA','SELECT'].includes(tag)) return;
-
-  // 5. Usuário não interagiu nos últimos 60 segundos
-  const segsInativo = (Date.now() - _arUltimaInteracao) / 1000;
-  if (segsInativo < 60) return;
-
-  // Tudo ok — atualiza silenciosamente
-  const tipo = paginaAtiva === 'pagina-pagar' ? 'pagar' : 'receber';
-  await carregarLancamentos(tipo);
-  _arUltimoRefresh = new Date();
-  _atualizarIndicadorRefresh(tipo);
-}
-
-function _atualizarIndicadorRefresh(tipo) {
-  const id = `ar-indicador-${tipo}`;
-  let el = document.getElementById(id);
-  if (!el) {
-    // Cria o indicador na barra de filtros se ainda não existir
-    const filtros = document.querySelector(`#pagina-${tipo} .filtros`);
-    if (!filtros) return;
-    el = document.createElement('span');
-    el.id = id;
-    el.style.cssText = 'font-size:11px;color:#aaa;white-space:nowrap;align-self:center;';
-    filtros.appendChild(el);
-  }
-  const hora = _arUltimoRefresh.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-  el.innerHTML = `<i class="fas fa-sync-alt" style="color:#27ae60;margin-right:4px;"></i>Atualizado às ${hora}`;
-}
 
 // =========================================================
 // CONFIGURAÇÃO
