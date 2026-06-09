@@ -7244,6 +7244,7 @@ function renderIntegracoes(rascunhos) {
         ${rateioMini}
         <!-- Vencimento -->
         <div style="margin-top:.5rem;font-size:.7rem;color:#888">Vencimento: <strong style="color:#e74c3c">${venc}</strong></div>
+        ${r.observacoes ? `<div style="margin-top:.3rem;font-size:.7rem;color:#555;background:#f8f9fa;border-radius:4px;padding:3px 6px">📝 ${r.observacoes}</div>` : ''}
       </div>
       <!-- Botões -->
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0">
