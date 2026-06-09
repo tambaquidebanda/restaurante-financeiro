@@ -778,7 +778,19 @@
           </button>
         </div>
         <div class="filtros">
-          <select id="filtro-mes-transferencias" onchange="carregarTransferencias()"></select>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <label style="font-size:13px;color:#555;white-space:nowrap;">De</label>
+            <input type="date" id="filtro-de-transferencias"
+              style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;"
+              onchange="carregarTransferencias()">
+            <label style="font-size:13px;color:#555;white-space:nowrap;">Até</label>
+            <input type="date" id="filtro-ate-transferencias"
+              style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;"
+              onchange="carregarTransferencias()">
+            <button class="btn btn-outline btn-sm" onclick="limparFiltroTransferencias()" title="Limpar filtro" style="font-size:12px;">
+              <i class="fas fa-times"></i> Limpar
+            </button>
+          </div>
         </div>
         <div class="tabela-box">
           <table class="tabela">

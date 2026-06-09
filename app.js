@@ -635,17 +635,22 @@ function preencherFiltrosMes() {
 }
 
 function preencherFiltrosMesTransferencias() {
-  const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                 'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-  const mesAtual = new Date().getMonth();
-  const anoAtual = new Date().getFullYear();
-  const el = document.getElementById('filtro-mes-transferencias');
-  if (!el) return;
-  el.innerHTML = '<option value="">Todos os meses</option>' +
-    meses.map((m, i) => {
-      const val = `${anoAtual}-${String(i+1).padStart(2,'0')}`;
-      return `<option value="${val}" ${i === mesAtual ? 'selected' : ''}>${m} ${anoAtual}</option>`;
-    }).join('');
+  const hoje = new Date();
+  const ano  = hoje.getFullYear();
+  const mes  = String(hoje.getMonth() + 1).padStart(2, '0');
+  const ultimo = new Date(ano, hoje.getMonth() + 1, 0).getDate();
+  const elDe  = document.getElementById('filtro-de-transferencias');
+  const elAte = document.getElementById('filtro-ate-transferencias');
+  if (elDe  && !elDe.value)  elDe.value  = `${ano}-${mes}-01`;
+  if (elAte && !elAte.value) elAte.value = `${ano}-${mes}-${String(ultimo).padStart(2,'0')}`;
+}
+
+function limparFiltroTransferencias() {
+  const elDe  = document.getElementById('filtro-de-transferencias');
+  const elAte = document.getElementById('filtro-ate-transferencias');
+  if (elDe)  elDe.value  = '';
+  if (elAte) elAte.value = '';
+  carregarTransferencias();
 }
 
 function preencherFiltrosAno() {
@@ -3043,17 +3048,15 @@ async function excluirFormaPagamento(id) {
 async function carregarTransferencias() {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
-  const mesFiltro = document.getElementById('filtro-mes-transferencias')?.value;
+  const dataFiltroDE  = document.getElementById('filtro-de-transferencias')?.value;
+  const dataFiltroATE = document.getElementById('filtro-ate-transferencias')?.value;
 
   let query = db.from('transferencias')
     .select('*, banco_origem:banco_origem_id(nome), banco_destino:banco_destino_id(nome)')
     .order('data', { ascending: false });
 
-  if (mesFiltro) {
-    const [ano, mes] = mesFiltro.split('-');
-    query = query.gte('data', `${ano}-${mes}-01`)
-                 .lte('data', new Date(ano, mes, 0).toISOString().split('T')[0]);
-  }
+  if (dataFiltroDE)  query = query.gte('data', dataFiltroDE);
+  if (dataFiltroATE) query = query.lte('data', dataFiltroATE);
 
   const { data, error } = await q(query);
   if (error) { mostrarToast('Erro ao carregar transferências.', 'erro'); return; }
