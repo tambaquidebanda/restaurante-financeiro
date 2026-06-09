@@ -4365,7 +4365,9 @@ function htmlConciliacaoCell(t, i) {
 
   const pendentesDoTipo   = lancamentosPendentes.filter(l => l.tipo === t.tipo);
   const dataInicial       = t.data || '';
-  const pendentesVisiveis = pendentesDoTipo;
+  const pendentesVisiveis = dataInicial
+    ? pendentesDoTipo.filter(l => l.vencimento === dataInicial || l.id === t.lancamento_id)
+    : pendentesDoTipo;
   const opcoesSelect = pendentesVisiveis.map(l => {
     const fornNome   = l.fornecedores?.nome ? ` — ${l.fornecedores.nome}` : '';
     const valorPago  = Number(l.valor_pago || 0);
