@@ -6984,60 +6984,192 @@ async function carregarIntegracoes() {
     });
   }
 
-  lista.innerHTML = rascunhos.map(r => {
-    const venc    = (r.vencimento || '').split('-').reverse().join('/');
-    const criado  = new Date(r.criado_em).toLocaleDateString('pt-BR');
-    const forn    = r.fornecedores?.nome || '—';
-    const plano   = r.plano_contas?.nome || '—';
+  // Busca itens de cada pedido no estoque para montar a miniatura
+  const pedidoNums = rascunhos.map(r => r.pedido_num).filter(Boolean);
+  let itensMap = {};
+  if (pedidoNums.length) {
+    const { data: itens } = await q(db
+      .from('cmp_compras')
+      .select('pedido_num,produto,categoria,quantidade,unidade_med,custo_unit,fornecedor_nome,comprador,data')
+      .in('pedido_num', pedidoNums));
+    (itens || []).forEach(it => {
+      if (!itensMap[it.pedido_num]) itensMap[it.pedido_num] = [];
+      itensMap[it.pedido_num].push(it);
+    });
+  }
 
-    const rateioHtml = r.tem_rateio && rateioMap[r.id]?.length
-      ? `<div style="margin-top:8px;padding:8px;background:#fff9e6;border-radius:6px;border:1px solid #f39c12">
-           <div style="font-size:.75rem;color:#999;margin-bottom:4px">RATEIO POR CATEGORIA</div>
-           ${rateioMap[r.id].map(ri =>
-             `<div style="display:flex;justify-content:space-between;font-size:.85rem">
-                <span>${ri.plano_contas?.nome || ri.descricao || '—'}</span>
-                <span style="font-weight:600">${formatarMoeda(ri.valor)}</span>
-              </div>`
-           ).join('')}
-         </div>`
-      : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0">
-           <div><span style="color:#999;font-size:.75rem">PLANO DE CONTAS</span><div style="font-size:.9rem">${plano}</div></div>
-         </div>`;
+  lista.innerHTML = rascunhos.map(r => {
+    const venc   = (r.vencimento || '').split('-').reverse().join('/');
+    const forn   = r.fornecedores?.nome || '—';
+    const itens  = itensMap[r.pedido_num] || [];
+    const ref    = itens[0] || {};
+    const dataBR = (ref.data || '').split('-').reverse().join('/');
+    const total  = itens.reduce((s, it) => s + (it.quantidade||0)*(it.custo_unit||0), 0);
+
+    const rateioItens = r.tem_rateio && rateioMap[r.id]?.length ? rateioMap[r.id] : [];
+
+    const linhasTabela = itens.length
+      ? itens.map(it => `
+          <tr style="font-size:.72rem">
+            <td style="padding:2px 4px;border:1px solid #e0e0e0"><strong>${it.produto}</strong></td>
+            <td style="padding:2px 4px;border:1px solid #e0e0e0;color:#666">${it.categoria||'—'}</td>
+            <td style="padding:2px 4px;border:1px solid #e0e0e0;text-align:center">${it.quantidade} ${it.unidade_med||''}</td>
+            <td style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right">${formatarMoeda((it.quantidade||0)*(it.custo_unit||0))}</td>
+          </tr>`).join('')
+      : `<tr><td colspan="4" style="padding:4px;color:#aaa;text-align:center;font-size:.72rem">Sem itens</td></tr>`;
+
+    const rateioMini = rateioItens.length
+      ? `<div style="margin-top:6px;padding:4px 6px;background:#fff9e6;border-radius:4px;border:1px solid #f39c12;font-size:.7rem">
+           <div style="color:#999;margin-bottom:2px;font-weight:600">RATEIO</div>
+           ${rateioItens.map(ri => `
+             <div style="display:flex;justify-content:space-between">
+               <span>${ri.plano_contas?.nome || ri.descricao || '—'}</span>
+               <span style="font-weight:600">${formatarMoeda(ri.valor)}</span>
+             </div>`).join('')}
+         </div>` : '';
 
     return `
-    <div style="background:white;border:1px solid #e0e0e0;border-left:4px solid #f39c12;border-radius:8px;padding:1.2rem;margin-bottom:1rem">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-        <div>
-          <div style="font-weight:700;font-size:1rem">${r.descricao}</div>
-          <div style="color:#666;font-size:.85rem;margin-top:4px">
-            Pedido: <strong>${r.pedido_num || '—'}</strong> &nbsp;|&nbsp;
-            NF: <strong>${r.numero_pedido || '—'}</strong> &nbsp;|&nbsp;
-            Enviado em: ${criado}
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);display:flex;flex-direction:column">
+      <!-- Miniatura do pedido -->
+      <div style="padding:.9rem;flex:1;border-bottom:1px solid #f0f0f0">
+        <!-- Cabeçalho -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #FF6B35;padding-bottom:.4rem;margin-bottom:.5rem">
+          <div>
+            <div style="font-weight:700;font-size:.8rem;color:#1a1a2e">Tambaqui de Banda</div>
+            <div style="font-size:.68rem;color:#888">Pedido de Compra</div>
           </div>
+          <div style="font-size:.95rem;font-weight:700;color:#FF6B35">Nº ${r.pedido_num||'—'}</div>
         </div>
-        <div style="text-align:right">
-          <div style="font-size:1.3rem;font-weight:700;color:#e74c3c">${formatarMoeda(r.valor)}</div>
-          <div style="color:#888;font-size:.8rem">Venc. ${venc}</div>
+        <!-- Meta -->
+        <div style="display:flex;gap:1rem;font-size:.7rem;margin-bottom:.5rem">
+          <div><span style="color:#888">Data</span><br><strong>${dataBR||'—'}</strong></div>
+          <div style="flex:1"><span style="color:#888">Fornecedor</span><br><strong>${forn}</strong></div>
+          <div><span style="color:#888">Comprador</span><br><strong>${ref.comprador||'—'}</strong></div>
         </div>
+        <!-- Tabela de itens -->
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:#1a1a2e;color:#fff;font-size:.68rem">
+              <th style="padding:2px 4px;text-align:left">Produto</th>
+              <th style="padding:2px 4px;text-align:left">Categoria</th>
+              <th style="padding:2px 4px;text-align:center">Qtd</th>
+              <th style="padding:2px 4px;text-align:right">Total</th>
+            </tr>
+          </thead>
+          <tbody>${linhasTabela}</tbody>
+          <tfoot>
+            <tr style="background:#f0fdf4;font-size:.72rem;font-weight:700">
+              <td colspan="3" style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right">TOTAL</td>
+              <td style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right;color:#16a34a">${formatarMoeda(total)}</td>
+            </tr>
+          </tfoot>
+        </table>
+        ${rateioMini}
+        <!-- Vencimento -->
+        <div style="margin-top:.5rem;font-size:.7rem;color:#888">Vencimento: <strong style="color:#e74c3c">${venc}</strong></div>
       </div>
-
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0">
-        <div><span style="color:#999;font-size:.75rem">FORNECEDOR</span><div style="font-size:.9rem">${forn}</div></div>
-        <div><span style="color:#999;font-size:.75rem">TIPO</span><div style="font-size:.9rem">Contas a Pagar</div></div>
-        ${r.observacoes ? `<div><span style="color:#999;font-size:.75rem">OBS</span><div style="font-size:.9rem">${r.observacoes}</div></div>` : ''}
-      </div>
-      ${rateioHtml}
-
-      <div style="display:flex;gap:8px;margin-top:14px">
-        <button class="btn btn-success" onclick="aprovarIntegracao('${r.id}','${r.conta_id||''}')">
-          <i class="fas fa-check"></i> Aprovar — Gerar Conta a Pagar
+      <!-- Botões -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0">
+        <button onclick="visualizarIntegracao('${r.pedido_num||''}','${r.id}')"
+          style="padding:.6rem;background:#f8f9fa;border:none;border-right:1px solid #e0e0e0;font-size:.78rem;cursor:pointer;color:#1a1a2e;font-weight:600;transition:background .15s"
+          onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">
+          <i class="fas fa-eye"></i><br>Visualizar
         </button>
-        <button class="btn btn-danger btn-outline" onclick="rejeitarIntegracao('${r.id}','${r.pedido_num||''}')">
-          <i class="fas fa-times"></i> Rejeitar
+        <button onclick="aprovarIntegracao('${r.id}','${r.conta_id||''}')"
+          style="padding:.6rem;background:#f0fdf4;border:none;border-right:1px solid #e0e0e0;font-size:.78rem;cursor:pointer;color:#16a34a;font-weight:600;transition:background .15s"
+          onmouseover="this.style.background='#dcfce7'" onmouseout="this.style.background='#f0fdf4'">
+          <i class="fas fa-check"></i><br>Aprovar
+        </button>
+        <button onclick="rejeitarIntegracao('${r.id}','${r.pedido_num||''}')"
+          style="padding:.6rem;background:#fff5f5;border:none;font-size:.78rem;cursor:pointer;color:#dc2626;font-weight:600;transition:background .15s"
+          onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='#fff5f5'">
+          <i class="fas fa-times"></i><br>Rejeitar
         </button>
       </div>
     </div>`;
   }).join('');
+}
+
+let _vizPedidoAtual = null;
+
+async function visualizarIntegracao(pedido_num, rascunhoId) {
+  if (!pedido_num) return;
+  const db = obterSupabase();
+  const { data: itens } = await q(db.from('cmp_compras')
+    .select('*').eq('pedido_num', pedido_num));
+  if (!itens?.length) { mostrarToast('Itens do pedido não encontrados.', 'erro'); return; }
+
+  const ref    = itens[0];
+  const dataBR = (ref.data||'').split('-').reverse().join('/');
+  const total  = itens.reduce((s,c) => s + (c.quantidade||0)*(c.custo_unit||0), 0);
+
+  const linhas = itens.map((c,i) => `
+    <tr>
+      <td style="padding:5px 8px;border:1px solid #e0e0e0">${i+1}</td>
+      <td style="padding:5px 8px;border:1px solid #e0e0e0"><strong>${c.produto}</strong></td>
+      <td style="padding:5px 8px;border:1px solid #e0e0e0">${c.categoria||'—'}</td>
+      <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center">${c.quantidade} ${c.unidade_med||''}</td>
+      <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:right">${formatarMoeda(c.custo_unit)}</td>
+      <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:right;font-weight:700">${formatarMoeda((c.quantidade||0)*(c.custo_unit||0))}</td>
+    </tr>`).join('');
+
+  _vizPedidoAtual = { pedido_num, dataBR, ref, linhas, total };
+
+  document.getElementById('viz-pedido-conteudo').innerHTML = `
+    <div id="viz-pedido-print">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #FF6B35;padding-bottom:1rem;margin-bottom:1.5rem">
+        <div>
+          <div style="font-weight:700;font-size:1.4rem;color:#1a1a2e">Tambaqui de Banda</div>
+          <div style="color:#666">Pedido de Compra</div>
+        </div>
+        <div style="font-size:1.8rem;font-weight:700;color:#FF6B35">Nº ${pedido_num}</div>
+      </div>
+      <div style="display:flex;gap:2rem;margin-bottom:1rem;font-size:.9rem">
+        <div><span style="color:#888">Data</span><div><strong>${dataBR}</strong></div></div>
+        <div><span style="color:#888">Fornecedor</span><div><strong>${ref.fornecedor_nome||'—'}</strong></div></div>
+        <div><span style="color:#888">Comprador</span><div><strong>${ref.comprador||'—'}</strong></div></div>
+        ${ref.data_entrega ? `<div><span style="color:#888">Entrega</span><div><strong>${ref.data_entrega.split('-').reverse().join('/')}</strong></div></div>` : ''}
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:#1a1a2e;color:#fff">
+            <th style="padding:6px 8px">#</th>
+            <th style="padding:6px 8px">Produto</th>
+            <th style="padding:6px 8px">Categoria</th>
+            <th style="padding:6px 8px;text-align:center">Quantidade</th>
+            <th style="padding:6px 8px;text-align:right">Valor Unit.</th>
+            <th style="padding:6px 8px;text-align:right">Total</th>
+          </tr>
+        </thead>
+        <tbody>${linhas}</tbody>
+        <tfoot>
+          <tr style="background:#f0fdf4;font-weight:700">
+            <td colspan="5" style="padding:6px 8px;border:1px solid #e0e0e0;text-align:right">TOTAL DO PEDIDO</td>
+            <td style="padding:6px 8px;border:1px solid #e0e0e0;text-align:right;color:#16a34a">${formatarMoeda(total)}</td>
+          </tr>
+        </tfoot>
+      </table>
+      <div style="margin-top:2.5rem;display:flex;gap:4rem">
+        <div style="border-top:1px solid #333;width:160px;padding-top:.3rem;text-align:center;font-size:.8rem">Comprador</div>
+        <div style="border-top:1px solid #333;width:160px;padding-top:.3rem;text-align:center;font-size:.8rem">Fornecedor</div>
+      </div>
+    </div>`;
+
+  document.getElementById('modal-viz-pedido').style.display = 'block';
+}
+
+function fecharVizPedido() {
+  document.getElementById('modal-viz-pedido').style.display = 'none';
+}
+
+function imprimirVizPedido() {
+  const conteudo = document.getElementById('viz-pedido-print')?.innerHTML || '';
+  const w = window.open('', '_blank', 'width=900,height=700');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:1.5cm}</style>
+    </head><body>${conteudo}</body></html>`);
+  w.document.close();
+  setTimeout(() => w.print(), 400);
 }
 
 async function aprovarIntegracao(rascunhoId, contaId) {
