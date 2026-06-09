@@ -31,7 +31,7 @@ body {
 }
 
 .config-logo { margin-bottom: 20px; }
-.config-logo img { max-width: 200px; max-height: 100px; object-fit: contain; }
+.config-logo img { max-width: 220px; height: auto; object-fit: contain; }
 
 .config-card h1 { font-size: 24px; font-weight: 700; margin-bottom: 12px; color: #c0392b; }
 .config-card p  { color: #666; margin-bottom: 28px; line-height: 1.6; }
@@ -66,12 +66,9 @@ body {
 }
 
 .sidebar-logo-img {
-  width: 140px;
-  height: 72px;
+  width: 160px;
+  height: auto;
   object-fit: contain;
-  background: white;
-  border-radius: 10px;
-  padding: 8px 12px;
   flex-shrink: 0;
 }
 
