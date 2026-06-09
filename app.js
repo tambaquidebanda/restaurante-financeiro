@@ -106,6 +106,10 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.dropdown-multi')) {
     document.querySelectorAll('[id^="concil-drop-"]').forEach(d => d.classList.add('hidden'));
   }
+  if (!e.target.closest('#integ-forn-wrapper')) {
+    const drop = document.getElementById('integ-forn-dropdown');
+    if (drop) drop.style.display = 'none';
+  }
 });
 
 // Verifica se o erro é de sessão expirada e redireciona para login
@@ -6943,6 +6947,10 @@ function mostrarToast(mensagem, tipo = '') {
 // =========================================================
 // INTEGRAÇÕES PENDENTES (rascunhos do sistema de compras)
 // =========================================================
+let _integRascunhos = [];
+let _integItensMap  = {};
+let _integRateioMap = {};
+
 async function carregarIntegracoes() {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
@@ -6950,63 +6958,133 @@ async function carregarIntegracoes() {
   const { data: rascunhos } = await q(db
     .from('lancamentos_rascunho')
     .select('*, fornecedores(nome), plano_contas(nome)')
-    .order('criado_em', { ascending: false }));
+    .order('pedido_num', { ascending: false }));
 
-  const lista    = document.getElementById('integracoes-lista');
-  const vazio    = document.getElementById('integracoes-vazio');
-  const badge    = document.getElementById('badge-integracoes');
-
-  // Atualiza badge no menu
+  const badge = document.getElementById('badge-integracoes');
   if (badge) {
     const qtd = rascunhos?.length || 0;
     badge.textContent = qtd;
     badge.style.display = qtd > 0 ? 'inline' : 'none';
   }
 
+  const vazio = document.getElementById('integracoes-vazio');
   if (!rascunhos?.length) {
-    lista.innerHTML = '';
+    document.getElementById('integracoes-lista').innerHTML = '';
     if (vazio) vazio.style.display = 'block';
     return;
   }
   if (vazio) vazio.style.display = 'none';
 
-  // Busca rateios dos rascunhos com rateio
-  const idsComRateio = (rascunhos || []).filter(r => r.tem_rateio).map(r => r.id);
-  let rateioMap = {};
+  // Busca rateios
+  const idsComRateio = rascunhos.filter(r => r.tem_rateio).map(r => r.id);
+  _integRateioMap = {};
   if (idsComRateio.length) {
     const { data: rateios } = await q(db
       .from('rascunho_rateio_itens')
       .select('rascunho_id, valor, descricao, plano_contas(nome)')
       .in('rascunho_id', idsComRateio));
     (rateios || []).forEach(ri => {
-      if (!rateioMap[ri.rascunho_id]) rateioMap[ri.rascunho_id] = [];
-      rateioMap[ri.rascunho_id].push(ri);
+      if (!_integRateioMap[ri.rascunho_id]) _integRateioMap[ri.rascunho_id] = [];
+      _integRateioMap[ri.rascunho_id].push(ri);
     });
   }
 
-  // Busca itens de cada pedido no estoque para montar a miniatura
+  // Busca itens dos pedidos
   const pedidoNums = rascunhos.map(r => r.pedido_num).filter(Boolean);
-  let itensMap = {};
+  _integItensMap = {};
   if (pedidoNums.length) {
     const { data: itens } = await q(db
       .from('cmp_compras')
       .select('pedido_num,produto,categoria,quantidade,unidade_med,custo_unit,fornecedor_nome,comprador,data')
       .in('pedido_num', pedidoNums));
     (itens || []).forEach(it => {
-      if (!itensMap[it.pedido_num]) itensMap[it.pedido_num] = [];
-      itensMap[it.pedido_num].push(it);
+      if (!_integItensMap[it.pedido_num]) _integItensMap[it.pedido_num] = [];
+      _integItensMap[it.pedido_num].push(it);
     });
   }
 
-  lista.innerHTML = rascunhos.map(r => {
-    const venc   = (r.vencimento || '').split('-').reverse().join('/');
-    const forn   = r.fornecedores?.nome || '—';
-    const itens  = itensMap[r.pedido_num] || [];
-    const ref    = itens[0] || {};
-    const dataBR = (ref.data || '').split('-').reverse().join('/');
-    const total  = itens.reduce((s, it) => s + (it.quantidade||0)*(it.custo_unit||0), 0);
+  _integRascunhos = rascunhos;
 
-    const rateioItens = r.tem_rateio && rateioMap[r.id]?.length ? rateioMap[r.id] : [];
+  // Popula dropdown de fornecedores
+  _popularFornInteg();
+  renderIntegracoes();
+
+  // Busca rateios dos rascunhos com rateio
+}
+
+function _popularFornInteg() {
+  const lista = document.getElementById('integ-forn-lista');
+  if (!lista) return;
+  const forns = [...new Set(_integRascunhos.map(r => r.fornecedores?.nome).filter(Boolean))].sort();
+  lista.innerHTML = forns.map(f => `
+    <label style="display:flex;align-items:center;gap:.5rem;padding:.35rem .5rem;border-radius:5px;cursor:pointer;font-size:.84rem"
+      onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background=''">
+      <input type="checkbox" value="${f.replace(/"/g,'&quot;')}" onchange="_atualizarLabelFornInteg();filtrarIntegracoes()">
+      <span>${f}</span>
+    </label>`).join('');
+}
+
+function filtrarListaFornInteg() {
+  const busca = (document.getElementById('integ-forn-busca')?.value || '').toLowerCase();
+  document.querySelectorAll('#integ-forn-lista label').forEach(label => {
+    label.style.display = label.textContent.toLowerCase().includes(busca) ? '' : 'none';
+  });
+}
+
+function _getFornsSelecionados() {
+  return Array.from(document.querySelectorAll('#integ-forn-lista input:checked')).map(c => c.value);
+}
+
+function _atualizarLabelFornInteg() {
+  const sels = _getFornsSelecionados();
+  const label = document.getElementById('integ-forn-label');
+  if (!label) return;
+  label.textContent = sels.length === 0 ? 'Todos os fornecedores'
+    : sels.length === 1 ? sels[0]
+    : `${sels.length} fornecedores`;
+}
+
+function toggleDropIntegForn(e) {
+  e.stopPropagation();
+  const drop = document.getElementById('integ-forn-dropdown');
+  if (drop) drop.style.display = drop.style.display === 'none' ? 'block' : 'none';
+}
+
+
+function limparFiltrosInteg() {
+  const venc = document.getElementById('integ-filtro-venc');
+  if (venc) venc.value = '';
+  document.querySelectorAll('#integ-forn-lista input').forEach(c => c.checked = false);
+  _atualizarLabelFornInteg();
+  filtrarIntegracoes();
+}
+
+function filtrarIntegracoes() {
+  const venc  = document.getElementById('integ-filtro-venc')?.value || '';
+  const forns = _getFornsSelecionados();
+  let lista = _integRascunhos;
+  if (venc)        lista = lista.filter(r => r.vencimento === venc);
+  if (forns.length) lista = lista.filter(r => forns.includes(r.fornecedores?.nome));
+  const vazioPrincipal = document.getElementById('integracoes-vazio');
+  const vazioFiltro    = document.getElementById('integracoes-vazio-filtro');
+  if (vazioPrincipal) vazioPrincipal.style.display = 'none';
+  if (vazioFiltro)    vazioFiltro.style.display = lista.length ? 'none' : 'block';
+  renderIntegracoes(lista);
+}
+
+function renderIntegracoes(rascunhos) {
+  rascunhos = rascunhos ?? _integRascunhos;
+  const lista = document.getElementById('integracoes-lista');
+  if (!lista) return;
+
+  lista.innerHTML = rascunhos.map(r => {
+    const venc      = (r.vencimento || '').split('-').reverse().join('/');
+    const forn      = r.fornecedores?.nome || '—';
+    const itens     = _integItensMap[r.pedido_num] || [];
+    const ref       = itens[0] || {};
+    const dataBR    = (ref.data || '').split('-').reverse().join('/');
+    const total     = itens.reduce((s, it) => s + (it.quantidade||0)*(it.custo_unit||0), 0);
+    const rateioItens = r.tem_rateio && _integRateioMap[r.id]?.length ? _integRateioMap[r.id] : [];
 
     const linhasTabela = itens.length
       ? itens.map(it => `
