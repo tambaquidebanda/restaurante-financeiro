@@ -4363,11 +4363,9 @@ function htmlConciliacaoCell(t, i) {
       </div>`;
   }
 
-  const pendentesDoTipo = lancamentosPendentes.filter(l => l.tipo === t.tipo);
-  const dataInicial = t.data || '';
-  const pendentesVisiveis = dataInicial
-    ? pendentesDoTipo.filter(l => l.vencimento === dataInicial || l.id === t.lancamento_id)
-    : pendentesDoTipo;
+  const pendentesDoTipo   = lancamentosPendentes.filter(l => l.tipo === t.tipo);
+  const dataInicial       = t.data || '';
+  const pendentesVisiveis = pendentesDoTipo;
   const opcoesSelect = pendentesVisiveis.map(l => {
     const fornNome   = l.fornecedores?.nome ? ` — ${l.fornecedores.nome}` : '';
     const valorPago  = Number(l.valor_pago || 0);
@@ -4513,8 +4511,14 @@ function renderizarPreviewOFX(transacoes) {
       + unidades.map(u => `<option value="${u.id}" ${t.unidade_id === u.id ? 'selected' : ''}>${u.nome}</option>`).join('');
 
     if (t.jaImportado) {
+      const btnDesfazer = t.fitId
+        ? `<button class="btn btn-sm" style="margin-left:10px;background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer;"
+             onclick="desfazerImportacaoOFX('${t.fitId}', ${i})">
+             <i class="fas fa-undo"></i> Desfazer
+           </button>`
+        : '';
       return `
-        <tr style="opacity:0.5; background:#fff8e1;">
+        <tr style="opacity:0.6; background:#fff8e1;">
           <td><input type="checkbox" onchange="transacoesOFX[${i}].selecionado = this.checked"></td>
           <td>${formatarData(t.data)}</td>
           <td style="max-width:200px;word-break:break-word;font-size:13px;">${t.descricao}</td>
@@ -4522,6 +4526,7 @@ function renderizarPreviewOFX(transacoes) {
           <td><span class="badge badge-${corBadge}">${labelTipo}</span></td>
           <td colspan="3" style="color:#e67e22;font-size:12px;font-weight:600;">
             <i class="fas fa-exclamation-triangle"></i> Já importado anteriormente
+            ${btnDesfazer}
           </td>
         </tr>`;
     }
@@ -4559,6 +4564,51 @@ function renderizarPreviewOFX(transacoes) {
         </td>
       </tr>`;
   }).join('');
+}
+
+async function desfazerImportacaoOFX(fitId, i) {
+  if (!await garantirSessao()) return;
+  if (!confirm('Desfazer esta importação? O lançamento voltará para pendente e a transação poderá ser reimportada.')) return;
+
+  const db = obterSupabase();
+
+  // Verifica se foi conciliado com lançamento existente (registro em pagamentos)
+  const { data: pagamentos } = await q(
+    db.from('pagamentos').select('id, lancamento_id, valor').eq('ofx_id', fitId)
+  );
+
+  if (pagamentos && pagamentos.length > 0) {
+    for (const pag of pagamentos) {
+      await q(db.from('pagamentos').delete().eq('id', pag.id));
+      const { data: restantes } = await q(
+        db.from('pagamentos').select('valor').eq('lancamento_id', pag.lancamento_id)
+      );
+      const novoValorPago = (restantes || []).reduce((s, p) => s + Number(p.valor), 0);
+      const upd = novoValorPago > 0
+        ? { valor_pago: novoValorPago }
+        : { valor_pago: 0, status: 'pendente', data_pagamento: null, ofx_id: null };
+      await q(db.from('lancamentos').update(upd).eq('id', pag.lancamento_id));
+    }
+  } else {
+    // Foi criado como novo lançamento — deleta o lançamento inteiro
+    const { data: lanc } = await q(
+      db.from('lancamentos').select('id').eq('ofx_id', fitId).maybeSingle()
+    );
+    if (lanc) {
+      await q(db.from('lancamentos').delete().eq('id', lanc.id));
+    }
+  }
+
+  mostrarToast('Conciliação desfeita. Selecione o lançamento correto.', 'sucesso');
+
+  // Reativa a transação na tela
+  await carregarLancamentosPendentes();
+  transacoesOFX[i].jaImportado  = false;
+  transacoesOFX[i].selecionado  = true;
+  transacoesOFX[i].lancamento_id = null;
+  // Tenta re-fazer o auto-match só para essa transação
+  autoMatchConciliacao([transacoesOFX[i]]);
+  renderizarPreviewOFX(transacoesOFX);
 }
 
 let _concilMultiplaIdx = null;
