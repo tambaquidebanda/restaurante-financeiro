@@ -4380,6 +4380,28 @@ function htmlConciliacaoCell(t, i) {
   }).join('');
   const lancSel = t.lancamento_id ? lancamentosPendentes.find(l => l.id === t.lancamento_id) : null;
   const vencFuturo = lancSel && lancSel.vencimento > (t.data || '');
+
+  // Alerta de duplicata: sem conciliação selecionada, mas há pendentes com mesmo valor
+  let badgeDuplicata = '';
+  if (!t.lancamento_id) {
+    const candidatos = lancamentosPendentes.filter(l =>
+      l.tipo === t.tipo && Math.abs(Number(l.valor) - t.valor) < 0.01
+    );
+    if (candidatos.length > 0) {
+      const nomes = candidatos.slice(0, 2).map(l => {
+        const forn = l.fornecedores?.nome ? ` — ${l.fornecedores.nome}` : '';
+        return `<strong>${l.descricao}${forn}</strong> (${formatarData(l.vencimento)})`;
+      }).join('<br>');
+      const mais = candidatos.length > 2 ? `<br>+${candidatos.length - 2} outro(s)` : '';
+      badgeDuplicata = `
+        <div style="margin-top:5px;padding:6px 8px;background:#fff8e1;border:1px solid #f39c12;border-radius:6px;font-size:11px;color:#856404;">
+          <div style="font-weight:600;margin-bottom:3px;"><i class="fas fa-exclamation-triangle"></i> Possível duplicata — há ${candidatos.length} lançamento(s) pendente(s) com mesmo valor:</div>
+          ${nomes}${mais}
+          <div style="margin-top:3px;color:#888;">Selecione acima para conciliar em vez de criar um novo lançamento.</div>
+        </div>`;
+    }
+  }
+
   const badge = t.lancamento_id
     ? vencFuturo
       ? `<div style="font-size:11px;color:#e67e22;margin-top:3px;font-weight:600;">
@@ -4437,6 +4459,7 @@ function htmlConciliacaoCell(t, i) {
       ${opcoesSelect}
     </select>
     ${badge}
+    ${badgeDuplicata}
     ${ajusteHtml}
     <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" style="font-size:11px;" onclick="abrirConciliacaoMultipla(${i})">
