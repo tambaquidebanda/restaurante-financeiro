@@ -4372,6 +4372,46 @@ function htmlConciliacaoCell(t, i) {
          </div>`
       : '<div style="font-size:11px;color:#27ae60;margin-top:3px;"><i class="fas fa-link"></i> conciliado automaticamente</div>'
     : '';
+
+  // Ajuste de desconto/juros quando o valor do extrato difere do lançamento
+  let ajusteHtml = '';
+  if (lancSel) {
+    const diff = t.valor - Number(lancSel.valor); // + = juros, - = desconto
+    const diffAbs = Math.abs(diff);
+    if (diffAbs >= 0.01) {
+      const tipoDetect  = diff < 0 ? 'desconto' : 'acrescimo';
+      const tipoAtual   = t.ajuste_tipo  || tipoDetect;
+      const valorAtual  = t.ajuste_valor != null ? t.ajuste_valor : diffAbs;
+      const valFmt      = valorAtual.toFixed(2).replace('.', ',');
+      const cor         = diff < 0 ? '#27ae60' : '#e74c3c';
+      const bg          = diff < 0 ? '#eafaf1' : '#fef9e7';
+      const icone       = diff < 0 ? 'fa-tag' : 'fa-chart-line';
+      const label       = diff < 0 ? 'Desconto' : 'Juros/Multa';
+      // Inicializa estado na transação se ainda não foi definido
+      if (t.ajuste_tipo == null) { transacoesOFX[i].ajuste_tipo = tipoDetect; transacoesOFX[i].ajuste_valor = diffAbs; }
+      ajusteHtml = `
+        <div style="margin-top:5px;padding:6px 8px;background:${bg};border:1px solid ${cor}44;border-radius:6px;font-size:12px;">
+          <div style="color:${cor};font-weight:600;margin-bottom:5px;">
+            <i class="fas ${icone}"></i> Diferença de ${formatarMoeda(diffAbs)} — informe o ajuste:
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <select style="font-size:11px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;"
+              onchange="transacoesOFX[${i}].ajuste_tipo=this.value">
+              <option value="desconto"  ${tipoAtual==='desconto'  ? 'selected':''}>Desconto</option>
+              <option value="acrescimo" ${tipoAtual==='acrescimo' ? 'selected':''}>Juros/Multa</option>
+            </select>
+            <input type="text" value="${valFmt}"
+              style="width:85px;font-size:11px;padding:2px 6px;border:1px solid #ddd;border-radius:4px;text-align:right;"
+              oninput="transacoesOFX[${i}].ajuste_valor=parseMoeda(this.value)">
+            <span style="color:#888;font-size:11px;">Original: ${formatarMoeda(Number(lancSel.valor))}</span>
+          </div>
+        </div>`;
+    } else {
+      transacoesOFX[i].ajuste_tipo  = null;
+      transacoesOFX[i].ajuste_valor = null;
+    }
+  }
+
   return `
     <input type="date" id="filtro-data-concil-${i}" value="${dataInicial}"
       oninput="filtrarDataConciliacao(${i})"
@@ -4382,6 +4422,7 @@ function htmlConciliacaoCell(t, i) {
       ${opcoesSelect}
     </select>
     ${badge}
+    ${ajusteHtml}
     <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" style="font-size:11px;" onclick="abrirConciliacaoMultipla(${i})">
         <i class="fas fa-layer-group"></i> Múltiplos
@@ -5290,14 +5331,24 @@ async function importarTransacoes() {
     entry.ofxId    = t.fitId || null;
     if (t.tipo === 'pagar' && t.centro_custo_id) entry.centroCustoId = t.centro_custo_id;
     if (t.unidade_id) entry.unidadeId = t.unidade_id;
+    if (t.ajuste_tipo && t.ajuste_valor > 0) {
+      entry.ajuste_tipo  = t.ajuste_tipo;
+      entry.ajuste_valor = t.ajuste_valor;
+    }
   }
   for (const [lancId, entry] of concilPorLanc) {
-    const novoValorPago     = entry.valorPagoAtual + entry.somaOFX;
-    const pagamentoCompleto = novoValorPago >= entry.valorTotal - 0.01;
+    const desconto  = entry.ajuste_tipo === 'desconto'  ? (entry.ajuste_valor || 0) : 0;
+    const acrescimo = entry.ajuste_tipo === 'acrescimo' ? (entry.ajuste_valor || 0) : 0;
+    const novoValorPago = entry.valorPagoAtual + entry.somaOFX;
+    // Pagamento completo: OFX + desconto - juros deve cobrir o valor original
+    const valorEfetivo  = novoValorPago + desconto - acrescimo;
+    const pagamentoCompleto = valorEfetivo >= entry.valorTotal - 0.01;
     const updDados = {
       valor_pago: novoValorPago,
       ofx_id:     entry.ofxId,
       banco_id:   bancoId,
+      ...(desconto   > 0 ? { desconto }   : {}),
+      ...(acrescimo  > 0 ? { acrescimo }  : {}),
       ...(pagamentoCompleto ? { status: 'pago', data_pagamento: entry.data } : {})
     };
     if (entry.tipo === 'pagar' && entry.centroCustoId) updDados.centro_custo_id = entry.centroCustoId;
