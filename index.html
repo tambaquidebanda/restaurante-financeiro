@@ -779,14 +779,26 @@
         </div>
         <div class="filtros">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <label style="font-size:13px;color:#555;white-space:nowrap;">De</label>
+            <label style="font-size:13px;color:#555;white-space:nowrap;">Período</label>
             <input type="date" id="filtro-de-transferencias"
               style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;"
               onchange="carregarTransferencias()">
-            <label style="font-size:13px;color:#555;white-space:nowrap;">Até</label>
+            <span style="font-size:13px;color:#555;">até</span>
             <input type="date" id="filtro-ate-transferencias"
               style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;"
               onchange="carregarTransferencias()">
+            <label style="font-size:13px;color:#555;white-space:nowrap;margin-left:8px;">Banco De</label>
+            <select id="filtro-banco-origem-transf"
+              style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;"
+              onchange="carregarTransferencias()">
+              <option value="">Todos</option>
+            </select>
+            <label style="font-size:13px;color:#555;white-space:nowrap;">Para</label>
+            <select id="filtro-banco-destino-transf"
+              style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;"
+              onchange="carregarTransferencias()">
+              <option value="">Todos</option>
+            </select>
             <button class="btn btn-outline btn-sm" onclick="limparFiltroTransferencias()" title="Limpar filtro" style="font-size:12px;">
               <i class="fas fa-times"></i> Limpar
             </button>

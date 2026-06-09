@@ -554,6 +554,13 @@ function preencherSelectBancosTransferencia() {
     el.innerHTML = '<option value="">Selecione...</option>' +
       bancosCadastrados.map(b => `<option value="${b.id}">${b.nome}${b.conta ? ' (' + b.conta + ')' : ''}</option>`).join('');
   });
+  ['filtro-banco-origem-transf','filtro-banco-destino-transf'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const atual = el.value;
+    el.innerHTML = '<option value="">Todos</option>' +
+      bancosCadastrados.map(b => `<option value="${b.id}" ${b.id === atual ? 'selected' : ''}>${b.nome}</option>`).join('');
+  });
 }
 
 function preencherSelectBancoImportar() {
@@ -646,10 +653,11 @@ function preencherFiltrosMesTransferencias() {
 }
 
 function limparFiltroTransferencias() {
-  const elDe  = document.getElementById('filtro-de-transferencias');
-  const elAte = document.getElementById('filtro-ate-transferencias');
-  if (elDe)  elDe.value  = '';
-  if (elAte) elAte.value = '';
+  ['filtro-de-transferencias','filtro-ate-transferencias',
+   'filtro-banco-origem-transf','filtro-banco-destino-transf'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
   carregarTransferencias();
 }
 
@@ -3048,15 +3056,19 @@ async function excluirFormaPagamento(id) {
 async function carregarTransferencias() {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
-  const dataFiltroDE  = document.getElementById('filtro-de-transferencias')?.value;
-  const dataFiltroATE = document.getElementById('filtro-ate-transferencias')?.value;
+  const dataFiltroDE    = document.getElementById('filtro-de-transferencias')?.value;
+  const dataFiltroATE   = document.getElementById('filtro-ate-transferencias')?.value;
+  const bancoOrigemId   = document.getElementById('filtro-banco-origem-transf')?.value;
+  const bancoDestinoId  = document.getElementById('filtro-banco-destino-transf')?.value;
 
   let query = db.from('transferencias')
     .select('*, banco_origem:banco_origem_id(nome), banco_destino:banco_destino_id(nome)')
     .order('data', { ascending: false });
 
-  if (dataFiltroDE)  query = query.gte('data', dataFiltroDE);
-  if (dataFiltroATE) query = query.lte('data', dataFiltroATE);
+  if (dataFiltroDE)   query = query.gte('data', dataFiltroDE);
+  if (dataFiltroATE)  query = query.lte('data', dataFiltroATE);
+  if (bancoOrigemId)  query = query.eq('banco_origem_id', bancoOrigemId);
+  if (bancoDestinoId) query = query.eq('banco_destino_id', bancoDestinoId);
 
   const { data, error } = await q(query);
   if (error) { mostrarToast('Erro ao carregar transferências.', 'erro'); return; }
