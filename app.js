@@ -7280,6 +7280,8 @@ async function visualizarIntegracao(pedido_num, rascunhoId) {
   const ref    = itens[0];
   const dataBR = (ref.data||'').split('-').reverse().join('/');
   const total  = itens.reduce((s,c) => s + (c.quantidade||0)*(c.custo_unit||0), 0);
+  const rasc   = _integRascunhos.find(r => r.id === rascunhoId || r.id === parseInt(rascunhoId));
+  const obs    = rasc?.observacoes || '';
 
   const linhas = itens.map((c,i) => `
     <tr>
@@ -7327,6 +7329,7 @@ async function visualizarIntegracao(pedido_num, rascunhoId) {
           </tr>
         </tfoot>
       </table>
+      ${obs ? `<div style="margin-top:1rem;padding:.5rem .75rem;background:#f8f9fa;border-left:3px solid #FF6B35;font-size:.85rem;color:#555"><strong>Observações:</strong> ${obs}</div>` : ''}
       <div style="margin-top:2.5rem;display:flex;gap:4rem">
         <div style="border-top:1px solid #333;width:160px;padding-top:.3rem;text-align:center;font-size:.8rem">Comprador</div>
         <div style="border-top:1px solid #333;width:160px;padding-top:.3rem;text-align:center;font-size:.8rem">Fornecedor</div>
