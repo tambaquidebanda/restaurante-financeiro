@@ -3937,20 +3937,25 @@ function autoMatchConciliacao(transacoes) {
     t.lancamento_id           = null;
     t.lancamentos_ids         = [];
     t.transferencia_destino_id = null;
-    const candidatos = lancamentosPendentes.filter(l =>
-      !usados.has(l.id) &&
-      l.tipo === t.tipo &&
-      Math.abs(Number(l.valor) - t.valor) < 0.01
-    );
-    if (!candidatos.length) return;
     const dataTransacao = new Date(t.data + 'T00:00:00');
+    const candidatos = lancamentosPendentes.filter(l => {
+      if (usados.has(l.id)) return false;
+      if (l.tipo !== t.tipo) return false;
+      if (Math.abs(Number(l.valor) - t.valor) >= 0.01) return false;
+      // Não auto-conciliar pagamentos com vencimento no futuro:
+      // o sistema não pode presumir que o usuário está pagando antecipado.
+      const dataVenc = new Date(l.vencimento + 'T00:00:00');
+      if (dataVenc > dataTransacao) return false;
+      return true;
+    });
+    if (!candidatos.length) return;
     candidatos.sort((a, b) => {
       const da = Math.abs(new Date(a.vencimento + 'T00:00:00') - dataTransacao);
       const db = Math.abs(new Date(b.vencimento + 'T00:00:00') - dataTransacao);
       return da - db;
     });
     const melhor = candidatos[0];
-    const diffDias = Math.abs(new Date(melhor.vencimento + 'T00:00:00') - dataTransacao) / 86400000;
+    const diffDias = (dataTransacao - new Date(melhor.vencimento + 'T00:00:00')) / 86400000;
     if (diffDias <= 45) {
       t.lancamento_id = melhor.id;
       usados.add(melhor.id);
@@ -4105,6 +4110,7 @@ function selecionarCatOFX(i, valor) {
 function selecionarConciliacaoOFX(i, lancamentoId) {
   transacoesOFX[i].lancamento_id  = lancamentoId || null;
   transacoesOFX[i].lancamentos_ids = [];
+  renderizarCelulaConciliacao(i);
 }
 
 // ── Importar Excel - Contas a Pagar ───────────────────────────────────────
@@ -4409,8 +4415,14 @@ function htmlConciliacaoCell(t, i) {
     const sel        = t.lancamento_id === l.id ? 'selected' : '';
     return `<option value="${l.id}" ${sel}>${label}</option>`;
   }).join('');
+  const lancSel = t.lancamento_id ? lancamentosPendentes.find(l => l.id === t.lancamento_id) : null;
+  const vencFuturo = lancSel && lancSel.vencimento > (t.data || '');
   const badge = t.lancamento_id
-    ? '<div style="font-size:11px;color:#27ae60;margin-top:3px;"><i class="fas fa-link"></i> conciliado automaticamente</div>'
+    ? vencFuturo
+      ? `<div style="font-size:11px;color:#e67e22;margin-top:3px;font-weight:600;">
+           <i class="fas fa-exclamation-triangle"></i> Vencimento futuro: ${formatarData(lancSel.vencimento)} — confirme se é pagamento antecipado
+         </div>`
+      : '<div style="font-size:11px;color:#27ae60;margin-top:3px;"><i class="fas fa-link"></i> conciliado automaticamente</div>'
     : '';
   return `
     <input type="date" id="filtro-data-concil-${i}" value="${dataInicial}"
