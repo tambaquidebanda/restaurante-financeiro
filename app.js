@@ -2177,6 +2177,7 @@ async function salvarLancamento(tipo, btnEl) {
   if (tipo === 'pagar' && !descricao) { mostrarToast('Informe a descrição!', 'erro'); restaurarComTimeout(); return; }
   if (!valorNota || valorNota <= 0) { mostrarToast('Informe um valor válido!', 'erro'); restaurarComTimeout(); return; }
   if (!vencimento) { mostrarToast('Informe a data!', 'erro'); restaurarComTimeout(); return; }
+  if (status === 'pago' && !bancoId) { mostrarToast('Selecione o Banco / Caixa onde o valor foi recebido!', 'erro'); restaurarComTimeout(); return; }
 
   const numeroPedido = tipo === 'pagar' ? obterNFsPagar() : '';
   if (numeroPedido) {
