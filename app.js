@@ -7275,14 +7275,18 @@ let _vizPedidoAtual = null;
 async function visualizarIntegracao(pedido_num, rascunhoId) {
   if (!pedido_num) return;
   const db = obterSupabase();
-  const { data: itens } = await q(db.from('cmp_compras')
-    .select('*').eq('pedido_num', pedido_num));
+
+  // Busca itens do pedido e observação do rascunho em paralelo
+  const [{ data: itens }, { data: rasc }] = await Promise.all([
+    q(db.from('cmp_compras').select('*').eq('pedido_num', pedido_num)),
+    q(db.from('lancamentos_rascunho').select('observacoes').eq('id', rascunhoId).maybeSingle()),
+  ]);
+
   if (!itens?.length) { mostrarToast('Itens do pedido não encontrados.', 'erro'); return; }
 
   const ref    = itens[0];
   const dataBR = (ref.data||'').split('-').reverse().join('/');
   const total  = itens.reduce((s,c) => s + (c.quantidade||0)*(c.custo_unit||0), 0);
-  const rasc   = _integRascunhos.find(r => r.id === rascunhoId || r.id === parseInt(rascunhoId));
   const obs    = rasc?.observacoes || '';
 
   const linhas = itens.map((c,i) => `
