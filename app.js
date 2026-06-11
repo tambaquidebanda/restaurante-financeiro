@@ -7280,15 +7280,16 @@ async function visualizarIntegracao(pedido_num, rascunhoId) {
   // Busca itens do pedido e observação do rascunho em paralelo
   const [{ data: itens }, { data: rasc }] = await Promise.all([
     q(db.from('cmp_compras').select('*').eq('pedido_num', pedido_num)),
-    q(db.from('lancamentos_rascunho').select('observacoes').eq('id', rascunhoId).maybeSingle()),
+    q(db.from('lancamentos_rascunho').select('observacoes,unidade_id').eq('id', rascunhoId).maybeSingle()),
   ]);
 
   if (!itens?.length) { mostrarToast('Itens do pedido não encontrados.', 'erro'); return; }
 
-  const ref    = itens[0];
-  const dataBR = (ref.data||'').split('-').reverse().join('/');
-  const total  = itens.reduce((s,c) => s + (c.quantidade||0)*(c.custo_unit||0), 0);
-  const obs    = rasc?.observacoes || '';
+  const ref         = itens[0];
+  const dataBR      = (ref.data||'').split('-').reverse().join('/');
+  const total       = itens.reduce((s,c) => s + (c.quantidade||0)*(c.custo_unit||0), 0);
+  const obs         = rasc?.observacoes || '';
+  const unidadeNome = unidades.find(u => u.id === rasc?.unidade_id)?.nome || ref.unidade_uso || '';
 
   const linhas = itens.map((c,i) => `
     <tr>
@@ -7315,6 +7316,7 @@ async function visualizarIntegracao(pedido_num, rascunhoId) {
         <div><span style="color:#888">Data</span><div><strong>${dataBR}</strong></div></div>
         <div><span style="color:#888">Fornecedor</span><div><strong>${ref.fornecedor_nome||'—'}</strong></div></div>
         <div><span style="color:#888">Comprador</span><div><strong>${ref.comprador||'—'}</strong></div></div>
+        ${unidadeNome ? `<div><span style="color:#888">Unidade</span><div><strong>${unidadeNome}</strong></div></div>` : ''}
         ${ref.data_entrega ? `<div><span style="color:#888">Entrega</span><div><strong>${ref.data_entrega.split('-').reverse().join('/')}</strong></div></div>` : ''}
       </div>
       <table style="width:100%;border-collapse:collapse">
