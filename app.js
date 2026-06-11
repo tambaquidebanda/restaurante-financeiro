@@ -2332,8 +2332,13 @@ async function editarLancamento(id, tipo) {
 async function marcarComoPago(id, tipo) {
   if (!await garantirSessao()) return;
   const db = obterSupabase();
+  const { data: l } = await db.from('lancamentos').select('banco_id').eq('id', id).single();
+  if (!l?.banco_id) {
+    mostrarToast('Edite o lançamento e selecione o Banco / Caixa antes de marcar como recebido.', 'erro');
+    return;
+  }
   const hoje = new Date().toISOString().split('T')[0];
-  const { error } = await q(db.from('lancamentos').update({ status: 'pago', data_pagamento: hoje }).eq('id', id))
+  const { error } = await q(db.from('lancamentos').update({ status: 'pago', data_pagamento: hoje }).eq('id', id));
   if (error) { mostrarToast('Erro ao atualizar.', 'erro'); return; }
   mostrarToast(tipo === 'pagar' ? 'Conta marcada como paga!' : 'Entrada marcada como recebida!', 'sucesso');
   carregarLancamentos(tipo);
