@@ -5441,10 +5441,13 @@ async function importarTransacoes() {
     // Pagamento completo: OFX + desconto - juros deve cobrir o valor original
     const valorEfetivo  = novoValorPago + desconto - acrescimo;
     const pagamentoCompleto = valorEfetivo >= entry.valorTotal - 0.01;
+    // Atualiza valor para refletir o total real pago (nota + acrescimo - desconto)
+    const novoValor = entry.valorTotal + acrescimo - desconto;
     const updDados = {
       valor_pago: novoValorPago,
       ofx_id:     entry.ofxId,
       banco_id:   bancoId,
+      ...(novoValor !== entry.valorTotal ? { valor: novoValor } : {}),
       ...(desconto   > 0 ? { desconto }   : {}),
       ...(acrescimo  > 0 ? { acrescimo }  : {}),
       ...(pagamentoCompleto ? { status: 'pago', data_pagamento: entry.data } : {})
