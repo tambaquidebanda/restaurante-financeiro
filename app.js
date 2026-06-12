@@ -4611,6 +4611,7 @@ async function desfazerImportacaoOFX(fitId, i) {
 
   // Reativa a transação na tela
   await carregarLancamentosPendentes();
+  carregarConciliacao();
   transacoesOFX[i].jaImportado  = false;
   transacoesOFX[i].selecionado  = true;
   transacoesOFX[i].lancamento_id = null;
@@ -5267,6 +5268,7 @@ async function hpDesfazerConciliacao(pagamentoId, valorPagamento) {
   fecharModal('modal-historico-pagamentos');
   await carregarLancamentosPendentes();
   carregarDashboard();
+  carregarConciliacao();
 }
 
 function abrirTransferencia(i) {
@@ -5503,6 +5505,7 @@ async function importarTransacoes() {
   restaurarBtn();
   await carregarLancamentosPendentes();
   carregarDashboard();
+  carregarConciliacao();
   } catch (err) {
     restaurarBtn();
     mostrarToast('Erro durante a importação. Verifique sua conexão e tente novamente.', 'erro');
@@ -5790,23 +5793,36 @@ async function carregarConciliacao() {
   // Fechar dropdowns
   document.querySelectorAll('[id^="concil-drop-"]').forEach(d => d.classList.add('hidden'));
 
-  const [resLanc, resTransf] = await Promise.all([
-    q(db.from('lancamentos')
-      .select('data_pagamento, tipo, valor, unidade_id, banco_id')
-      .eq('status', 'pago')
-      .gte('data_pagamento', dataIni)
-      .lte('data_pagamento', dataFim)
-      .limit(10000)),
-    q(db.from('transferencias')
-      .select('data, valor, banco_origem_id, banco_destino_id')
-      .gte('data', dataIni)
-      .lte('data', dataFim)
-      .limit(10000))
-  ]);
-  if (resLanc.error) { tbody.innerHTML = `<tr><td colspan="4" class="sem-dados">Erro ao carregar.</td></tr>`; return; }
+  // Busca paginada — PostgREST limita a 1.000 linhas por resposta
+  async function fetchConcilPag(tabela, selectFields, filtros) {
+    const PAGE = 1000;
+    let todos = [], pagina = 0;
+    while (true) {
+      let qr = db.from(tabela).select(selectFields).range(pagina * PAGE, (pagina + 1) * PAGE - 1);
+      for (const [met, ...args] of filtros) qr = qr[met](...args);
+      const { data, error } = await qr;
+      if (error || !data || data.length === 0) break;
+      todos = todos.concat(data);
+      if (data.length < PAGE) break;
+      pagina++;
+    }
+    return todos;
+  }
 
-  let lancamentos = resLanc.data || [];
-  let transferencias = resTransf.data || [];
+  const [lancamentos_raw, transferencias_raw] = await Promise.all([
+    fetchConcilPag('lancamentos', 'data_pagamento, tipo, valor, unidade_id, banco_id', [
+      ['eq', 'status', 'pago'],
+      ['gte', 'data_pagamento', dataIni],
+      ['lte', 'data_pagamento', dataFim]
+    ]),
+    fetchConcilPag('transferencias', 'data, valor, banco_origem_id, banco_destino_id', [
+      ['gte', 'data', dataIni],
+      ['lte', 'data', dataFim]
+    ])
+  ]);
+
+  let lancamentos = lancamentos_raw;
+  let transferencias = transferencias_raw;
 
   // Filtro unidades (se não for todas)
   if (unidadesSel.length < totalUni) {
