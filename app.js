@@ -7209,7 +7209,8 @@ function renderIntegracoes(rascunhos) {
     const itens     = _integItensMap[r.pedido_num] || [];
     const ref       = itens[0] || {};
     const dataBR    = (ref.data || '').split('-').reverse().join('/');
-    const total     = itens.reduce((s, it) => s + (it.quantidade||0)*(it.custo_unit||0), 0);
+    const acrescimo = Number(r.acrescimo) || 0;
+    const total     = Number(r.valor) + acrescimo; // valor da nota + acréscimo do lançamento
     const rateioItens = r.tem_rateio && _integRateioMap[r.id]?.length ? _integRateioMap[r.id] : [];
 
     const linhasTabela = itens.length
@@ -7262,6 +7263,10 @@ function renderIntegracoes(rascunhos) {
           </thead>
           <tbody>${linhasTabela}</tbody>
           <tfoot>
+            ${acrescimo > 0 ? `<tr style="font-size:.68rem;color:#c2410c">
+              <td colspan="3" style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right">Acréscimo</td>
+              <td style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right;font-weight:600">+ ${formatarMoeda(acrescimo)}</td>
+            </tr>` : ''}
             <tr style="background:#f0fdf4;font-size:.72rem;font-weight:700">
               <td colspan="3" style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right">TOTAL</td>
               <td style="padding:2px 4px;border:1px solid #e0e0e0;text-align:right;color:#16a34a">${formatarMoeda(total)}</td>
@@ -7304,14 +7309,15 @@ async function visualizarIntegracao(pedido_num, rascunhoId) {
   // Busca itens do pedido e observação do rascunho em paralelo
   const [{ data: itens }, { data: rasc }] = await Promise.all([
     q(db.from('cmp_compras').select('*').eq('pedido_num', pedido_num)),
-    q(db.from('lancamentos_rascunho').select('observacoes,unidade_id').eq('id', rascunhoId).maybeSingle()),
+    q(db.from('lancamentos_rascunho').select('observacoes,unidade_id,acrescimo,valor').eq('id', rascunhoId).maybeSingle()),
   ]);
 
   if (!itens?.length) { mostrarToast('Itens do pedido não encontrados.', 'erro'); return; }
 
   const ref         = itens[0];
   const dataBR      = (ref.data||'').split('-').reverse().join('/');
-  const total       = itens.reduce((s,c) => s + (c.quantidade||0)*(c.custo_unit||0), 0);
+  const acrescimo   = Number(rasc?.acrescimo) || 0;
+  const total       = Number(rasc?.valor || 0) + acrescimo; // valor da nota + acréscimo do lançamento
   const obs         = rasc?.observacoes || '';
   const unidadeNome = unidades.find(u => u.id === rasc?.unidade_id)?.nome || ref.unidade_uso || '';
 
@@ -7356,6 +7362,10 @@ async function visualizarIntegracao(pedido_num, rascunhoId) {
         </thead>
         <tbody>${linhas}</tbody>
         <tfoot>
+          ${acrescimo > 0 ? `<tr style="color:#c2410c;font-size:.85rem">
+            <td colspan="5" style="padding:5px 8px;border:1px solid #e0e0e0;text-align:right">Acréscimo (frete/taxa)</td>
+            <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:right;font-weight:600">+ ${formatarMoeda(acrescimo)}</td>
+          </tr>` : ''}
           <tr style="background:#f0fdf4;font-weight:700">
             <td colspan="5" style="padding:6px 8px;border:1px solid #e0e0e0;text-align:right">TOTAL DO PEDIDO</td>
             <td style="padding:6px 8px;border:1px solid #e0e0e0;text-align:right;color:#16a34a">${formatarMoeda(total)}</td>
