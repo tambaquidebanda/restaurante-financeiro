@@ -7206,6 +7206,7 @@ function renderIntegracoes(rascunhos) {
   lista.innerHTML = rascunhos.map(r => {
     const venc      = (r.vencimento || '').split('-').reverse().join('/');
     const forn      = r.fornecedores?.nome || '—';
+    const isCompExt = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo';
     const itens     = _integItensMap[r.pedido_num] || [];
     const ref       = itens[0] || {};
     const dataBR    = (ref.data || '').split('-').reverse().join('/');
@@ -7279,6 +7280,31 @@ function renderIntegracoes(rascunhos) {
         ${r.observacoes ? `<div style="margin-top:.3rem;font-size:.7rem;color:#555;background:#f8f9fa;border-radius:4px;padding:3px 6px">📝 ${r.observacoes}</div>` : ''}
       </div>
       <!-- Botões -->
+      ${isCompExt ? `
+      <div style="padding:.6rem .8rem;background:#eff6ff;border-top:1px solid #dbeafe">
+        <div style="font-size:.72rem;font-weight:700;color:#1d4ed8;margin-bottom:.4rem">🔄 Transferência Interna — selecione os bancos:</div>
+        <div style="display:flex;gap:.4rem;align-items:center;margin-bottom:.4rem">
+          <select id="transfOrigem-${r.id}" style="flex:1;font-size:.73rem;padding:.25rem .3rem;border:1px solid #93c5fd;border-radius:4px;background:#fff">
+            <option value="">Origem</option>
+            ${bancosCadastrados.map(b => `<option value="${b.id}" ${b.nome.toLowerCase().includes('santander') ? 'selected' : ''}>${b.nome}</option>`).join('')}
+          </select>
+          <span style="color:#93c5fd;font-weight:700">→</span>
+          <select id="transfDestino-${r.id}" style="flex:1;font-size:.73rem;padding:.25rem .3rem;border:1px solid #93c5fd;border-radius:4px;background:#fff">
+            <option value="">Destino</option>
+            ${bancosCadastrados.map(b => `<option value="${b.id}" ${b.nome.toLowerCase().includes('nubank') ? 'selected' : ''}>${b.nome}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">
+          <button onclick="aprovarComoTransferencia('${r.id}','${r.conta_id||''}',${total},'${r.vencimento||''}')"
+            style="padding:.4rem;background:#1d4ed8;color:#fff;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-exchange-alt"></i> Registrar Transferência
+          </button>
+          <button onclick="rejeitarIntegracao('${r.id}','${r.pedido_num||''}')"
+            style="padding:.4rem;background:#fff5f5;color:#dc2626;border:1px solid #fecaca;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-times"></i> Rejeitar
+          </button>
+        </div>
+      </div>` : `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0">
         <button onclick="visualizarIntegracao('${r.pedido_num||''}','${r.id}')"
           style="padding:.6rem;background:#f8f9fa;border:none;border-right:1px solid #e0e0e0;font-size:.78rem;cursor:pointer;color:#1a1a2e;font-weight:600;transition:background .15s"
@@ -7295,7 +7321,7 @@ function renderIntegracoes(rascunhos) {
           onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='#fff5f5'">
           <i class="fas fa-times"></i><br>Rejeitar
         </button>
-      </div>
+      </div>`}
     </div>`;
   }).join('');
 }
@@ -7452,6 +7478,61 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
 
   mostrarToast('✅ Conta a pagar gerada com sucesso!', 'sucesso');
+  carregarIntegracoes();
+}
+
+async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) {
+  const origemId  = document.getElementById(`transfOrigem-${rascunhoId}`)?.value;
+  const destinoId = document.getElementById(`transfDestino-${rascunhoId}`)?.value;
+  if (!origemId)                    { mostrarToast('Selecione o banco de origem.', 'erro'); return; }
+  if (!destinoId)                   { mostrarToast('Selecione o banco de destino.', 'erro'); return; }
+  if (origemId === destinoId)       { mostrarToast('Origem e destino devem ser diferentes.', 'erro'); return; }
+  if (!(await garantirSessao()))    return;
+  const db = obterSupabase();
+
+  const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
+  if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
+
+  const dataTransf = vencimento || new Date().toISOString().split('T')[0];
+
+  // 1. Cria transferência interna Santander → Nubank
+  const { error: errTransf } = await q(db.from('transferencias').insert([{
+    banco_origem_id:  origemId,
+    banco_destino_id: destinoId,
+    valor,
+    data:             dataTransf,
+    descricao:        r.descricao || `Adiantamento ${r.pedido_num}`,
+  }]));
+  if (errTransf) { mostrarToast('Erro ao criar transferência: ' + errTransf.message, 'erro'); return; }
+
+  // 2. Cria lançamento como pago para manter o vínculo em cmp_contas_pagar.adiantamento_lancamento_id
+  const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
+    descricao:      r.descricao,
+    valor:          r.valor,
+    acrescimo:      r.acrescimo || 0,
+    desconto:       r.desconto  || 0,
+    vencimento:     r.vencimento,
+    tipo:           'pagar',
+    status:         'pago',
+    data_pagamento: dataTransf,
+    fornecedor_id:  r.fornecedor_id  || null,
+    plano_conta_id: r.plano_conta_id || null,
+    numero_pedido:  r.numero_pedido,
+    observacoes:    r.observacoes,
+    tem_rateio:     false,
+    unidade_id:     r.unidade_id || null,
+  }]).select('id').single());
+  if (errLanc) { mostrarToast('Erro ao registrar lançamento: ' + errLanc.message, 'erro'); return; }
+
+  // 3. Atualiza cmp_contas_pagar com adiantamento_lancamento_id
+  if (contaId && lanc?.id) {
+    await q(db.from('cmp_contas_pagar').update({ adiantamento_lancamento_id: lanc.id }).eq('id', contaId));
+  }
+
+  // 4. Remove rascunho
+  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+
+  mostrarToast('✅ Transferência registrada!', 'sucesso');
   carregarIntegracoes();
 }
 
