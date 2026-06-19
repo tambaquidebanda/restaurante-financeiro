@@ -7206,7 +7206,8 @@ function renderIntegracoes(rascunhos) {
   lista.innerHTML = rascunhos.map(r => {
     const venc      = (r.vencimento || '').split('-').reverse().join('/');
     const forn      = r.fornecedores?.nome || '—';
-    const isCompExt = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo';
+    const isCompExt  = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo';
+    const isDinheiro = isCompExt && (r.observacoes || '').toLowerCase().includes('dinheiro');
     const itens     = _integItensMap[r.pedido_num] || [];
     const ref       = itens[0] || {};
     const dataBR    = (ref.data || '').split('-').reverse().join('/');
@@ -7280,13 +7281,26 @@ function renderIntegracoes(rascunhos) {
         ${r.observacoes ? `<div style="margin-top:.3rem;font-size:.7rem;color:#555;background:#f8f9fa;border-radius:4px;padding:3px 6px">📝 ${r.observacoes}</div>` : ''}
       </div>
       <!-- Botões -->
-      ${isCompExt ? `
+      ${isCompExt ? isDinheiro ? `
+      <div style="padding:.6rem .8rem;background:#fefce8;border-top:1px solid #fef08a">
+        <div style="font-size:.72rem;font-weight:700;color:#854d0e;margin-bottom:.4rem">💵 Pagamento em Dinheiro — Caixa</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">
+          <button onclick="aprovarComoDinheiro('${r.id}','${r.conta_id||''}',${total},'${r.vencimento||''}','${bancosCadastrados.find(b=>{const n=b.nome.toLowerCase();return n.includes('caixa')||n.includes('dinheiro');})?.id||''}')"
+            style="padding:.4rem;background:#854d0e;color:#fff;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            💵 Registrar Pagamento
+          </button>
+          <button onclick="rejeitarIntegracao('${r.id}','${r.pedido_num||''}')"
+            style="padding:.4rem;background:#fff5f5;color:#dc2626;border:1px solid #fecaca;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-times"></i> Rejeitar
+          </button>
+        </div>
+      </div>` : `
       <div style="padding:.6rem .8rem;background:#eff6ff;border-top:1px solid #dbeafe">
         <div style="font-size:.72rem;font-weight:700;color:#1d4ed8;margin-bottom:.4rem">🔄 Transferência Interna — selecione os bancos:</div>
         <div style="display:flex;gap:.4rem;align-items:center;margin-bottom:.4rem">
           <select id="transfOrigem-${r.id}" style="flex:1;font-size:.73rem;padding:.25rem .3rem;border:1px solid #93c5fd;border-radius:4px;background:#fff">
             <option value="">Origem</option>
-            ${bancosCadastrados.map(b => `<option value="${b.id}" ${b.nome.toLowerCase().includes('santander') ? 'selected' : ''}>${b.nome}</option>`).join('')}
+            ${bancosCadastrados.map(b => { const n = b.nome.toLowerCase(); return `<option value="${b.id}" ${n.includes('santander') && !n.includes('smoke') && !n.includes('test') ? 'selected' : ''}>${b.nome}</option>`; }).join('')}
           </select>
           <span style="color:#93c5fd;font-weight:700">→</span>
           <select id="transfDestino-${r.id}" style="flex:1;font-size:.73rem;padding:.25rem .3rem;border:1px solid #93c5fd;border-radius:4px;background:#fff">
@@ -7533,6 +7547,45 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
   await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
 
   mostrarToast('✅ Transferência registrada!', 'sucesso');
+  carregarIntegracoes();
+}
+
+async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixaBancoId) {
+  if (!confirm('Registrar pagamento em dinheiro (Caixa) para este pedido?')) return;
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+
+  const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
+  if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
+
+  const dataPag = vencimento || new Date().toISOString().split('T')[0];
+
+  const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
+    descricao:      r.descricao,
+    valor:          r.valor,
+    acrescimo:      r.acrescimo || 0,
+    desconto:       r.desconto  || 0,
+    vencimento:     r.vencimento,
+    tipo:           'pagar',
+    status:         'pago',
+    data_pagamento: dataPag,
+    banco_id:       caixaBancoId || null,
+    fornecedor_id:  r.fornecedor_id  || null,
+    plano_conta_id: r.plano_conta_id || null,
+    numero_pedido:  r.numero_pedido,
+    observacoes:    r.observacoes,
+    tem_rateio:     false,
+    unidade_id:     r.unidade_id || null,
+  }]).select('id').single());
+  if (errLanc) { mostrarToast('Erro ao registrar lançamento: ' + errLanc.message, 'erro'); return; }
+
+  if (contaId && lanc?.id) {
+    await q(db.from('cmp_contas_pagar').update({ adiantamento_lancamento_id: lanc.id }).eq('id', contaId));
+  }
+
+  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+
+  mostrarToast('✅ Pagamento em dinheiro registrado!', 'sucesso');
   carregarIntegracoes();
 }
 
