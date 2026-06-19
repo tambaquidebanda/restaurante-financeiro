@@ -7519,7 +7519,8 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
   }]));
   if (errTransf) { mostrarToast('Erro ao criar transferência: ' + errTransf.message, 'erro'); return; }
 
-  // 2. Cria lançamento como pago para manter o vínculo em cmp_contas_pagar.adiantamento_lancamento_id
+  // 2. Cria lançamento pendente para manter o vínculo em cmp_contas_pagar.adiantamento_lancamento_id
+  //    Fica pendente até a conciliação OFX confirmar a saída no Santander
   const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
     descricao:      r.descricao,
     valor:          r.valor,
@@ -7527,8 +7528,9 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
     desconto:       r.desconto  || 0,
     vencimento:     r.vencimento,
     tipo:           'pagar',
-    status:         'pago',
-    data_pagamento: dataTransf,
+    status:         'pendente',
+    data_pagamento: null,
+    banco_id:       null,
     fornecedor_id:  r.fornecedor_id  || null,
     plano_conta_id: r.plano_conta_id || null,
     numero_pedido:  r.numero_pedido,
