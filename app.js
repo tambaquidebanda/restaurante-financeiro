@@ -1843,7 +1843,7 @@ async function carregarLancamentos(tipo) {
 
   if (fornFiltros.length) query = query.in('fornecedor_id', fornFiltros);
 
-  if (pedidoFiltro) query = query.ilike('numero_pedido', `%${pedidoFiltro}%`);
+  if (pedidoFiltro) query = query.ilike('descricao', `%Pedido%${pedidoFiltro}%`);
 
   if (grupoFiltros.length) {
     const subcatIds = planoContas.filter(p => grupoFiltros.includes(p.grupo_id)).map(p => p.id);
@@ -1872,7 +1872,7 @@ async function carregarLancamentos(tipo) {
         else q2 = q2.eq('plano_conta_id', 'nenhum');
       }
       if (bancosFiltro.length) q2 = q2.in('banco_id', bancosFiltro);
-      if (pedidoFiltro)        q2 = q2.ilike('numero_pedido', `%${pedidoFiltro}%`);
+      if (pedidoFiltro)        q2 = q2.ilike('descricao', `%Pedido%${pedidoFiltro}%`);
       const { data: lote } = await q2;
       if (!lote || lote.length === 0) break;
       todos = todos.concat(lote);
@@ -1947,6 +1947,13 @@ async function carregarLancamentos(tipo) {
   if (tipo === 'pagar') atualizarBotaoPagarLote();
 }
 
+// Extrai o número do pedido da descrição (padrão da integração: "Pedido #00093 — Fornecedor")
+function extrairNumeroPedido(descricao) {
+  const m = (descricao || '').match(/Pedido\s+(#?\d+)/i);
+  if (!m) return '';
+  return m[1].startsWith('#') ? m[1] : `#${m[1]}`;
+}
+
 function renderizarLinhasLancamentos(tipo, lancamentos) {
   const hoje   = new Date().toISOString().split('T')[0];
   const tbody  = document.getElementById(`tbody-${tipo}`);
@@ -1970,7 +1977,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
   const { col, dir } = sortEstado[tipo];
   const sorted = [...lancamentos].sort((a, b) => {
     let va, vb;
-    if (col === 'pedido') { va = (a.numero_pedido || '').toLowerCase(); vb = (b.numero_pedido || '').toLowerCase(); }
+    if (col === 'pedido') { va = extrairNumeroPedido(a.descricao); vb = extrairNumeroPedido(b.descricao); }
     else if (col === 'fornecedor') { va = (a.fornecedores?.nome || '').toLowerCase(); vb = (b.fornecedores?.nome || '').toLowerCase(); }
     else if (col === 'unidade') { va = (a.unidades?.nome || '').toLowerCase(); vb = (b.unidades?.nome || '').toLowerCase(); }
     else if (col === 'descricao') { va = (a.descricao || '').toLowerCase(); vb = (b.descricao || '').toLowerCase(); }
@@ -1990,8 +1997,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
     const badgeTexto = statusReal === 'pago' ? labelPagar : statusReal.charAt(0).toUpperCase() + statusReal.slice(1);
 
     const subInfos = [];
-    // numero_pedido tem coluna própria na tabela de pagar; nas outras, vai como subinfo
-    if (l.numero_pedido && tipo !== 'pagar') subInfos.push(`<i class="fas fa-hashtag"></i> ${l.numero_pedido}`);
+    if (l.numero_pedido) subInfos.push(`<i class="fas fa-file-invoice"></i> ${l.numero_pedido}`);
     if (l.tem_rateio)         subInfos.push(`<i class="fas fa-code-branch"></i> Rateio`);
     if (l.ofx_id)             subInfos.push(`<i class="fas fa-university" style="color:#27ae60;"></i> <span style="color:#27ae60;font-weight:600;">Extrato conciliado</span>`);
     if (Number(l.valor_pago) > 0 && l.status === 'pendente') {
@@ -2027,8 +2033,9 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
         <div class="desc-principal">${l.descricao}</div>
         ${subInfos.map(s => `<div class="desc-sub">${s}</div>`).join('')}
       </td>`;
-    const pedidoCell = `<td style="font-size:13px;white-space:nowrap;">${l.numero_pedido
-      ? `<span style="color:#FF6B35;font-weight:600;"><i class="fas fa-hashtag" style="font-size:11px;"></i> ${l.numero_pedido}</span>`
+    const numPedido = extrairNumeroPedido(l.descricao);
+    const pedidoCell = `<td style="font-size:13px;white-space:nowrap;">${numPedido
+      ? `<span style="color:#FF6B35;font-weight:600;"><i class="fas fa-hashtag" style="font-size:11px;"></i> ${numPedido}</span>`
       : '<span style="color:#ccc;">—</span>'}</td>`;
     const fornCell  = `<td style="font-size:13px;color:#555;">${l.fornecedores?.nome || '-'}</td>`;
     const uniCell   = `<td style="font-size:13px;color:#555;">${l.unidades?.nome || '-'}</td>`;
