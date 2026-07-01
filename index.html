@@ -493,6 +493,12 @@
             </button>
             <div class="filtro-banco-dropdown" id="filtro-banco-dropdown-pagar" style="display:none;"></div>
           </div>
+          <div style="position:relative;display:flex;align-items:center;">
+            <i class="fas fa-hashtag" style="position:absolute;left:10px;font-size:12px;color:#aaa;"></i>
+            <input type="text" id="filtro-pedido-pagar" placeholder="Nº do pedido"
+              onkeydown="if(event.key==='Enter')carregarLancamentos('pagar')"
+              style="padding:6px 10px 6px 26px;border:1px solid #ddd;border-radius:6px;font-size:13px;width:130px;" />
+          </div>
           <button class="btn btn-primary btn-sm" onclick="carregarLancamentos('pagar')">
             <i class="fas fa-search"></i> Buscar
           </button>
@@ -527,6 +533,7 @@
             <thead>
               <tr>
                 <th style="width:36px;"><input type="checkbox" id="cb-todos-pagar" onchange="selecionarTodosParaPagar(this.checked)"></th>
+                <th class="th-sort" style="white-space:nowrap;" onclick="ordenarTabela('pagar','pedido')">Pedido <span class="sort-icon" id="sort-pagar-pedido"></span></th>
                 <th class="th-sort" onclick="ordenarTabela('pagar','fornecedor')">Fornecedor <span class="sort-icon" id="sort-pagar-fornecedor"></span></th>
                 <th class="th-sort" onclick="ordenarTabela('pagar','descricao')">Descrição <span class="sort-icon" id="sort-pagar-descricao"></span></th>
                 <th class="th-sort" onclick="ordenarTabela('pagar','categoria')">Categoria <span class="sort-icon" id="sort-pagar-categoria"></span></th>
@@ -537,7 +544,7 @@
               </tr>
             </thead>
             <tbody id="tbody-pagar">
-              <tr><td colspan="8" class="sem-dados">Nenhuma conta encontrada.</td></tr>
+              <tr><td colspan="9" class="sem-dados">Nenhuma conta encontrada.</td></tr>
             </tbody>
           </table>
         </div>

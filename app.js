@@ -1814,6 +1814,8 @@ function limparFiltros(tipo) {
   if (elAte) elAte.value = ultimo;
   const elTipoData = document.getElementById(`filtro-tipo-data-${tipo}`);
   if (elTipoData) elTipoData.value = 'vencimento';
+  const elPedido = document.getElementById(`filtro-pedido-${tipo}`);
+  if (elPedido) elPedido.value = '';
   carregarLancamentos(tipo);
 }
 
@@ -1827,6 +1829,7 @@ async function carregarLancamentos(tipo) {
   const fornFiltros    = obterSelecionadosMulti(tipo, 'fornecedor');
   const grupoFiltros   = obterSelecionadosMulti(tipo, 'grupo');
   const bancosFiltro   = obterBancosSelecionados(tipo);
+  const pedidoFiltro   = document.getElementById(`filtro-pedido-${tipo}`)?.value?.trim() || '';
 
   let query = db.from('lancamentos')
     .select('*, plano_contas(nome, grupo_id), bancos(nome), fornecedores(nome), unidades(nome)')
@@ -1839,6 +1842,8 @@ async function carregarLancamentos(tipo) {
   if (ateFiltro) query = query.lte(campoData, ateFiltro);
 
   if (fornFiltros.length) query = query.in('fornecedor_id', fornFiltros);
+
+  if (pedidoFiltro) query = query.ilike('numero_pedido', `%${pedidoFiltro}%`);
 
   if (grupoFiltros.length) {
     const subcatIds = planoContas.filter(p => grupoFiltros.includes(p.grupo_id)).map(p => p.id);
@@ -1867,6 +1872,7 @@ async function carregarLancamentos(tipo) {
         else q2 = q2.eq('plano_conta_id', 'nenhum');
       }
       if (bancosFiltro.length) q2 = q2.in('banco_id', bancosFiltro);
+      if (pedidoFiltro)        q2 = q2.ilike('numero_pedido', `%${pedidoFiltro}%`);
       const { data: lote } = await q2;
       if (!lote || lote.length === 0) break;
       todos = todos.concat(lote);
@@ -1877,7 +1883,7 @@ async function carregarLancamentos(tipo) {
   }
 
   const tbody   = document.getElementById(`tbody-${tipo}`);
-  const colspan = '8';
+  const colspan = tipo === 'pagar' ? '9' : '8';
   if (tbody) tbody.innerHTML = `<tr><td colspan="${colspan}" class="sem-dados"><i class="fas fa-spinner fa-spin" style="margin-right:6px;color:#c0392b;"></i>Carregando...</td></tr>`;
 
   let data, error, todosParaTotais;
@@ -1944,7 +1950,7 @@ async function carregarLancamentos(tipo) {
 function renderizarLinhasLancamentos(tipo, lancamentos) {
   const hoje   = new Date().toISOString().split('T')[0];
   const tbody  = document.getElementById(`tbody-${tipo}`);
-  const colspan = '8';
+  const colspan = tipo === 'pagar' ? '9' : '8';
   const labelPagar = tipo === 'pagar' ? 'Pago' : 'Recebido';
   if (!tbody) return;
 
@@ -1964,7 +1970,8 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
   const { col, dir } = sortEstado[tipo];
   const sorted = [...lancamentos].sort((a, b) => {
     let va, vb;
-    if (col === 'fornecedor') { va = (a.fornecedores?.nome || '').toLowerCase(); vb = (b.fornecedores?.nome || '').toLowerCase(); }
+    if (col === 'pedido') { va = (a.numero_pedido || '').toLowerCase(); vb = (b.numero_pedido || '').toLowerCase(); }
+    else if (col === 'fornecedor') { va = (a.fornecedores?.nome || '').toLowerCase(); vb = (b.fornecedores?.nome || '').toLowerCase(); }
     else if (col === 'unidade') { va = (a.unidades?.nome || '').toLowerCase(); vb = (b.unidades?.nome || '').toLowerCase(); }
     else if (col === 'descricao') { va = (a.descricao || '').toLowerCase(); vb = (b.descricao || '').toLowerCase(); }
     else if (col === 'categoria') { va = (a.plano_contas?.nome || '').toLowerCase(); vb = (b.plano_contas?.nome || '').toLowerCase(); }
@@ -1983,7 +1990,8 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
     const badgeTexto = statusReal === 'pago' ? labelPagar : statusReal.charAt(0).toUpperCase() + statusReal.slice(1);
 
     const subInfos = [];
-    if (l.numero_pedido) subInfos.push(`<i class="fas fa-hashtag"></i> ${l.numero_pedido}`);
+    // numero_pedido tem coluna própria na tabela de pagar; nas outras, vai como subinfo
+    if (l.numero_pedido && tipo !== 'pagar') subInfos.push(`<i class="fas fa-hashtag"></i> ${l.numero_pedido}`);
     if (l.tem_rateio)         subInfos.push(`<i class="fas fa-code-branch"></i> Rateio`);
     if (l.ofx_id)             subInfos.push(`<i class="fas fa-university" style="color:#27ae60;"></i> <span style="color:#27ae60;font-weight:600;">Extrato conciliado</span>`);
     if (Number(l.valor_pago) > 0 && l.status === 'pendente') {
@@ -2019,6 +2027,9 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
         <div class="desc-principal">${l.descricao}</div>
         ${subInfos.map(s => `<div class="desc-sub">${s}</div>`).join('')}
       </td>`;
+    const pedidoCell = `<td style="font-size:13px;white-space:nowrap;">${l.numero_pedido
+      ? `<span style="color:#FF6B35;font-weight:600;"><i class="fas fa-hashtag" style="font-size:11px;"></i> ${l.numero_pedido}</span>`
+      : '<span style="color:#ccc;">—</span>'}</td>`;
     const fornCell  = `<td style="font-size:13px;color:#555;">${l.fornecedores?.nome || '-'}</td>`;
     const uniCell   = `<td style="font-size:13px;color:#555;">${l.unidades?.nome || '-'}</td>`;
     const bancoCell = `<td style="font-size:13px;color:#555;">${l.bancos?.nome || '-'}</td>`;
@@ -2032,7 +2043,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
       return `<tr>
         <td><input type="checkbox" class="cb-pagar" data-id="${l.id}" data-valor="${l.valor}"
           onchange="atualizarBotaoPagarLote()"></td>
-        ${fornCell}${descCell}${catCell}${datCell}${valCell}${stCell}${actCell}
+        ${pedidoCell}${fornCell}${descCell}${catCell}${datCell}${valCell}${stCell}${actCell}
       </tr>`;
     } else {
       return `<tr>${uniCell}${descCell}${catCell}${bancoCell}${datCell}${valCell}${stCell}${actCell}</tr>`;
@@ -2052,7 +2063,7 @@ function ordenarTabela(tipo, col) {
   }
 
   // Atualiza ícones
-  ['fornecedor','unidade','descricao','categoria','banco','vencimento','valor','status'].forEach(c => {
+  ['pedido','fornecedor','unidade','descricao','categoria','banco','vencimento','valor','status'].forEach(c => {
     const el = document.getElementById(`sort-${tipo}-${c}`);
     if (el) el.textContent = '';
   });
