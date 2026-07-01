@@ -7472,7 +7472,7 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   // Insere em lancamentos
   const { data: lanc, error } = await q(db.from('lancamentos').insert([{
     descricao:      r.descricao,
-    valor:          r.valor,
+    valor:          (Number(r.valor) || 0) + (Number(r.acrescimo) || 0) - (Number(r.desconto) || 0), // total = nota + acréscimo − desconto
     vencimento:     r.vencimento,
     tipo:           r.tipo,
     status:         r.status,
@@ -7541,7 +7541,7 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
   //    Fica pendente até a conciliação OFX confirmar a saída no Santander
   const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
     descricao:      r.descricao,
-    valor:          r.valor,
+    valor:          (Number(r.valor) || 0) + (Number(r.acrescimo) || 0) - (Number(r.desconto) || 0), // total = nota + acréscimo − desconto
     acrescimo:      r.acrescimo || 0,
     desconto:       r.desconto  || 0,
     vencimento:     r.vencimento,
@@ -7582,7 +7582,7 @@ async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixa
 
   const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
     descricao:      r.descricao,
-    valor:          r.valor,
+    valor:          (Number(r.valor) || 0) + (Number(r.acrescimo) || 0) - (Number(r.desconto) || 0), // total = nota + acréscimo − desconto
     acrescimo:      r.acrescimo || 0,
     desconto:       r.desconto  || 0,
     vencimento:     r.vencimento,
