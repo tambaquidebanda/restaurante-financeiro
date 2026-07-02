@@ -7501,9 +7501,15 @@ async function aprovarIntegracao(rascunhoId, contaId) {
     ));
   }
 
-  // Atualiza cmp_contas_pagar com lancamento_id
-  if (contaId && lanc?.id) {
-    await q(db.from('cmp_contas_pagar').update({ lancamento_id: lanc.id }).eq('id', contaId));
+  // Atualiza cmp_contas_pagar com lancamento_id (avisa o estoque que já foi enviado).
+  // Fallback: se não veio contaId, localiza a conta pelo pedido_num do rascunho.
+  let _contaId = contaId;
+  if (!_contaId && r.pedido_num) {
+    const { data: _cp } = await q(db.from('cmp_contas_pagar').select('id').eq('pedido_num', r.pedido_num).maybeSingle());
+    _contaId = _cp?.id || null;
+  }
+  if (_contaId && lanc?.id) {
+    await q(db.from('cmp_contas_pagar').update({ lancamento_id: lanc.id }).eq('id', _contaId));
   }
 
   // Remove rascunho (cascade apaga rascunho_rateio_itens automaticamente)
