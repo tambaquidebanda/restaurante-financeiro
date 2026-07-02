@@ -573,20 +573,31 @@ function preencherSelectBancoImportar() {
 async function carregarLancamentosPendentes() {
   try { await obterSupabase().auth.refreshSession(); } catch (e) {}
   const db = obterSupabase();
-  let resultado;
+  // Busca paginada — PostgREST corta em 1.000 linhas por resposta.
+  // Sem isso, contas pendentes recentes ficavam de fora da conciliação
+  // (auto-match não achava e o dropdown não listava) → gerava duplicata.
+  const PAGE = 1000;
+  let todos = [], pagina = 0;
   try {
-    resultado = await Promise.race([
-      db.from('lancamentos')
-        .select('id, descricao, valor, valor_pago, vencimento, tipo, fornecedores(nome)')
-        .eq('status', 'pendente')
-        .order('vencimento', { ascending: true }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-    ]);
+    while (true) {
+      const resultado = await Promise.race([
+        db.from('lancamentos')
+          .select('id, descricao, valor, valor_pago, vencimento, tipo, fornecedores(nome)')
+          .eq('status', 'pendente')
+          .order('vencimento', { ascending: true })
+          .range(pagina * PAGE, (pagina + 1) * PAGE - 1),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+      ]);
+      const lote = resultado.data || [];
+      todos = todos.concat(lote);
+      if (lote.length < PAGE) break;
+      pagina++;
+    }
   } catch (e) {
     mostrarToast('Conexão lenta ao carregar lançamentos pendentes. Tente novamente.', 'erro');
     return;
   }
-  lancamentosPendentes = resultado.data || [];
+  lancamentosPendentes = todos;
 }
 
 function preencherSelectFornecedores() {
@@ -5365,6 +5376,51 @@ async function importarTransacoes() {
   const aConciliar       = selecionadas.filter(t => !t.transferencia_destino_id && !t.unidade_split?.length && t.lancamento_id && !t.lancamentos_ids?.length);
   const aCriar           = selecionadas.filter(t => !t.transferencia_destino_id && !t.unidade_split?.length && !t.lancamento_id && !t.lancamentos_ids?.length);
   let erros = 0;
+
+  // ── Guardião de duplicata ────────────────────────────────────────────────
+  // Antes de criar lançamentos novos, reconsulta os pendentes FRESCOS no banco.
+  // A lista em cache (lancamentosPendentes) pode estar velha se um pedido foi
+  // aprovado no financeiro depois que a tela de importação foi aberta — foi o
+  // que gerou a duplicata do Pedido #00316. Se houver conta pendente de mesmo
+  // valor+tipo, pausa e pede confirmação em vez de criar silenciosamente.
+  if (aCriar.length) {
+    const valores = [...new Set(aCriar.map(t => t.valor))];
+    const tipos   = [...new Set(aCriar.map(t => t.tipo))];
+    const { data: pendFresco } = await db.from('lancamentos')
+      .select('id, descricao, valor, vencimento, tipo')
+      .eq('status', 'pendente')
+      .in('tipo', tipos)
+      .in('valor', valores);
+    const colisoes = [];
+    for (const t of aCriar) {
+      const match = (pendFresco || []).find(l =>
+        l.tipo === t.tipo &&
+        Math.abs(Number(l.valor) - t.valor) < 0.01 &&
+        l.vencimento <= t.data
+      );
+      if (match) colisoes.push({ t, match });
+    }
+    if (colisoes.length) {
+      const lista = colisoes.slice(0, 8).map(c =>
+        `• ${formatarMoeda(c.t.valor)} — "${c.match.descricao}" (venc. ${formatarData(c.match.vencimento)})`
+      ).join('\n');
+      const extra = colisoes.length > 8 ? `\n…e mais ${colisoes.length - 8}.` : '';
+      const ok = confirm(
+        `Atenção: ${colisoes.length} transação(ões) marcada(s) para criar NOVO lançamento já têm conta pendente de mesmo valor:\n\n` +
+        `${lista}${extra}\n\n` +
+        `Isso pode gerar DUPLICATA. Cancele para vincular à conta existente — a lista foi atualizada.\n\n` +
+        `Criar mesmo assim?`
+      );
+      if (!ok) {
+        await carregarLancamentosPendentes();  // atualiza com os pendentes frescos
+        autoMatchConciliacao(aCriar);           // pré-vincula as que agora batem
+        renderizarPreviewOFX(transacoesOFX);    // re-renderiza para mostrar os vínculos
+        restaurarBtn();
+        mostrarToast('Importação pausada. Confira os vínculos e confirme novamente.');
+        return;
+      }
+    }
+  }
 
   // Transferências entre contas
   for (const t of aTransferencias) {
