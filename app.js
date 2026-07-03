@@ -7672,11 +7672,28 @@ async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixa
 }
 
 async function rejeitarIntegracao(rascunhoId, pedidoNum) {
-  if (!confirm(`Rejeitar a integração do pedido ${pedidoNum}?\nO rascunho será excluído e o estoque permitirá reenviar.`)) return;
+  if (!confirm(`Rejeitar a integração do pedido ${pedidoNum}?\n\nO rascunho será excluído. Se o pedido ainda não tiver lançamento, o recebimento no estoque também será DESFEITO (itens voltam para pendente), para o estoquista receber de novo com os valores corretos — evitando valores acumulados.`)) return;
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
   await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
-  mostrarToast('Rascunho rejeitado.', 'sucesso');
+
+  // Desfaz o recebimento no estoque para permitir novo recebimento limpo (evita acúmulo).
+  // Exceção: se o pedido já tem lançamento (caso de duplicata), NÃO desfaz — só apaga o rascunho.
+  if (pedidoNum) {
+    const { data: lancNum }  = await q(db.from('lancamentos').select('id').eq('numero_pedido', pedidoNum).limit(1));
+    const { data: lancDesc } = await q(db.from('lancamentos').select('id').ilike('descricao', `Pedido ${pedidoNum}%`).limit(1));
+    if (!(lancNum?.length || lancDesc?.length)) {
+      const { data: recs } = await q(db.from('cmp_recebimentos').select('id').eq('pedido_num', pedidoNum));
+      if (recs?.length) {
+        const ids = recs.map(r => r.id);
+        await q(db.from('cmp_recebimento_itens').delete().in('recebimento_id', ids));
+        await q(db.from('cmp_recebimentos').delete().in('id', ids));
+      }
+      await q(db.from('cmp_contas_pagar').delete().eq('pedido_num', pedidoNum));
+      await q(db.from('cmp_compras').update({ status_receb: 'pendente' }).eq('pedido_num', pedidoNum));
+    }
+  }
+  mostrarToast('Rascunho rejeitado. Recebimento desfeito no estoque para novo recebimento.', 'sucesso');
   carregarIntegracoes();
 }
 
