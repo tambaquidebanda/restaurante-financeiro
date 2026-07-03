@@ -7280,7 +7280,8 @@ function renderIntegracoes(rascunhos) {
   lista.innerHTML = rascunhos.map(r => {
     const venc      = (r.vencimento || '').split('-').reverse().join('/');
     const forn      = r.fornecedores?.nome || '—';
-    const isCompExt  = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo';
+    const isCompExt  = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo'
+                    || (r.descricao || '').toLowerCase().includes('comprador externo');
     const isDinheiro = isCompExt && (r.observacoes || '').toLowerCase().includes('dinheiro');
     const itens     = _integItensMap[r.pedido_num] || [];
     const ref       = itens[0] || {};
