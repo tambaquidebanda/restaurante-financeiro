@@ -7359,7 +7359,11 @@ function renderIntegracoes(rascunhos) {
       ${isCompExt ? isDinheiro ? `
       <div style="padding:.6rem .8rem;background:#fefce8;border-top:1px solid #fef08a">
         <div style="font-size:.72rem;font-weight:700;color:#854d0e;margin-bottom:.4rem">💵 Pagamento em Dinheiro — Caixa</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem">
+          <button onclick="visualizarIntegracao('${r.pedido_num||''}','${r.id}')"
+            style="padding:.4rem;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-eye"></i> Visualizar
+          </button>
           <button onclick="aprovarComoDinheiro('${r.id}','${r.conta_id||''}',${total},'${r.vencimento||''}','${bancosCadastrados.find(b=>{const n=b.nome.toLowerCase();return n.includes('caixa')||n.includes('dinheiro');})?.id||''}')"
             style="padding:.4rem;background:#854d0e;color:#fff;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
             💵 Registrar Pagamento
@@ -7383,7 +7387,11 @@ function renderIntegracoes(rascunhos) {
             ${bancosCadastrados.map(b => `<option value="${b.id}" ${b.nome.toLowerCase().includes('nubank') ? 'selected' : ''}>${b.nome}</option>`).join('')}
           </select>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem">
+          <button onclick="visualizarIntegracao('${r.pedido_num||''}','${r.id}')"
+            style="padding:.4rem;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-eye"></i> Visualizar
+          </button>
           <button onclick="aprovarComoTransferencia('${r.id}','${r.conta_id||''}',${total},'${r.vencimento||''}')"
             style="padding:.4rem;background:#1d4ed8;color:#fff;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
             <i class="fas fa-exchange-alt"></i> Registrar Transferência
