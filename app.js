@@ -5381,9 +5381,14 @@ async function importarTransacoes() {
   // Antes de criar lançamentos novos, reconsulta os pendentes FRESCOS no banco.
   // A lista em cache (lancamentosPendentes) pode estar velha se um pedido foi
   // aprovado no financeiro depois que a tela de importação foi aberta — foi o
-  // que gerou a duplicata do Pedido #00316. Se houver conta pendente de mesmo
-  // valor+tipo, pausa e pede confirmação em vez de criar silenciosamente.
+  // que gerou a duplicata do Pedido #00316. Só alerta sobre pendentes de mesmo
+  // valor+tipo que AINDA NÃO estão sendo vinculados por outra transação deste
+  // lote (senão dá falso positivo quando duas pessoas têm o mesmo valor).
   if (aCriar.length) {
+    const idsJaVinculados = new Set();
+    aConciliar.forEach(t => idsJaVinculados.add(t.lancamento_id));
+    aMultiplos.forEach(t => (t.lancamentos_ids || []).forEach(id => idsJaVinculados.add(id)));
+
     const valores = [...new Set(aCriar.map(t => t.valor))];
     const tipos   = [...new Set(aCriar.map(t => t.tipo))];
     const { data: pendFresco } = await db.from('lancamentos')
@@ -5391,32 +5396,37 @@ async function importarTransacoes() {
       .eq('status', 'pendente')
       .in('tipo', tipos)
       .in('valor', valores);
+    const usadosGuard = new Set();
     const colisoes = [];
     for (const t of aCriar) {
       const match = (pendFresco || []).find(l =>
+        !idsJaVinculados.has(l.id) &&
+        !usadosGuard.has(l.id) &&
         l.tipo === t.tipo &&
         Math.abs(Number(l.valor) - t.valor) < 0.01 &&
         l.vencimento <= t.data
       );
-      if (match) colisoes.push({ t, match });
+      if (match) { usadosGuard.add(match.id); colisoes.push({ t, match }); }
     }
     if (colisoes.length) {
       const lista = colisoes.slice(0, 8).map(c =>
-        `• ${formatarMoeda(c.t.valor)} — "${c.match.descricao}" (venc. ${formatarData(c.match.vencimento)})`
-      ).join('\n');
-      const extra = colisoes.length > 8 ? `\n…e mais ${colisoes.length - 8}.` : '';
+        `• ${formatarMoeda(c.t.valor)}\n   extrato: "${c.t.descricao}"\n   conta pendente: "${c.match.descricao}" (venc. ${formatarData(c.match.vencimento)})`
+      ).join('\n\n');
+      const extra = colisoes.length > 8 ? `\n\n…e mais ${colisoes.length - 8}.` : '';
       const ok = confirm(
-        `Atenção: ${colisoes.length} transação(ões) marcada(s) para criar NOVO lançamento já têm conta pendente de mesmo valor:\n\n` +
+        `Atenção: ${colisoes.length} transação(ões) marcada(s) para criar NOVO lançamento têm conta pendente de mesmo valor:\n\n` +
         `${lista}${extra}\n\n` +
-        `Isso pode gerar DUPLICATA. Cancele para vincular à conta existente — a lista foi atualizada.\n\n` +
+        `Se for o MESMO pagamento, cancele e vincule à conta pendente. ` +
+        `Se forem pagamentos diferentes com valor igual, clique em Criar.\n\n` +
         `Criar mesmo assim?`
       );
       if (!ok) {
-        await carregarLancamentosPendentes();  // atualiza com os pendentes frescos
-        autoMatchConciliacao(aCriar);           // pré-vincula as que agora batem
-        renderizarPreviewOFX(transacoesOFX);    // re-renderiza para mostrar os vínculos
+        // Atualiza a lista de pendentes SEM refazer o auto-match, para não
+        // desfazer as escolhas manuais que o usuário acabou de fazer.
+        await carregarLancamentosPendentes();
+        renderizarPreviewOFX(transacoesOFX);
         restaurarBtn();
-        mostrarToast('Importação pausada. Confira os vínculos e confirme novamente.');
+        mostrarToast('Importação pausada. Vincule as contas destacadas e confirme novamente.');
         return;
       }
     }
