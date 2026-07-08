@@ -2010,7 +2010,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
     const subInfos = [];
     if (l.numero_pedido) subInfos.push(`<i class="fas fa-file-invoice"></i> ${l.numero_pedido}`);
     if (l.tem_rateio)         subInfos.push(`<i class="fas fa-code-branch"></i> Rateio`);
-    if (l.ofx_id)             subInfos.push(`<i class="fas fa-university" style="color:#27ae60;"></i> <span style="color:#27ae60;font-weight:600;">Extrato conciliado</span>`);
+    if (l.ofx_id)             subInfos.push(`<i class="fas fa-university" style="color:#27ae60;"></i> <span style="color:#27ae60;font-weight:600;">Extrato conciliado</span> <a href="javascript:void(0)" onclick="desfazerConciliacaoLista('${l.id}','${tipo}')" title="Desfazer conciliação com o extrato" style="color:#e74c3c;font-size:11px;margin-left:6px;text-decoration:underline;"><i class="fas fa-unlink"></i> desfazer</a>`);
     if (Number(l.valor_pago) > 0 && l.status === 'pendente') {
       const restante = Number(l.valor) - Number(l.valor_pago);
       subInfos.push(`<i class="fas fa-coins" style="color:#e67e22;"></i> <span style="color:#e67e22;font-weight:600;">Pago parcial: ${formatarMoeda(Number(l.valor_pago))} — Restante: ${formatarMoeda(restante)}</span>`);
@@ -5298,6 +5298,32 @@ async function hpDesfazerConciliacao(pagamentoId, valorPagamento) {
   await carregarLancamentosPendentes();
   carregarDashboard();
   carregarConciliacao();
+}
+
+// Desfazer conciliação direto da lista de Contas a Pagar/Receber (link ao lado
+// de "Extrato conciliado"). Reaproveita a mesma lógica do histórico: remove os
+// pagamentos vindos do extrato, limpa o ofx_id e volta o lançamento a pendente.
+async function desfazerConciliacaoLista(id, tipo) {
+  if (!confirm('Desfazer a conciliação com o extrato?\n\nO lançamento perde o vínculo com o banco e volta para PENDENTE, pronto para reconciliar. O pagamento em si não é apagado do sistema — só o vínculo com o extrato.')) return;
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+
+  // Remove os pagamentos vindos do extrato (origem ofx) deste lançamento
+  const { error: errDel } = await q(db.from('pagamentos').delete().eq('lancamento_id', id).eq('origem', 'ofx'));
+  if (errDel) { mostrarToast('Erro ao desfazer conciliação.', 'erro'); return; }
+
+  // Recalcula valor_pago com base em pagamentos que sobraram (ex: baixas manuais)
+  const { data: restantes } = await q(db.from('pagamentos').select('valor').eq('lancamento_id', id));
+  const novoValorPago = (restantes || []).reduce((s, p) => s + Number(p.valor), 0);
+
+  const upd = { valor_pago: novoValorPago, status: 'pendente', data_pagamento: null, ofx_id: null };
+  const { error: errUpd } = await q(db.from('lancamentos').update(upd).eq('id', id));
+  if (errUpd) { mostrarToast('Erro ao atualizar o lançamento.', 'erro'); return; }
+
+  mostrarToast('Conciliação desfeita. Lançamento pronto para reconciliar.', 'sucesso');
+  carregarLancamentos(tipo);
+  carregarLancamentosPendentes();
+  carregarDashboard();
 }
 
 function abrirTransferencia(i) {
