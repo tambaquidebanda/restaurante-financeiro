@@ -1925,6 +1925,35 @@
     </div>
   </div>
 
+  <!-- ========== MODAL: DIVIDIR PEDIDO POR DATA (comprador externo) ========== -->
+  <div id="modal-dividir-pedido" class="modal-fundo hidden">
+    <div class="modal" style="max-width:660px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-scissors" style="color:#8e44ad;"></i> Dividir Pedido nas datas do extrato</h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-dividir-pedido')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <div style="font-size:12px;color:#888;margin-bottom:12px;">
+          Cada compra vira um lançamento na sua data real. O rateio do pedido é aplicado proporcionalmente a cada parte.
+        </div>
+        <label style="font-size:12px;font-weight:600;color:#555;">Pedido a dividir</label>
+        <select id="dp-pedido" onchange="dpAtualizar()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;margin:5px 0 14px;font-size:13px;"></select>
+
+        <p style="font-size:12px;font-weight:600;color:#555;margin:0 0 6px;">Débitos deste pedido no extrato:</p>
+        <div id="dp-lista" style="max-height:200px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:0 8px;"></div>
+
+        <div id="dp-preview" style="margin-top:14px;"></div>
+        <div id="dp-resumo" style="margin-top:12px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="fecharModal('modal-dividir-pedido')">Cancelar</button>
+        <button id="btn-confirmar-dp" class="btn btn-primary" style="background:#8e44ad;border-color:#8e44ad;" onclick="confirmarDividirPedido()" disabled>
+          <i class="fas fa-check"></i> Confirmar Divisão
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ========== MODAL: REGISTRAR PAGAMENTO PARCIAL ========== -->
   <div id="modal-registrar-pagamento" class="modal-fundo hidden">
     <div class="modal modal-pequeno" style="max-width:480px;">

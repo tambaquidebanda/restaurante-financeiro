@@ -4349,6 +4349,34 @@ function htmlConciliacaoCell(t, i) {
       <button class="btn btn-sm" style="background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;cursor:pointer;border-radius:6px;padding:2px 8px;font-size:12px;" onclick="desfazerAgrupamento(${t.agrupado_em_idx})">✕ Desfazer</button>`;
   }
 
+  // Débito que é parte de uma divisão de pedido por data
+  if (t.dividido_em_idx !== undefined) {
+    return `
+      <div style="font-size:12px;font-weight:600;color:#8e44ad;margin-bottom:4px;">
+        <i class="fas fa-scissors"></i> Parte da divisão do pedido
+      </div>
+      <div style="font-size:11px;color:#555;margin-bottom:6px;word-break:break-word;">
+        ${transacoesOFX[t.dividido_em_idx]?.dividir_pedido?.descricao || ''}
+      </div>
+      <button class="btn btn-sm" style="background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;cursor:pointer;border-radius:6px;padding:2px 8px;font-size:12px;" onclick="desfazerDividirPedido(${t.dividido_em_idx})">✕ Desfazer divisão</button>`;
+  }
+
+  // Líder de uma divisão de pedido por data
+  if (t.dividir_pedido) {
+    const n = 1 + (t.dividir_indices?.length || 0);
+    return `
+      <div style="font-size:12px;font-weight:600;color:#8e44ad;margin-bottom:4px;">
+        <i class="fas fa-scissors"></i> Dividido em ${n} partes por data
+      </div>
+      <div style="font-size:11px;color:#777;margin-bottom:6px;word-break:break-word;">
+        ${t.dividir_pedido.descricao} · rateio proporcional
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" style="font-size:11px;" onclick="abrirDividirPedido(${i})">Editar</button>
+        <button class="btn btn-sm" style="background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;cursor:pointer;border-radius:6px;padding:2px 8px;font-size:12px;" onclick="desfazerDividirPedido(${i})">✕ Desfazer</button>
+      </div>`;
+  }
+
   if (t.agrupamento_indices?.length > 0) {
     const n = t.agrupamento_indices.length + 1;
     return `
@@ -4505,6 +4533,9 @@ function htmlConciliacaoCell(t, i) {
       </button>
       ${t.tipo === 'receber' ? `<button class="btn btn-outline btn-sm" style="font-size:11px;color:#8e44ad;border-color:#8e44ad;" onclick="abrirDivisaoUnidade(${i})">
         <i class="fas fa-sitemap"></i> Dividir Unidade
+      </button>` : ''}
+      ${t.tipo === 'pagar' ? `<button class="btn btn-outline btn-sm" style="font-size:11px;color:#8e44ad;border-color:#8e44ad;" onclick="abrirDividirPedido(${i})">
+        <i class="fas fa-scissors"></i> Dividir Pedido
       </button>` : ''}
       <button class="btn btn-outline btn-sm" style="font-size:11px;color:#3498db;border-color:#3498db;" onclick="abrirTransferencia(${i})">
         <i class="fas fa-exchange-alt"></i> Transferência
@@ -5012,6 +5043,188 @@ function desfazerAgrupamento(i, silencioso = false) {
   if (!silencioso) mostrarToast('Agrupamento desfeito.', 'sucesso');
 }
 
+// ── Dividir Pedido por data (comprador externo) ─────────────────────────────
+// Um pedido pago em várias compras (débitos em datas diferentes) é desmembrado
+// em N lançamentos — um por débito, na sua data real — com o rateio do pedido
+// aplicado proporcionalmente. Resolve o caso de compras em meses diferentes.
+let _dpIdx = null;
+let _dpPedidoCache = {};   // lancamentoId -> { lanc, categorias:[{plano_conta_id, prop}] }
+
+// Distribui um valor pelas proporções das categorias, ajustando o último centavo
+function dpRatearValor(valor, categorias) {
+  let acc = 0;
+  return categorias.map((c, idx) => {
+    if (idx === categorias.length - 1) return Math.round((valor - acc) * 100) / 100;
+    const v = Math.round(valor * c.prop * 100) / 100;
+    acc += v;
+    return v;
+  });
+}
+
+function dpNomeCat(id) {
+  const c = planoContas.find(p => p.id === id);
+  if (!c) return '—';
+  const g = planoContas.find(p => p.id === c.grupo_id);
+  return g ? `${g.nome} › ${c.nome}` : c.nome;
+}
+
+async function abrirDividirPedido(i) {
+  _dpIdx = i;
+  const t = transacoesOFX[i];
+
+  // Candidatos: outras transações de saída selecionadas e livres — mais os
+  // membros da própria divisão (caso esteja editando)
+  const candidatas = transacoesOFX
+    .map((tx, idx) => ({ tx, idx }))
+    .filter(({ tx, idx }) =>
+      idx !== i && tx.tipo === t.tipo && tx.selecionado &&
+      !tx.transferencia_destino_id && tx.agrupado_em_idx === undefined &&
+      (tx.dividido_em_idx === undefined || tx.dividido_em_idx === i) &&
+      !tx.agrupamento_indices?.length && !tx.dividir_pedido
+    );
+
+  const jaMembros = new Set(t.dividir_indices || []);
+  const linhaTx = (tx, val, marcado, fixo) => `
+    <label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #f0f0f0;${fixo ? '' : 'cursor:pointer;'}">
+      <input type="checkbox" ${marcado ? 'checked' : ''} ${fixo ? 'disabled' : `value="${val}" onchange="dpAtualizar()"`} style="flex-shrink:0;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;word-break:break-word;">${tx.descricao}</div>
+        <div style="font-size:12px;color:#888;">${formatarData(tx.data)}</div>
+      </div>
+      <strong style="color:#e74c3c;flex-shrink:0;white-space:nowrap;">${formatarMoeda(tx.valor)}</strong>
+    </label>`;
+
+  document.getElementById('dp-lista').innerHTML =
+    linhaTx(t, i, true, true) +
+    candidatas.map(({ tx, idx }) => linhaTx(tx, idx, jaMembros.has(idx), false)).join('');
+
+  const pend = lancamentosPendentes.filter(l => l.tipo === t.tipo);
+  const selPed = t.dividir_pedido?.lancamentoId || '';
+  document.getElementById('dp-pedido').innerHTML =
+    `<option value="">Selecione o pedido...</option>` +
+    pend.map(l => {
+      const forn = l.fornecedores?.nome ? ` — ${l.fornecedores.nome}` : '';
+      return `<option value="${l.id}" ${selPed === l.id ? 'selected' : ''}>${l.descricao}${forn} (${formatarMoeda(Number(l.valor))})</option>`;
+    }).join('');
+
+  document.getElementById('dp-preview').innerHTML = '';
+  document.getElementById('dp-resumo').innerHTML = '';
+  document.getElementById('btn-confirmar-dp').disabled = true;
+  document.getElementById('modal-dividir-pedido').classList.remove('hidden');
+  if (selPed) dpAtualizar();
+}
+
+function dpPartesSelecionadas() {
+  const t = transacoesOFX[_dpIdx];
+  const membros = [...document.querySelectorAll('#dp-lista input[type="checkbox"]:checked')]
+    .map(cb => cb.value)
+    .filter(v => v !== '' && v != null && !isNaN(Number(v)))
+    .map(v => Number(v));
+  return [{ idx: _dpIdx, tx: t }, ...membros.map(idx => ({ idx, tx: transacoesOFX[idx] }))];
+}
+
+async function dpAtualizar() {
+  const pedidoId = document.getElementById('dp-pedido').value;
+  const preview  = document.getElementById('dp-preview');
+  const resumo   = document.getElementById('dp-resumo');
+  const btn      = document.getElementById('btn-confirmar-dp');
+  if (!pedidoId) { preview.innerHTML = ''; resumo.innerHTML = ''; btn.disabled = true; return; }
+
+  if (!_dpPedidoCache[pedidoId]) {
+    const db = obterSupabase();
+    const { data: lanc } = await q(db.from('lancamentos')
+      .select('id, descricao, valor, tem_rateio, plano_conta_id, fornecedor_id, unidade_id, numero_pedido')
+      .eq('id', pedidoId).single());
+    let categorias;
+    if (lanc?.tem_rateio) {
+      const { data: ri } = await q(db.from('rateio_itens').select('plano_conta_id, valor').eq('lancamento_id', pedidoId));
+      const tot = (ri || []).reduce((s, r) => s + Number(r.valor), 0) || 1;
+      categorias = (ri || []).map(r => ({ plano_conta_id: r.plano_conta_id, prop: Number(r.valor) / tot }));
+    } else {
+      categorias = [{ plano_conta_id: lanc?.plano_conta_id || null, prop: 1 }];
+    }
+    _dpPedidoCache[pedidoId] = { lanc, categorias };
+  }
+  const { lanc, categorias } = _dpPedidoCache[pedidoId];
+
+  const partes    = dpPartesSelecionadas();
+  const realTotal = partes.reduce((s, p) => s + Number(p.tx.valor), 0);
+  const estimado  = Number(lanc.valor);
+  const variacao  = realTotal - estimado;
+
+  const head = `<tr><th style="text-align:left;padding:7px 9px;">Parte / data</th><th style="text-align:right;padding:7px 9px;">Valor</th>` +
+    categorias.map(c => `<th style="text-align:right;padding:7px 9px;">${dpNomeCat(c.plano_conta_id).split('›').pop().trim()}</th>`).join('') + `</tr>`;
+  const rows = partes.map(p => {
+    const v = Number(p.tx.valor);
+    const cats = dpRatearValor(v, categorias);
+    return `<tr><td style="text-align:left;padding:7px 9px;"><strong>${formatarData(p.tx.data)}</strong></td>` +
+      `<td style="text-align:right;padding:7px 9px;font-weight:600;">${formatarMoeda(v)}</td>` +
+      cats.map(cv => `<td style="text-align:right;padding:7px 9px;color:#555;">${formatarMoeda(cv)}</td>`).join('') + `</tr>`;
+  }).join('');
+  preview.innerHTML = `<div style="overflow-x:auto;border:1px solid #eee;border-radius:8px;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums;">
+      <thead style="background:#f8f9fa;color:#666;">${head}</thead><tbody>${rows}</tbody></table></div>`;
+
+  const corVar = Math.abs(variacao) < 0.01 ? '#888' : (variacao > 0 ? '#e67e22' : '#27ae60');
+  resumo.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px;">
+    <div style="flex:1;min-width:110px;background:#f8f9fa;border-radius:8px;padding:8px 10px;"><div style="color:#888;">Estimado</div><strong>${formatarMoeda(estimado)}</strong></div>
+    <div style="flex:1;min-width:110px;background:#eafaf1;border-radius:8px;padding:8px 10px;"><div style="color:#888;">Real (extrato)</div><strong style="color:#27ae60;">${formatarMoeda(realTotal)}</strong></div>
+    <div style="flex:1;min-width:110px;background:#fef9e7;border-radius:8px;padding:8px 10px;"><div style="color:#888;">Variação</div><strong style="color:${corVar};">${variacao >= 0 ? '+' : ''}${formatarMoeda(variacao)}</strong></div>
+  </div>`;
+
+  btn.disabled = partes.length < 2;
+}
+
+function confirmarDividirPedido() {
+  const t = transacoesOFX[_dpIdx];
+  const pedidoId = document.getElementById('dp-pedido').value;
+  if (!pedidoId) { mostrarToast('Selecione o pedido.', 'erro'); return; }
+  const cache = _dpPedidoCache[pedidoId];
+  if (!cache) return;
+  const partes = dpPartesSelecionadas();
+  if (partes.length < 2) { mostrarToast('Selecione ao menos 2 débitos para dividir.', 'erro'); return; }
+
+  desfazerDividirPedido(_dpIdx, true);   // limpa divisão anterior deste líder
+
+  const indices = partes.filter(p => p.idx !== _dpIdx).map(p => p.idx);
+  t.dividir_pedido = {
+    lancamentoId:  pedidoId,
+    numero_pedido: cache.lanc.numero_pedido || null,
+    descricao:     cache.lanc.descricao || '',
+    fornecedor_id: cache.lanc.fornecedor_id || null,
+    unidade_id:    cache.lanc.unidade_id || null,
+    valorEstimado: Number(cache.lanc.valor),
+    categorias:    cache.categorias,
+  };
+  t.dividir_indices = indices;
+  t.lancamento_id = null;
+  t.lancamentos_ids = [];
+  indices.forEach(idx => {
+    if (transacoesOFX[idx]) {
+      transacoesOFX[idx].dividido_em_idx = _dpIdx;
+      transacoesOFX[idx].lancamento_id   = null;
+      transacoesOFX[idx].lancamentos_ids = [];
+    }
+  });
+
+  fecharModal('modal-dividir-pedido');
+  renderizarCelulaConciliacao(_dpIdx);
+  indices.forEach(idx => renderizarCelulaConciliacao(idx));
+  mostrarToast(`Pedido dividido em ${partes.length} partes por data.`, 'sucesso');
+}
+
+function desfazerDividirPedido(i, silencioso = false) {
+  const t = transacoesOFX[i];
+  if (!t) return;
+  (t.dividir_indices || []).forEach(idx => {
+    if (transacoesOFX[idx]) { delete transacoesOFX[idx].dividido_em_idx; renderizarCelulaConciliacao(idx); }
+  });
+  delete t.dividir_pedido;
+  delete t.dividir_indices;
+  renderizarCelulaConciliacao(i);
+  if (!silencioso) mostrarToast('Divisão desfeita.', 'sucesso');
+}
+
 // ── Dar Baixa com Desconto (pagamento parcial) ─────────────────────────────
 let _baixaDescontoId = null;
 
@@ -5387,8 +5600,9 @@ async function importarTransacoes() {
   if (!await garantirSessao()) { restaurarBtn(); return; }
 
   const bancoId      = document.getElementById('banco-importar').value || null;
-  // Transações absorvidas por um grupo são processadas pelo lote principal
-  const selecionadas = transacoesOFX.filter(t => t.selecionado && t.agrupado_em_idx === undefined);
+  // Transações absorvidas por um grupo ou por uma divisão de pedido são
+  // processadas pela transação principal (não entram sozinhas)
+  const selecionadas = transacoesOFX.filter(t => t.selecionado && t.agrupado_em_idx === undefined && t.dividido_em_idx === undefined);
 
   if (!bancoId) { mostrarToast('Selecione o banco antes de importar!', 'erro'); restaurarBtn(); return; }
   if (!selecionadas.length) { mostrarToast('Selecione ao menos uma transação!', 'erro'); restaurarBtn(); return; }
@@ -5397,10 +5611,11 @@ async function importarTransacoes() {
 
   const db     = obterSupabase();
   const aTransferencias  = selecionadas.filter(t => t.transferencia_destino_id);
-  const aDividirUnidade  = selecionadas.filter(t => !t.transferencia_destino_id && t.unidade_split?.length > 0);
-  const aMultiplos       = selecionadas.filter(t => !t.transferencia_destino_id && !t.unidade_split?.length && t.lancamentos_ids?.length > 0);
-  const aConciliar       = selecionadas.filter(t => !t.transferencia_destino_id && !t.unidade_split?.length && t.lancamento_id && !t.lancamentos_ids?.length);
-  const aCriar           = selecionadas.filter(t => !t.transferencia_destino_id && !t.unidade_split?.length && !t.lancamento_id && !t.lancamentos_ids?.length);
+  const aDividirPedido   = selecionadas.filter(t => t.dividir_pedido);
+  const aDividirUnidade  = selecionadas.filter(t => !t.transferencia_destino_id && !t.dividir_pedido && t.unidade_split?.length > 0);
+  const aMultiplos       = selecionadas.filter(t => !t.transferencia_destino_id && !t.dividir_pedido && !t.unidade_split?.length && t.lancamentos_ids?.length > 0);
+  const aConciliar       = selecionadas.filter(t => !t.transferencia_destino_id && !t.dividir_pedido && !t.unidade_split?.length && t.lancamento_id && !t.lancamentos_ids?.length);
+  const aCriar           = selecionadas.filter(t => !t.transferencia_destino_id && !t.dividir_pedido && !t.unidade_split?.length && !t.lancamento_id && !t.lancamentos_ids?.length);
   let erros = 0;
 
   // ── Guardião de duplicata ────────────────────────────────────────────────
@@ -5577,6 +5792,58 @@ async function importarTransacoes() {
     }));
   }
 
+  // Dividir Pedido: desmembra 1 pedido em N lançamentos (um por débito/data),
+  // com o rateio do pedido aplicado proporcionalmente, e apaga o original.
+  for (const t of aDividirPedido) {
+    const dp = t.dividir_pedido;
+    const partes = [t, ...(t.dividir_indices || []).map(idx => transacoesOFX[idx])].filter(Boolean);
+    const n = partes.length;
+    const isRateio = dp.categorias.length > 1;
+    let primeiroId = null, falhou = false, k = 0;
+    for (const p of partes) {
+      k++;
+      const valorParte = Number(p.valor);
+      const catVals = dpRatearValor(valorParte, dp.categorias);
+      const { data: novo, error } = await q(db.from('lancamentos').insert({
+        descricao:      `${dp.descricao} (${k}/${n})`,
+        valor:          valorParte,
+        vencimento:     p.data,
+        data_pagamento: p.data,
+        status:         'pago',
+        tipo:           'pagar',
+        banco_id:       bancoId,
+        ofx_id:         p.fitId || null,
+        fornecedor_id:  dp.fornecedor_id || null,
+        unidade_id:     dp.unidade_id || null,
+        numero_pedido:  dp.numero_pedido || null,
+        plano_conta_id: isRateio ? null : (dp.categorias[0]?.plano_conta_id || null),
+        tem_rateio:     isRateio,
+      }).select('id').single());
+      if (error || !novo) { erros++; falhou = true; continue; }
+      if (!primeiroId) primeiroId = novo.id;
+      if (isRateio) {
+        await q(db.from('rateio_itens').insert(dp.categorias.map((c, ci) => ({
+          lancamento_id: novo.id, plano_conta_id: c.plano_conta_id, valor: catVals[ci], descricao: ''
+        }))));
+      }
+      await q(db.from('pagamentos').insert({
+        lancamento_id:  novo.id,
+        valor:          valorParte,
+        data:           p.data,
+        banco_id:       bancoId,
+        plano_conta_id: isRateio ? null : (dp.categorias[0]?.plano_conta_id || null),
+        origem:         'ofx',
+        ofx_id:         p.fitId || null
+      }));
+    }
+    // Substitui o lançamento estimado original pelas partes (só se tudo ok)
+    if (!falhou && primeiroId) {
+      await q(db.from('cmp_contas_pagar').update({ lancamento_id: primeiroId }).eq('lancamento_id', dp.lancamentoId)).catch(() => {});
+      await q(db.from('rateio_itens').delete().eq('lancamento_id', dp.lancamentoId)).catch(() => {});
+      await q(db.from('lancamentos').delete().eq('id', dp.lancamentoId));
+    }
+  }
+
   // Criar: insere novos lançamentos para o que não tem correspondência
   if (aCriar.length) {
     const novos = aCriar.map(t => ({
@@ -5606,6 +5873,7 @@ async function importarTransacoes() {
     if (aTransferencias.length) partes.push(`${aTransferencias.length} transferência(s)`);
     if (aDividirUnidade.length) partes.push(`${aDividirUnidade.length} dividida(s) por unidade`);
     if (aMultiplos.length)      partes.push(`${aMultiplos.length} em lote`);
+    if (aDividirPedido.length)  partes.push(`${aDividirPedido.length} pedido(s) dividido(s) por data`);
     if (aConciliar.length)      partes.push(`${aConciliar.length} conciliada(s)`);
     if (aCriar.length)          partes.push(`${aCriar.length} nova(s)`);
     mostrarToast(`Importação concluída: ${partes.join(' + ')}!`, 'sucesso');
