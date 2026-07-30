@@ -3830,18 +3830,41 @@ async function verificarDuplicatasComTimeout(transacoes) {
   await Promise.race([verificarDuplicatas(transacoes), timeout]);
 }
 
+// Expande uma transação do extrato nos seus débitos constituintes.
+// Se for um GRUPO de lotes, devolve 1 entrada por lote (fitId + valor de cada);
+// senão devolve a própria transação. Usado para gravar 1 pagamento por débito,
+// garantindo que TODO FITID consumido numa conciliação fique registrado.
+function debitosDaTransacaoOFX(t) {
+  if (t.agrupamento_indices?.length) {
+    const arr = [{ fitId: t.fitId || null, valor: Number(t.valor_original ?? t.valor) || 0 }];
+    for (const idx of t.agrupamento_indices) {
+      const m = transacoesOFX[idx];
+      if (m) arr.push({ fitId: m.fitId || null, valor: Number(m.valor) || 0 });
+    }
+    return arr;
+  }
+  return [{ fitId: t.fitId || null, valor: Number(t.valor) || 0 }];
+}
+
 async function verificarDuplicatas(transacoes) {
   const db = obterSupabase();
   const bancoId = document.getElementById('banco-importar')?.value || null;
 
-  // 1. Por fitId (se coluna ofx_id existir no Supabase)
+  // 1. Por fitId — checa tanto lancamentos.ofx_id (1 por lançamento) quanto
+  //    pagamentos.ofx_id (1 por débito do extrato). Conciliações com vários
+  //    débitos guardam os FITIDs extras SÓ em pagamentos; sem olhar os dois,
+  //    débitos agrupados reaparecem como não conciliados no reimport.
   const fitIds = transacoes.map(t => t.fitId).filter(f => f);
   if (fitIds.length) {
-    const { data: jaExistem, error: errOFX } = await db.from('lancamentos')
-      .select('ofx_id')
-      .in('ofx_id', fitIds);
-    if (!errOFX) {
-      const idsExistentes = new Set((jaExistem || []).map(l => l.ofx_id));
+    const [rLanc, rPag] = await Promise.all([
+      db.from('lancamentos').select('ofx_id').in('ofx_id', fitIds),
+      db.from('pagamentos').select('ofx_id').in('ofx_id', fitIds)
+    ]);
+    const idsExistentes = new Set([
+      ...((rLanc.data || []).map(l => l.ofx_id)),
+      ...((rPag.data || []).map(p => p.ofx_id))
+    ].filter(Boolean));
+    if (idsExistentes.size) {
       transacoes.forEach(t => {
         if (t.fitId && idsExistentes.has(t.fitId)) {
           t.jaImportado = true;
@@ -5709,24 +5732,48 @@ async function importarTransacoes() {
   // Conciliação múltipla: marca todas as contas vinculadas como pagas
   // Se for um grupo de lotes, distribui os ofx_ids para evitar reimportação de todos os lotes
   for (const t of aMultiplos) {
-    const todosOFXIds = (t.fitIds_grupo?.length ? t.fitIds_grupo : [t.fitId]).filter(Boolean);
-    for (let j = 0; j < t.lancamentos_ids.length; j++) {
-      const lancId    = t.lancamentos_ids[j];
-      const ofxIdUsar = todosOFXIds.length ? todosOFXIds[j % todosOFXIds.length] : null;
+    const debitos   = debitosDaTransacaoOFX(t);
+    const fitIdsRef = debitos.map(d => d.fitId).filter(Boolean);
+    const lancIds   = t.lancamentos_ids;
+    // Marca cada lançamento como pago (ofx_id de referência = um dos débitos).
+    for (let j = 0; j < lancIds.length; j++) {
+      const ofxIdRef = fitIdsRef.length ? fitIdsRef[j % fitIdsRef.length] : null;
       const { error } = await db.from('lancamentos')
-        .update({ status: 'pago', data_pagamento: t.data, banco_id: bancoId, ofx_id: ofxIdUsar })
-        .eq('id', lancId);
-      if (error) { erros++; continue; }
-      const lancRef = lancamentosPendentes.find(l => l.id === lancId);
-      await q(db.from('pagamentos').insert({
-        lancamento_id:  lancId,
-        valor:          Number(lancRef?.valor || 0),
-        data:           t.data,
-        banco_id:       bancoId,
-        plano_conta_id: lancRef?.plano_conta_id || null,
-        origem:         'ofx',
-        ofx_id:         ofxIdUsar
-      }));
+        .update({ status: 'pago', data_pagamento: t.data, banco_id: bancoId, ofx_id: ofxIdRef })
+        .eq('id', lancIds[j]);
+      if (error) erros++;
+    }
+    if (lancIds.length === 1 && debitos.length > 1) {
+      // 1 lançamento pago por VÁRIOS débitos (grupo de lotes): grava 1 pagamento
+      // por débito, cada um com seu ofx_id. Antes só o 1º FITID era gravado e os
+      // demais reapareciam soltos no reimport.
+      const lancId  = lancIds[0];
+      const planoId = lancamentosPendentes.find(l => l.id === lancId)?.plano_conta_id || null;
+      for (const d of debitos) {
+        await q(db.from('pagamentos').insert({
+          lancamento_id:  lancId,
+          valor:          d.valor,
+          data:           t.data,
+          banco_id:       bancoId,
+          plano_conta_id: planoId,
+          origem:         'ofx',
+          ofx_id:         d.fitId
+        }));
+      }
+    } else {
+      // Demais casos: 1 pagamento por lançamento (comportamento original).
+      for (let j = 0; j < lancIds.length; j++) {
+        const lancRef = lancamentosPendentes.find(l => l.id === lancIds[j]);
+        await q(db.from('pagamentos').insert({
+          lancamento_id:  lancIds[j],
+          valor:          Number(lancRef?.valor || 0),
+          data:           t.data,
+          banco_id:       bancoId,
+          plano_conta_id: lancRef?.plano_conta_id || null,
+          origem:         'ofx',
+          ofx_id:         fitIdsRef.length ? fitIdsRef[j % fitIdsRef.length] : null
+        }));
+      }
     }
   }
 
@@ -5752,6 +5799,7 @@ async function importarTransacoes() {
     const entry = concilPorLanc.get(t.lancamento_id);
     entry.somaOFX += t.valor;
     entry.ofxId    = t.fitId || null;
+    (entry.debitos = entry.debitos || []).push(...debitosDaTransacaoOFX(t));
     if (t.tipo === 'pagar' && t.centro_custo_id) entry.centroCustoId = t.centro_custo_id;
     if (t.unidade_id) entry.unidadeId = t.unidade_id;
     if (t.ajuste_tipo && t.ajuste_valor > 0) {
@@ -5781,15 +5829,23 @@ async function importarTransacoes() {
     if (entry.unidadeId) updDados.unidade_id = entry.unidadeId;
     const { error } = await q(db.from('lancamentos').update(updDados).eq('id', lancId))
     if (error) { erros++; continue; }
-    await q(db.from('pagamentos').insert({
-      lancamento_id:  lancId,
-      valor:          entry.somaOFX,
-      data:           entry.data,
-      banco_id:       bancoId,
-      plano_conta_id: entry.planoContaId || null,
-      origem:         'ofx',
-      ofx_id:         entry.ofxId
-    }));
+    // Grava 1 pagamento por débito do extrato (expandindo grupos de lotes), cada um
+    // com seu ofx_id — garante que todo FITID consumido fique registrado e seja
+    // reconhecido no reimport. Antes gravava 1 pagamento só, com 1 FITID.
+    const debitosConcil = (entry.debitos && entry.debitos.length)
+      ? entry.debitos
+      : [{ fitId: entry.ofxId, valor: entry.somaOFX }];
+    for (const d of debitosConcil) {
+      await q(db.from('pagamentos').insert({
+        lancamento_id:  lancId,
+        valor:          d.valor,
+        data:           entry.data,
+        banco_id:       bancoId,
+        plano_conta_id: entry.planoContaId || null,
+        origem:         'ofx',
+        ofx_id:         d.fitId
+      }));
+    }
   }
 
   // Dividir Pedido: desmembra 1 pedido em N lançamentos (um por débito/data),
