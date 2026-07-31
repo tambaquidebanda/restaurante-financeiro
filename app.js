@@ -402,6 +402,7 @@ function irPara(pagina, elemento) {
   if (pagina === 'fornecedores')     renderizarFornecedores();
   if (pagina === 'centros-custo')    renderizarCentrosCusto();
   if (pagina === 'formas-pagamento') renderizarFormasPagamento();
+  if (pagina === 'taxas-cartao')     carregarTaxasCartao();
   if (pagina === 'transferencias')   carregarTransferencias();
   if (pagina === 'orcamento')        carregarOrcamentoModo();
   if (pagina === 'relatorios')       carregarRelatorio();
@@ -416,7 +417,7 @@ function irPara(pagina, elemento) {
     'pagar': 'gestao', 'receber': 'gestao', 'importar': 'gestao',
     'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao',
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
-    'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros',
+    'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
     'dre': 'relatorios', 'relatorios': 'relatorios',
     'usuarios': 'configuracoes', 'configuracoes': 'configuracoes'
   };
@@ -3083,6 +3084,141 @@ async function excluirFormaPagamento(id) {
   mostrarToast('Excluído!', 'sucesso');
   await carregarFormasPagamento();
   renderizarFormasPagamento();
+}
+
+// =========================================================
+// TAXAS DE CARTÃO (MDR + antecipação) — usado na Conciliação de Cartão
+// =========================================================
+let taxasCartao = [];
+const MODALIDADES_TAXA = {
+  debito:            'Débito',
+  credito_avista:    'Crédito à vista',
+  credito_parcelado: 'Crédito parcelado',
+  pix:               'Pix'
+};
+
+async function carregarTaxasCartao() {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const { data, error } = await q(
+    db.from('card_taxas').select('*')
+      .order('bandeira').order('modalidade')
+      .order('vigencia_inicio', { ascending: false })
+  );
+  const tbody = document.getElementById('tbody-taxas-cartao');
+  if (error) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="sem-dados">Tabela ainda não existe. Rode <strong>SQL_CARD_CONCILIACAO.sql</strong> no Supabase para criar as tabelas de conciliação de cartão.</td></tr>';
+    return;
+  }
+  taxasCartao = data || [];
+  renderizarTaxasCartao();
+}
+
+function renderizarTaxasCartao() {
+  const tbody = document.getElementById('tbody-taxas-cartao');
+  if (!tbody) return;
+  if (!taxasCartao.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="sem-dados">Nenhuma taxa cadastrada. Clique em "+ Nova Taxa".</td></tr>';
+    return;
+  }
+  const dt  = d => d ? d.split('-').reverse().join('/') : '';
+  const pct = n => Number(n || 0).toFixed(2).replace('.', ',') + '%';
+  tbody.innerHTML = taxasCartao.map(t => `
+    <tr>
+      <td><strong>${t.bandeira}</strong></td>
+      <td>${MODALIDADES_TAXA[t.modalidade] || t.modalidade}</td>
+      <td>${t.parcelas ? t.parcelas + 'x' : '-'}</td>
+      <td>${pct(t.percentual_mdr)}</td>
+      <td>${pct(t.percentual_antecipacao)}</td>
+      <td>${dt(t.vigencia_inicio)}${t.vigencia_fim ? ' — ' + dt(t.vigencia_fim) : ' — vigente'}</td>
+      <td>
+        <button class="btn-icone editar" title="Editar" onclick="abrirModalTaxaCartao('${t.id}')">
+          <i class="fas fa-edit"></i>
+        </button>
+        <button class="btn-icone excluir" title="Excluir" onclick="excluirTaxaCartao('${t.id}')">
+          <i class="fas fa-trash"></i>
+        </button>
+      </td>
+    </tr>`).join('');
+}
+
+function abrirModalTaxaCartao(id) {
+  document.getElementById('modal-taxa-id').value         = id || '';
+  document.getElementById('modal-taxa-bandeira').value   = '';
+  document.getElementById('modal-taxa-modalidade').value = 'debito';
+  document.getElementById('modal-taxa-parcelas').value   = '';
+  document.getElementById('modal-taxa-mdr').value        = '';
+  document.getElementById('modal-taxa-antecip').value    = '';
+  document.getElementById('modal-taxa-inicio').value     = new Date().toISOString().slice(0, 10);
+  document.getElementById('modal-taxa-fim').value        = '';
+
+  if (id) {
+    const t = taxasCartao.find(x => x.id === id);
+    if (t) {
+      document.getElementById('modal-taxa-bandeira').value   = t.bandeira || '';
+      document.getElementById('modal-taxa-modalidade').value = t.modalidade || 'debito';
+      document.getElementById('modal-taxa-parcelas').value   = t.parcelas || '';
+      document.getElementById('modal-taxa-mdr').value        = String(t.percentual_mdr ?? '').replace('.', ',');
+      document.getElementById('modal-taxa-antecip').value    = String(t.percentual_antecipacao ?? '').replace('.', ',');
+      document.getElementById('modal-taxa-inicio').value     = t.vigencia_inicio || '';
+      document.getElementById('modal-taxa-fim').value        = t.vigencia_fim || '';
+    }
+  }
+  atualizarCampoParcelasTaxa();
+  document.getElementById('modal-taxa-cartao').classList.remove('hidden');
+}
+
+// Só mostra "parcelas" quando a modalidade é crédito parcelado
+function atualizarCampoParcelasTaxa() {
+  const mod = document.getElementById('modal-taxa-modalidade').value;
+  const grupo = document.getElementById('grupo-taxa-parcelas');
+  if (grupo) grupo.style.display = (mod === 'credito_parcelado') ? '' : 'none';
+}
+
+async function salvarTaxaCartao() {
+  if (!await garantirSessao()) return;
+  const pct = v => { const n = parseFloat(String(v || '').replace(',', '.')); return isNaN(n) ? null : n; };
+  const id            = document.getElementById('modal-taxa-id').value;
+  const bandeira      = document.getElementById('modal-taxa-bandeira').value.trim();
+  const modalidade    = document.getElementById('modal-taxa-modalidade').value;
+  const parcelasRaw   = document.getElementById('modal-taxa-parcelas').value.trim();
+  const mdr           = pct(document.getElementById('modal-taxa-mdr').value);
+  const antecip       = pct(document.getElementById('modal-taxa-antecip').value) || 0;
+  const vigenciaIni   = document.getElementById('modal-taxa-inicio').value || null;
+  const vigenciaFim   = document.getElementById('modal-taxa-fim').value || null;
+
+  if (!bandeira)      { mostrarToast('Informe a bandeira!', 'erro'); return; }
+  if (mdr === null)   { mostrarToast('Informe a taxa (MDR)!', 'erro'); return; }
+  if (!vigenciaIni)   { mostrarToast('Informe a vigência inicial!', 'erro'); return; }
+
+  const dados = {
+    bandeira,
+    modalidade,
+    parcelas: (modalidade === 'credito_parcelado' && parcelasRaw) ? parseInt(parcelasRaw, 10) : null,
+    percentual_mdr:         mdr,
+    percentual_antecipacao: antecip,
+    vigencia_inicio:        vigenciaIni,
+    vigencia_fim:           vigenciaFim
+  };
+
+  const db = obterSupabase();
+  let error;
+  if (id) ({ error } = await q(db.from('card_taxas').update(dados).eq('id', id)));
+  else    ({ error } = await q(db.from('card_taxas').insert([dados])));
+
+  if (tratarErro(error, 'Erro ao salvar')) return;
+  mostrarToast(id ? 'Taxa atualizada!' : 'Taxa cadastrada!', 'sucesso');
+  fecharModal('modal-taxa-cartao');
+  await carregarTaxasCartao();
+}
+
+async function excluirTaxaCartao(id) {
+  if (!confirm('Excluir esta taxa?')) return;
+  const db = obterSupabase();
+  const { error } = await q(db.from('card_taxas').delete().eq('id', id));
+  if (tratarErro(error, 'Erro ao excluir')) return;
+  mostrarToast('Taxa excluída!', 'sucesso');
+  await carregarTaxasCartao();
 }
 
 // =========================================================
