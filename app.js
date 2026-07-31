@@ -3459,9 +3459,9 @@ async function renderConciliacaoCartao() {
     corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
     return;
   }
-  // Banco: créditos GETNET no período
+  // Banco: créditos GETNET no período (com descrição p/ separar débito × antecipação)
   const { data: banco } = await db.from('lancamentos')
-    .select('data_pagamento,valor').eq('tipo', 'receber').eq('status', 'pago')
+    .select('data_pagamento,valor,descricao').eq('tipo', 'receber').eq('status', 'pago')
     .ilike('descricao', '%GETNET%').gte('data_pagamento', de).lte('data_pagamento', ate);
 
   // Agrega esperado por data de liquidação (dia útil seguinte à venda)
@@ -3473,10 +3473,13 @@ async function renderConciliacaoCartao() {
     esperado[s].liq += Number(v.valor_liquido) || 0;
     esperado[s].dias.add(v.data_venda);
   });
-  const recebido = {};
+  const recebido = {}, debitoDia = {};
   (banco || []).forEach(b => {
     const d = (b.data_pagamento || '').slice(0, 10);
-    recebido[d] = (recebido[d] || 0) + (Number(b.valor) || 0);
+    const v = Number(b.valor) || 0;
+    recebido[d] = (recebido[d] || 0) + v;
+    // Débito cai D+1 sem antecipação; antecipação é o crédito. Separa para o % de custo.
+    if (/D[EÉ]BITO/i.test(b.descricao || '')) debitoDia[d] = (debitoDia[d] || 0) + v;
   });
 
   const hoje = new Date().toISOString().slice(0, 10);
@@ -3485,7 +3488,7 @@ async function renderConciliacaoCartao() {
 
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   const dt = d => d.split('-').reverse().join('/');
-  let totEsp = 0, totRec = 0, nDiv = 0, custoAntecip = 0;
+  let totEsp = 0, totRec = 0, nDiv = 0, custoAntecip = 0, baseCredito = 0;
   const linhas = datas.map(d => {
     const esp = esperado[d]?.liq || 0, rec = recebido[d] || 0;
     totEsp += esp; totRec += rec;
@@ -3496,7 +3499,7 @@ async function renderConciliacaoCartao() {
     else if (esp === 0 && rec > 0)        { cor = '#e67e22'; txt = '🟠 crédito sem venda'; }
     else {
       const pct = esp > 0 ? dif / esp : 0;
-      if (pct >= -CC_TOLERANCIA && pct <= 0.01) { cor = '#27ae60'; txt = '🟢 ok'; custoAntecip += (esp - rec); }
+      if (pct >= -CC_TOLERANCIA && pct <= 0.01) { cor = '#27ae60'; txt = '🟢 ok'; custoAntecip += (esp - rec); baseCredito += (esp - (debitoDia[d] || 0)); }
       else if (pct > 0.01)                       { cor = '#e67e22'; txt = '🟠 conferir (base incompleta?)'; }
       else                                       { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }
     }
@@ -3520,7 +3523,7 @@ async function renderConciliacaoCartao() {
     cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
       ${card('Esperado (vendas)', brl(totEsp), '#2c3e50')}
       ${card('Recebido (banco)', brl(totRec), '#27ae60')}
-      ${card('Custo de antecipação', brl(custoAntecip), '#e67e22')}
+      ${card('Custo de antecipação', brl(custoAntecip) + (baseCredito > 0 ? `  <span style="font-size:12px;color:#888">(${(custoAntecip / baseCredito * 100).toFixed(2).replace('.', ',')}% do crédito)</span>` : ''), '#e67e22')}
       ${card('Divergências', String(nDiv), nDiv ? '#e74c3c' : '#27ae60')}
     </div>`;
   }
