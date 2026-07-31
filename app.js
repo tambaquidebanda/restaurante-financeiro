@@ -410,13 +410,14 @@ function irPara(pagina, elemento) {
   if (pagina === 'usuarios')         carregarUsuarios();
   if (pagina === 'importar')         { preencherSelectBancoImportar(); carregarLancamentosPendentes(); }
   if (pagina === 'importar-getnet')  carregarImportarGetnet();
+  if (pagina === 'conciliacao-cartao') carregarConciliacaoCartao();
   if (pagina === 'conciliacao')      { preencherFiltrosConciliacao(); carregarConciliacao(); }
   if (pagina === 'integracoes')      carregarIntegracoes();
 
   // Auto-expandir o grupo accordion correto
   const grupoNavPorPagina = {
     'pagar': 'gestao', 'receber': 'gestao', 'importar': 'gestao',
-    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao', 'importar-getnet': 'gestao',
+    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao', 'importar-getnet': 'gestao', 'conciliacao-cartao': 'gestao',
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
     'dre': 'relatorios', 'relatorios': 'relatorios',
@@ -3404,6 +3405,124 @@ async function gravarGetnet() {
   }
   mostrarToast(`Getnet importado: ${rowsVendas.length} vendas e ${rowsLotes.length} lotes.`, 'sucesso');
   carregarImportarGetnet();
+}
+
+// =========================================================
+// CONCILIAÇÃO DE CARTÃO (Etapa B) — vendas do dia X × banco no dia útil X+1
+// Modelo: toda venda (débito e crédito) cai no dia útil seguinte via antecipação
+// automática ("ANTECIPACAO GETNET" no extrato). O D+30 é só informativo.
+// =========================================================
+const CC_TOLERANCIA = 0.03; // 3% — cobre o custo da antecipação (~1%) + folga
+
+// Próximo dia útil (pula sáb/dom). Sex/Sáb/Dom liquidam na segunda.
+function ccProximoDiaUtil(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
+  return d.toISOString().slice(0, 10);
+}
+
+async function ccFetchPaginado(build) {
+  let out = [], from = 0;
+  while (true) {
+    const { data, error } = await build().range(from, from + 999);
+    if (error) throw error;
+    out = out.concat(data || []);
+    if (!data || data.length < 1000) break;
+    from += 1000;
+  }
+  return out;
+}
+
+async function carregarConciliacaoCartao() {
+  if (!(await garantirSessao())) return;
+  const de = document.getElementById('cc-de'), ate = document.getElementById('cc-ate');
+  if (ate && !ate.value) ate.value = new Date().toISOString().slice(0, 10);
+  if (de && !de.value) { const d = new Date(); d.setDate(d.getDate() - 14); de.value = d.toISOString().slice(0, 10); }
+  await renderConciliacaoCartao();
+}
+
+async function renderConciliacaoCartao() {
+  const db = obterSupabase();
+  const corpo = document.getElementById('cc-corpo');
+  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
+  if (!de || !ate || !corpo) return;
+  corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Carregando…</td></tr>';
+
+  // Vendas: pega data_venda de (de-6) até ate (p/ cobrir acúmulo de fim de semana)
+  const deV = new Date(de + 'T12:00:00'); deV.setDate(deV.getDate() - 6);
+  let vendas;
+  try {
+    vendas = await ccFetchPaginado(() => db.from('card_transacoes')
+      .select('data_venda,valor_liquido').eq('tipo_registro', 'venda')
+      .gte('data_venda', deV.toISOString().slice(0, 10)).lte('data_venda', ate));
+  } catch (e) {
+    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
+    return;
+  }
+  // Banco: créditos GETNET no período
+  const { data: banco } = await db.from('lancamentos')
+    .select('data_pagamento,valor').eq('tipo', 'receber').eq('status', 'pago')
+    .ilike('descricao', '%GETNET%').gte('data_pagamento', de).lte('data_pagamento', ate);
+
+  // Agrega esperado por data de liquidação (dia útil seguinte à venda)
+  const esperado = {}; // dataLiq -> { liq, dias:Set }
+  vendas.forEach(v => {
+    if (!v.data_venda) return;
+    const s = ccProximoDiaUtil(v.data_venda);
+    (esperado[s] = esperado[s] || { liq: 0, dias: new Set() });
+    esperado[s].liq += Number(v.valor_liquido) || 0;
+    esperado[s].dias.add(v.data_venda);
+  });
+  const recebido = {};
+  (banco || []).forEach(b => {
+    const d = (b.data_pagamento || '').slice(0, 10);
+    recebido[d] = (recebido[d] || 0) + (Number(b.valor) || 0);
+  });
+
+  const hoje = new Date().toISOString().slice(0, 10);
+  const datas = [...new Set([...Object.keys(esperado), ...Object.keys(recebido)])]
+    .filter(d => d >= de && d <= ate).sort().reverse();
+
+  const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const dt = d => d.split('-').reverse().join('/');
+  let totEsp = 0, totRec = 0, nDiv = 0;
+  const linhas = datas.map(d => {
+    const esp = esperado[d]?.liq || 0, rec = recebido[d] || 0;
+    totEsp += esp; totRec += rec;
+    const dif = rec - esp;
+    let status, cor, txt;
+    if (rec === 0 && esp > 0 && d >= hoje) { status = 'aguardando'; cor = '#7f8c8d'; txt = '⏳ aguardando'; }
+    else if (rec === 0 && esp > 0)        { status = 'div'; cor = '#e74c3c'; txt = '🔴 não recebido'; nDiv++; }
+    else if (esp === 0 && rec > 0)        { status = 'div'; cor = '#e67e22'; txt = '🟠 sem venda'; nDiv++; }
+    else {
+      const pct = esp > 0 ? dif / esp : 0;
+      if (pct >= -CC_TOLERANCIA && pct <= 0.01) { status = 'ok'; cor = '#27ae60'; txt = '🟢 ok'; }
+      else { status = 'div'; cor = '#e74c3c'; txt = '🔴 diverge'; nDiv++; }
+    }
+    const diasArr = [...(esperado[d]?.dias || [])].sort();
+    const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
+    return `<tr>
+      <td><strong>${dt(d)}</strong></td>
+      <td style="font-size:12px;color:#777">${diasTxt}</td>
+      <td style="text-align:right">${brl(esp)}</td>
+      <td style="text-align:right">${brl(rec)}</td>
+      <td style="text-align:right;color:${dif < -0.01 ? '#e74c3c' : '#555'}">${brl(dif)}</td>
+      <td style="color:${cor};font-weight:600">${txt}</td>
+    </tr>`;
+  }).join('');
+
+  corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
+  const cards = document.getElementById('cc-cards');
+  if (cards) {
+    const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px">
+      <div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
+    cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      ${card('Esperado (vendas)', brl(totEsp), '#2c3e50')}
+      ${card('Recebido (banco)', brl(totRec), '#27ae60')}
+      ${card('Diferença', brl(totRec - totEsp), '#e67e22')}
+      ${card('Divergências', String(nDiv), nDiv ? '#e74c3c' : '#27ae60')}
+    </div>`;
+  }
 }
 
 // =========================================================

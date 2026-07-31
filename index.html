@@ -104,6 +104,9 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar-getnet', this)">
               <i class="fas fa-cash-register"></i><span>Importar Getnet</span>
             </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('conciliacao-cartao', this)">
+              <i class="fas fa-credit-card"></i><span>Conciliação Cartão</span>
+            </a>
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('transferencias', this)">
               <i class="fas fa-exchange-alt"></i><span>Transferências</span>
             </a>
@@ -777,6 +780,42 @@
             </thead>
             <tbody id="tbody-formas-pagamento">
               <tr><td colspan="2" class="sem-dados">Nenhuma forma de pagamento cadastrada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== CONCILIAÇÃO DE CARTÃO (Etapa B) ===== -->
+      <section id="pagina-conciliacao-cartao" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-credit-card"></i> Conciliação de Cartão</h2>
+        </div>
+        <div class="info-box">
+          <i class="fas fa-lightbulb"></i>
+          Compara o <strong>líquido das vendas Getnet de cada dia</strong> com o que <strong>caiu no banco no dia útil seguinte</strong>
+          (suas vendas caem em D+1 via antecipação). A diferença normal é o <strong>custo da antecipação</strong> (~1%).
+          🟢 bateu · 🔴 não recebido / diverge · 🟠 crédito sem venda · ⏳ ainda vai cair.
+        </div>
+        <div class="filtros">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <label style="font-size:13px;color:#555;">Liquidação de</label>
+            <input type="date" id="cc-de" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="renderConciliacaoCartao()">
+            <span style="font-size:13px;color:#555;">até</span>
+            <input type="date" id="cc-ate" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="renderConciliacaoCartao()">
+            <button class="btn btn-outline btn-sm" onclick="renderConciliacaoCartao()"><i class="fas fa-sync"></i> Atualizar</button>
+          </div>
+        </div>
+        <div id="cc-cards"></div>
+        <div class="tabela-box">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Liquidação</th><th>Vendas de</th><th style="text-align:right">Esperado (líquido)</th>
+                <th style="text-align:right">Recebido (banco)</th><th style="text-align:right">Diferença</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="cc-corpo">
+              <tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr>
             </tbody>
           </table>
         </div>
