@@ -101,6 +101,9 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('conciliacao', this)">
               <i class="fas fa-balance-scale"></i><span>Conciliação</span>
             </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar-getnet', this)">
+              <i class="fas fa-cash-register"></i><span>Importar Getnet</span>
+            </a>
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('transferencias', this)">
               <i class="fas fa-exchange-alt"></i><span>Transferências</span>
             </a>
@@ -776,6 +779,32 @@
               <tr><td colspan="2" class="sem-dados">Nenhuma forma de pagamento cadastrada.</td></tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- ===== IMPORTAR GETNET ===== -->
+      <section id="pagina-importar-getnet" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-cash-register"></i> Importar Arquivo Getnet</h2>
+        </div>
+        <div class="info-box">
+          <i class="fas fa-lightbulb"></i>
+          Baixe o extrato diário do SFTP da Getnet (arquivo <strong>getnetextr_AAAAMMDD_...txt</strong>) e solte aqui.
+          O sistema lê as vendas, taxas, líquidos e liquidações e grava para a conciliação de cartão.
+          Reimportar o mesmo arquivo apenas atualiza os dados dele (não duplica).
+        </div>
+        <div class="tabela-box" style="padding:16px">
+          <label class="btn btn-primary" style="cursor:pointer">
+            <i class="fas fa-file-upload"></i> Escolher arquivo Getnet
+            <input type="file" id="arquivo-getnet" accept=".txt,.TXT" style="display:none"
+              onchange="carregarArquivoGetnet(this)" />
+          </label>
+          <span id="nome-arquivo-getnet" style="margin-left:10px;color:#555;font-size:13px"></span>
+          <div id="getnet-resumo"></div>
+          <button id="btn-gravar-getnet" class="btn btn-success" style="display:none;margin-top:8px"
+            onclick="gravarGetnet()">
+            <i class="fas fa-save"></i> Gravar no sistema
+          </button>
         </div>
       </section>
 

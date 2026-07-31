@@ -409,13 +409,14 @@ function irPara(pagina, elemento) {
   if (pagina === 'dre')              carregarDre();
   if (pagina === 'usuarios')         carregarUsuarios();
   if (pagina === 'importar')         { preencherSelectBancoImportar(); carregarLancamentosPendentes(); }
+  if (pagina === 'importar-getnet')  carregarImportarGetnet();
   if (pagina === 'conciliacao')      { preencherFiltrosConciliacao(); carregarConciliacao(); }
   if (pagina === 'integracoes')      carregarIntegracoes();
 
   // Auto-expandir o grupo accordion correto
   const grupoNavPorPagina = {
     'pagar': 'gestao', 'receber': 'gestao', 'importar': 'gestao',
-    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao',
+    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao', 'importar-getnet': 'gestao',
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
     'dre': 'relatorios', 'relatorios': 'relatorios',
@@ -3219,6 +3220,182 @@ async function excluirTaxaCartao(id) {
   if (tratarErro(error, 'Erro ao excluir')) return;
   mostrarToast('Taxa excluída!', 'sucesso');
   await carregarTaxasCartao();
+}
+
+// =========================================================
+// IMPORTAR ARQUIVO GETNET (EDI 400 bytes) → card_transacoes / card_lotes_pagamento
+// =========================================================
+let getnetImport = null; // { fileName, resultado }
+
+// Parser do Extrato Eletrônico Getnet (largura fixa 400 bytes, v10.1). Função pura.
+function parsearGetnetEDI(conteudo) {
+  const linhas = String(conteudo).split(/\r?\n/).filter(l => l.length >= 400);
+  if (!linhas.length) return { erro: 'Arquivo Getnet vazio ou fora do layout de 400 bytes.' };
+
+  const money = s => { const n = parseInt(s, 10); return isNaN(n) ? 0 : n / 100; };
+  const dataBR = s => (s && /^\d{8}$/.test(s)) ? `${s.slice(4)}-${s.slice(2, 4)}-${s.slice(0, 2)}` : null;
+  const horaBR = s => (s && /^\d{6}$/.test(s)) ? `${s.slice(0, 2)}:${s.slice(2, 4)}:${s.slice(4, 6)}` : null;
+  const bandeiraBIN = card => {
+    const b = (card || '').replace(/\D/g, '').slice(0, 6);
+    if (b[0] === '4') return 'Visa';
+    if (b[0] === '2' || ['51', '52', '53', '54', '55'].includes(b.slice(0, 2))) return 'Master';
+    if (['37', '34'].includes(b.slice(0, 2))) return 'Amex';
+    if (b.slice(0, 6) === '606282') return 'Hipercard';
+    if (b[0] === '6' || b.slice(0, 2) === '50') return 'Elo';
+    return b ? 'BIN ' + b : '';
+  };
+
+  const vendas = [], lotes = [], antecipacoes = [], ajustes = [];
+  for (const l of linhas) {
+    const tipo = l[0];
+    if (tipo === '2') {
+      const dataVenda  = dataBR(l.slice(37, 45));
+      const dtPgtoPrev = dataBR(l.slice(122, 130));
+      const parcelaTot = parseInt(l.slice(108, 110), 10) || 1;
+      const bruto = money(l.slice(70, 82));
+      const taxa  = money(l.slice(175, 187));
+      const taxaPct = bruto > 0 ? +(taxa / bruto * 100).toFixed(2) : 0;
+      const modalidade = parcelaTot > 1 ? 'credito_parcelado' : (taxaPct <= 1.8 ? 'debito' : 'credito_avista');
+      vendas.push({
+        nsu: l.slice(130, 140).trim(),
+        cartao_mascarado: l.slice(51, 70).trim(),
+        bandeira: bandeiraBIN(l.slice(51, 70)),
+        modalidade,
+        taxa_efetiva_pct: taxaPct,
+        parcelas: parcelaTot > 1 ? parcelaTot : null,
+        terminal: l.slice(140, 159).trim(),
+        data_venda: dataVenda,
+        hora_venda: horaBR(l.slice(45, 51)),
+        data_pagamento_prevista: dtPgtoPrev,
+        valor_bruto: bruto,
+        valor_taxa: taxa,
+        valor_liquido: +(bruto - taxa).toFixed(2)
+      });
+    } else if (tipo === '3') {
+      antecipacoes.push({
+        data_venda: dataBR(l.slice(25, 33)),
+        data_pagamento_original: dataBR(l.slice(33, 41)),
+        valor_cedido: money(l.slice(63, 75))
+      });
+    } else if (tipo === '5') {
+      lotes.push({
+        data_pagamento: dataBR(l.slice(24, 32)),
+        valor_liquido: money(l.slice(66, 78)),
+        agencia: l.slice(115, 119).trim(),
+        conta: l.slice(119, 123).trim(),
+        conta_num: l.slice(135, 144).trim(),
+        banco: l.slice(230, 255).trim()
+      });
+    } else if (tipo === '6') {
+      ajustes.push({ raw: l.slice(0, 60) });
+    }
+  }
+
+  const soma = (arr, k) => +arr.reduce((s, x) => s + (x[k] || 0), 0).toFixed(2);
+  const totais = {
+    qtd_vendas: vendas.length, bruto: soma(vendas, 'valor_bruto'), taxa: soma(vendas, 'valor_taxa'),
+    liquido: soma(vendas, 'valor_liquido'), qtd_lotes: lotes.length, liquido_pago: soma(lotes, 'valor_liquido'),
+    qtd_antecipacoes: antecipacoes.length, valor_cedido: soma(antecipacoes, 'valor_cedido'), qtd_ajustes: ajustes.length
+  };
+  return { vendas, lotes, antecipacoes, ajustes, totais };
+}
+
+function carregarImportarGetnet() {
+  getnetImport = null;
+  const nome = document.getElementById('nome-arquivo-getnet');
+  if (nome) nome.textContent = '';
+  const resumo = document.getElementById('getnet-resumo');
+  if (resumo) resumo.innerHTML = '';
+  const btn = document.getElementById('btn-gravar-getnet');
+  if (btn) btn.style.display = 'none';
+}
+
+function carregarArquivoGetnet(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  document.getElementById('nome-arquivo-getnet').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const resultado = parsearGetnetEDI(e.target.result);
+    if (resultado.erro) { mostrarToast(resultado.erro, 'erro'); return; }
+    getnetImport = { fileName: file.name, resultado };
+    renderResumoGetnet();
+  };
+  reader.readAsText(file, 'latin1');
+}
+
+function renderResumoGetnet() {
+  const el = document.getElementById('getnet-resumo');
+  if (!el || !getnetImport) return;
+  const t = getnetImport.resultado.totais;
+  const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const card = (rot, val, cor) => `<div class="card-resumo" style="border-left:4px solid ${cor}">
+    <div style="font-size:12px;color:#777">${rot}</div><div style="font-size:18px;font-weight:700">${val}</div></div>`;
+  const linhasVendas = getnetImport.resultado.vendas.slice(0, 10).map(v => `
+    <tr><td>${v.data_venda} ${v.hora_venda || ''}</td><td>${v.bandeira}</td>
+    <td>${MODALIDADES_TAXA[v.modalidade] || v.modalidade}</td>
+    <td style="text-align:right">${brl(v.valor_bruto)}</td>
+    <td style="text-align:right">${brl(v.valor_taxa)}</td>
+    <td style="text-align:right">${brl(v.valor_liquido)}</td><td>${v.nsu}</td></tr>`).join('');
+  el.innerHTML = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      ${card('Vendas', t.qtd_vendas + ' transações', '#3498db')}
+      ${card('Bruto', brl(t.bruto), '#2c3e50')}
+      ${card('Taxa (MDR)', brl(t.taxa), '#e67e22')}
+      ${card('Líquido', brl(t.liquido), '#27ae60')}
+      ${card('Lotes p/ banco', t.qtd_lotes + ' · ' + brl(t.liquido_pago), '#8e44ad')}
+      ${card('Antecipações', t.qtd_antecipacoes + ' · ' + brl(t.valor_cedido), '#16a085')}
+    </div>
+    <div class="tabela-box"><table class="tabela"><thead><tr>
+      <th>Data/Hora</th><th>Bandeira</th><th>Modalidade</th><th>Bruto</th><th>Taxa</th><th>Líquido</th><th>NSU</th>
+    </tr></thead><tbody>${linhasVendas}</tbody></table></div>
+    <p style="font-size:12px;color:#777;margin-top:6px">Mostrando as 10 primeiras de ${t.qtd_vendas} vendas.</p>`;
+  const btn = document.getElementById('btn-gravar-getnet');
+  if (btn) btn.style.display = 'inline-flex';
+}
+
+async function gravarGetnet() {
+  if (!getnetImport) { mostrarToast('Nenhum arquivo carregado.', 'erro'); return; }
+  if (!await garantirSessao()) return;
+  const db = obterSupabase();
+  const fname = getnetImport.fileName;
+  const { vendas, lotes } = getnetImport.resultado;
+
+  // Idempotência por arquivo: reimportar o mesmo arquivo substitui os dados dele.
+  await q(db.from('card_transacoes').delete().eq('arquivo_origem', fname));
+  await q(db.from('card_lotes_pagamento').delete().eq('arquivo_origem', fname));
+
+  const utc = (d, h) => d ? new Date(`${d}T${h || '00:00:00'}-03:00`).toISOString() : null;
+  const rowsVendas = vendas.map(v => ({
+    nsu: v.nsu || null, bandeira: v.bandeira || null, modalidade: v.modalidade,
+    parcelas: v.parcelas, cartao_mascarado: v.cartao_mascarado || null, terminal: v.terminal || null,
+    data_venda: v.data_venda, hora_venda: v.hora_venda, data_hora_utc: utc(v.data_venda, v.hora_venda),
+    data_pagamento_prevista: v.data_pagamento_prevista,
+    valor_bruto: v.valor_bruto, valor_taxa: v.valor_taxa, valor_liquido: v.valor_liquido,
+    tipo_registro: 'venda', origem: 'upload_edi', arquivo_origem: fname
+  }));
+  const rowsLotes = lotes.map(x => ({
+    data_pagamento: x.data_pagamento, valor_liquido_esperado: x.valor_liquido,
+    banco: x.banco || null, agencia: x.agencia || null, conta: x.conta || null,
+    arquivo_origem: fname, status: 'pendente'
+  }));
+
+  // Insere em lotes de 500
+  const chunk = async (tabela, rows) => {
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await q(db.from(tabela).insert(rows.slice(i, i + 500)));
+      if (error) throw error;
+    }
+  };
+  try {
+    await chunk('card_transacoes', rowsVendas);
+    await chunk('card_lotes_pagamento', rowsLotes);
+  } catch (err) {
+    tratarErro(err, 'Erro ao gravar as transações da Getnet');
+    return;
+  }
+  mostrarToast(`Getnet importado: ${rowsVendas.length} vendas e ${rowsLotes.length} lotes.`, 'sucesso');
+  carregarImportarGetnet();
 }
 
 // =========================================================
