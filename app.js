@@ -3912,6 +3912,53 @@ async function verificarDuplicatas(transacoes) {
     }
   }
 
+  // 2b. Fallback por SOMA (conciliação "múltiplos"): 1 linha do extrato paga
+  //     VÁRIOS lançamentos (ex.: boleto de fatura de cartão). Nesse caso nenhum
+  //     lançamento isolado tem o valor da linha, então o passo 2 não pega — e o
+  //     FITID do Santander muda a cada download, então o passo 1 também não pega.
+  //     Aqui agrupamos os pagamentos OFX já gravados por (data, ofx_id) e, se a
+  //     SOMA de um grupo (2+ pagamentos) bater com o valor da linha, é duplicata.
+  const semMatch2 = transacoes.filter(t => !t.jaImportado && t.fitId);
+  if (semMatch2.length && bancoId) {
+    const minData = semMatch2.reduce((min, t) => t.data < min ? t.data : min, '9999-12-31');
+    const maxData = semMatch2.reduce((max, t) => t.data > max ? t.data : max, '0000-01-01');
+    const { data: pagosOfx } = await db.from('pagamentos')
+      .select('valor, data, ofx_id')
+      .eq('origem', 'ofx')
+      .eq('banco_id', bancoId)
+      .gte('data', minData)
+      .lte('data', maxData);
+
+    if (pagosOfx && pagosOfx.length) {
+      // Agrupa por (data, ofx_id) — cada conciliação múltipla compartilha o mesmo ofx_id.
+      const grupos = new Map();
+      for (const p of pagosOfx) {
+        if (!p.ofx_id) continue; // sem id não dá pra agrupar com segurança
+        const dia = (p.data || '').substring(0, 10);
+        const chave = `${dia}|${p.ofx_id}`;
+        const g = grupos.get(chave) || { data: dia, soma: 0, n: 0 };
+        g.soma += Number(p.valor) || 0;
+        g.n += 1;
+        grupos.set(chave, g);
+      }
+      // Só grupos com 2+ pagamentos são "múltiplos" (1 pagamento já foi coberto no passo 2).
+      const gruposMulti = [...grupos.values()].filter(g => g.n >= 2);
+      const usados = new Set();
+      semMatch2.forEach(t => {
+        const g = gruposMulti.find(g =>
+          !usados.has(g) &&
+          g.data === t.data &&
+          Math.abs(g.soma - t.valor) < 0.01
+        );
+        if (g) {
+          t.jaImportado = true;
+          t.selecionado = false;
+          usados.add(g);
+        }
+      });
+    }
+  }
+
   // 3. Excel (sem fitId): verifica por valor + data + tipo já pagos
   const semFitId = transacoes.filter(t => !t.fitId && !t.jaImportado);
   if (semFitId.length) {
