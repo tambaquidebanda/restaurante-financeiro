@@ -3485,19 +3485,20 @@ async function renderConciliacaoCartao() {
 
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   const dt = d => d.split('-').reverse().join('/');
-  let totEsp = 0, totRec = 0, nDiv = 0;
+  let totEsp = 0, totRec = 0, nDiv = 0, custoAntecip = 0;
   const linhas = datas.map(d => {
     const esp = esperado[d]?.liq || 0, rec = recebido[d] || 0;
     totEsp += esp; totRec += rec;
     const dif = rec - esp;
-    let status, cor, txt;
-    if (rec === 0 && esp > 0 && d >= hoje) { status = 'aguardando'; cor = '#7f8c8d'; txt = '⏳ aguardando'; }
-    else if (rec === 0 && esp > 0)        { status = 'div'; cor = '#e74c3c'; txt = '🔴 não recebido'; nDiv++; }
-    else if (esp === 0 && rec > 0)        { status = 'div'; cor = '#e67e22'; txt = '🟠 sem venda'; nDiv++; }
+    let cor, txt;
+    if (rec === 0 && esp > 0 && d >= hoje) { cor = '#7f8c8d'; txt = '⏳ aguardando'; }
+    else if (rec === 0 && esp > 0)        { cor = '#e74c3c'; txt = '🔴 não recebido'; nDiv++; }
+    else if (esp === 0 && rec > 0)        { cor = '#e67e22'; txt = '🟠 crédito sem venda'; }
     else {
       const pct = esp > 0 ? dif / esp : 0;
-      if (pct >= -CC_TOLERANCIA && pct <= 0.01) { status = 'ok'; cor = '#27ae60'; txt = '🟢 ok'; }
-      else { status = 'div'; cor = '#e74c3c'; txt = '🔴 diverge'; nDiv++; }
+      if (pct >= -CC_TOLERANCIA && pct <= 0.01) { cor = '#27ae60'; txt = '🟢 ok'; custoAntecip += (esp - rec); }
+      else if (pct > 0.01)                       { cor = '#e67e22'; txt = '🟠 conferir (base incompleta?)'; }
+      else                                       { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }
     }
     const diasArr = [...(esperado[d]?.dias || [])].sort();
     const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
@@ -3519,7 +3520,7 @@ async function renderConciliacaoCartao() {
     cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
       ${card('Esperado (vendas)', brl(totEsp), '#2c3e50')}
       ${card('Recebido (banco)', brl(totRec), '#27ae60')}
-      ${card('Diferença', brl(totRec - totEsp), '#e67e22')}
+      ${card('Custo de antecipação', brl(custoAntecip), '#e67e22')}
       ${card('Divergências', String(nDiv), nDiv ? '#e74c3c' : '#27ae60')}
     </div>`;
   }
