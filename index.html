@@ -2399,7 +2399,15 @@
   <!-- Toast de notificação -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="supabase.js"></script>
-  <script src="app.js"></script>
+  <!-- Cache-busting: carrega sempre a versão mais recente do JS após cada deploy,
+       sem precisar de Ctrl/Cmd+Shift+R. document.write preserva a ordem e o timing
+       (roda durante o parse, antes do DOMContentLoaded que o app.js usa). -->
+  <script>
+    (function () {
+      var v = 'v=' + Date.now();
+      document.write('<scr' + 'ipt src="supabase.js?' + v + '"><\/scr' + 'ipt>');
+      document.write('<scr' + 'ipt src="app.js?' + v + '"><\/scr' + 'ipt>');
+    })();
+  </script>
 </body>
 </html>
