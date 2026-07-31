@@ -3249,21 +3249,28 @@ function parsearGetnetEDI(conteudo) {
   for (const l of linhas) {
     const tipo = l[0];
     if (tipo === '2') {
+      // Offsets conforme Manual Getnet Extrato Eletrônico V10.1 (Registro Tipo 2 — Analítico):
+      // RV[17:25] NSU[26:37] data[38:45] hora[46:51] cartão[52:70] valor[71:82]
+      // parcelas_total[107:108] dt_pgto[123:130] cod_autoriz[131:140] terminal[160:167] MDR[176:187]
       const dataVenda  = dataBR(l.slice(37, 45));
       const dtPgtoPrev = dataBR(l.slice(122, 130));
-      const parcelaTot = parseInt(l.slice(108, 110), 10) || 1;
+      const parcelaTot = parseInt(l.slice(106, 108), 10) || 1;
       const bruto = money(l.slice(70, 82));
       const taxa  = money(l.slice(175, 187));
       const taxaPct = bruto > 0 ? +(taxa / bruto * 100).toFixed(2) : 0;
+      // Modalidade: fonte oficial é o Código de Produto do RV (tipo 1). Enquanto não cruzamos,
+      // aproxima pela taxa efetiva (débito ~1,4% × crédito ~2,5-3%).
       const modalidade = parcelaTot > 1 ? 'credito_parcelado' : (taxaPct <= 1.8 ? 'debito' : 'credito_avista');
       vendas.push({
-        nsu: l.slice(130, 140).trim(),
+        nsu: (l.slice(25, 37).replace(/\D/g, '').replace(/^0+/, '') || null),
+        codigo_autorizacao: l.slice(130, 140).trim() || null,
+        numero_rv: l.slice(16, 25).trim() || null,
         cartao_mascarado: l.slice(51, 70).trim(),
         bandeira: bandeiraBIN(l.slice(51, 70)),
         modalidade,
         taxa_efetiva_pct: taxaPct,
         parcelas: parcelaTot > 1 ? parcelaTot : null,
-        terminal: l.slice(140, 159).trim(),
+        terminal: l.slice(159, 167).trim(),
         data_venda: dataVenda,
         hora_venda: horaBR(l.slice(45, 51)),
         data_pagamento_prevista: dtPgtoPrev,
@@ -3367,7 +3374,8 @@ async function gravarGetnet() {
 
   const utc = (d, h) => d ? new Date(`${d}T${h || '00:00:00'}-03:00`).toISOString() : null;
   const rowsVendas = vendas.map(v => ({
-    nsu: v.nsu || null, bandeira: v.bandeira || null, modalidade: v.modalidade,
+    nsu: v.nsu || null, codigo_autorizacao: v.codigo_autorizacao || null,
+    bandeira: v.bandeira || null, modalidade: v.modalidade,
     parcelas: v.parcelas, cartao_mascarado: v.cartao_mascarado || null, terminal: v.terminal || null,
     data_venda: v.data_venda, hora_venda: v.hora_venda, data_hora_utc: utc(v.data_venda, v.hora_venda),
     data_pagamento_prevista: v.data_pagamento_prevista,
