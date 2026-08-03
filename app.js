@@ -3537,11 +3537,9 @@ async function gravarPDV() {
   const db = obterSupabase();
   const vs = pdvImport.resultado.vendas;
   const utc = dl => new Date(dl + '-04:00').toISOString(); // PDV é hora de Manaus (UTC-4)
-  // dedup contra o que já existe (por id_venda_externa)
-  const ds = [...new Set(vs.map(v => v.data))];
+  // dedup contra o que já existe: busca TODOS os ids (sem filtro de data — evita bug de fuso)
   let ex = [];
-  try { ex = await ccFetchPaginado(() => db.from('pdv_vendas').select('id_venda_externa')
-    .gte('data_hora_local', ds[0] + 'T00:00:00').lte('data_hora_local', ds[ds.length-1] + 'T23:59:59')); } catch (e) {
+  try { ex = await ccFetchPaginado(() => db.from('pdv_vendas').select('id_venda_externa')); } catch (e) {
     mostrarToast('Rode o SQL_CARD_CONCILIACAO.sql antes (tabela pdv_vendas não existe).', 'erro'); return;
   }
   const tem = new Set(ex.map(x => x.id_venda_externa));
@@ -3555,11 +3553,11 @@ async function gravarPDV() {
   });
   try {
     for (let i = 0; i < rows.length; i += 500) {
-      const { error } = await q(db.from('pdv_vendas').insert(rows.slice(i, i + 500)));
+      const { error } = await q(db.from('pdv_vendas').upsert(rows.slice(i, i + 500), { onConflict: 'id_venda_externa', ignoreDuplicates: true }));
       if (error) throw error;
     }
   } catch (err) { tratarErro(err, 'Erro ao gravar vendas do PDV'); return; }
-  mostrarToast(`PDV importado: ${rows.length} vendas de cartão gravadas.`, 'sucesso');
+  mostrarToast(rows.length ? `PDV importado: ${rows.length} vendas de cartão novas.` : 'PDV já estava importado (nada novo).', 'sucesso');
 }
 
 // Import direto (botão na Conciliação de Cartão abre o seletor e já grava)
