@@ -3538,7 +3538,11 @@ async function renderConciliacaoCartao() {
     if (rec > 0 && Math.abs(dif) <= 1) {
       // Extrato financeiro final = banco, ao centavo.
       cor = '#27ae60'; txt = '🟢 exato';
-      if (vLiq[d]) { custoAntecip += (vLiq[d] - esp); baseCredito += (vLiq[d] - (debFin[d] || 0)); }
+      // Custo de antecipação = vendas líquido − financeiro. Só conta dias com vendas
+      // COMPLETAS (custo entre 0 e ~3%); dias de borda com vendas parciais dão negativo
+      // e são ignorados, senão sujam a média.
+      const c = (vLiq[d] || 0) - esp;
+      if (vLiq[d] && c >= 0 && c <= esp * 0.03) { custoAntecip += c; baseCredito += (vLiq[d] - (debFin[d] || 0)); }
     } else if (dif > 1) {
       // Extrato diz MAIS que o banco.
       if (rec === 0 && (!maxBankDate || d > maxBankDate)) { cor = '#e67e22'; txt = '⏳ importe o OFX de ' + dt(d); faltaOFX.push(dt(d)); aguardando = true; }
