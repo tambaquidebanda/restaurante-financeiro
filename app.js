@@ -3534,13 +3534,12 @@ async function renderConciliacaoCartao() {
   const linhas = datas.map(d => {
     const esp = esperado[d] || 0, rec = recebido[d] || 0, dif = esp - rec;
     totEsp += esp; totRec += rec;
-    let cor, txt, aguardando = false;
+    let cor, txt, aguardando = false, estimado = false, espMostrar = esp, difMostrar = dif;
     if (rec > 0 && Math.abs(dif) <= 1) {
       // Extrato financeiro final = banco, ao centavo.
       cor = '#27ae60'; txt = '🟢 exato';
       // Custo de antecipação = vendas líquido − financeiro. Só conta dias com vendas
-      // COMPLETAS (custo entre 0 e ~3%); dias de borda com vendas parciais dão negativo
-      // e são ignorados, senão sujam a média.
+      // COMPLETAS (custo entre 0 e ~3%); dias de borda com vendas parciais dão negativo.
       const c = (vLiq[d] || 0) - esp;
       if (vLiq[d] && c >= 0 && c <= esp * 0.03) { custoAntecip += c; baseCredito += (vLiq[d] - (debFin[d] || 0)); }
     } else if (dif > 1) {
@@ -3548,19 +3547,21 @@ async function renderConciliacaoCartao() {
       if (rec === 0 && (!maxBankDate || d > maxBankDate)) { cor = '#e67e22'; txt = '⏳ importe o OFX de ' + dt(d); faltaOFX.push(dt(d)); aguardando = true; }
       else { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }
     } else {
-      // Extrato < banco: no arquivo SFTP, a liquidação final da antecipação de um dia só
-      // vem no arquivo do dia seguinte (o do próprio dia traz a antecipação em aberto).
-      if (esp === 0 && rec > 0) { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; aguardando = true; }
-      else                      { cor = '#e67e22'; txt = '🟠 fecha amanhã'; aguardando = true; }
+      // Extrato < banco: no arquivo SFTP a antecipação final desse dia fecha no arquivo do
+      // dia seguinte. Mostra uma ESTIMATIVA pelo líquido das vendas (pra ver que bateu).
+      const ep = vLiq[d] || 0;
+      if (ep > 0 && ep >= rec * 0.9) { espMostrar = ep; difMostrar = ep - rec; estimado = true; cor = '#c9930a'; txt = '🟠 fecha amanhã'; }
+      else if (esp === 0 && rec > 0) { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; aguardando = true; }
+      else                           { cor = '#e67e22'; txt = '🟠 fecha amanhã'; aguardando = true; }
     }
     const diasArr = [...(vLiqDias[d] || [])].sort();
     const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
     const difCel = aguardando ? '<span style="color:#999">—</span>'
-      : `<span style="color:${Math.abs(dif) > 1 ? '#e74c3c' : '#555'}">${brl(dif)}</span>`;
-    return `<tr>
+      : `<span style="color:${estimado ? '#c9930a' : (Math.abs(difMostrar) > 1 ? '#e74c3c' : '#555')}">${brl(difMostrar)}</span>`;
+    return `<tr${estimado ? ' title="Estimado pelo líquido das vendas — o valor exato fecha no arquivo Getnet de amanhã"' : ''}>
       <td><strong>${dt(d)}</strong></td>
       <td style="font-size:12px;color:#777">${diasTxt}</td>
-      <td style="text-align:right">${brl(esp)}</td>
+      <td style="text-align:right">${brl(espMostrar)}${estimado ? ' <span style="font-size:11px;color:#c9930a">(estimado)</span>' : ''}</td>
       <td style="text-align:right">${brl(rec)}</td>
       <td style="text-align:right">${difCel}</td>
       <td style="color:${cor};font-weight:600">${txt}</td>
