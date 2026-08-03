@@ -3285,17 +3285,16 @@ function parsearGetnetEDI(conteudo) {
         data_pagamento_original: dataBR(l.slice(33, 41)),
         valor_cedido: money(l.slice(63, 75))
       });
-    } else if (tipo === '5') {
-      lotes.push({
-        data_pagamento: dataBR(l.slice(24, 32)),
-        valor_liquido: money(l.slice(66, 78)),
-        agencia: l.slice(115, 119).trim(),
-        conta: l.slice(119, 123).trim(),
-        conta_num: l.slice(135, 144).trim(),
-        banco: l.slice(230, 255).trim()
-      });
     } else if (tipo === '6') {
-      ajustes.push({ raw: l.slice(0, 60) });
+      // Detalhe Financeiro — é o LÍQUIDO EXATO que cai no banco (valida contra o extrato bancário).
+      // CS (Cessão) = valor antecipado (crédito), campo [86:98]. PG (Agenda Livre) = débito, campo [110:122].
+      const op = l.slice(44, 46);
+      let modalidade = null, valor = 0;
+      if (op === 'CS')      { modalidade = 'antecipacao'; valor = money(l.slice(86, 98)); }
+      else if (op === 'PG') { modalidade = 'debito';      valor = money(l.slice(110, 122)); }
+      if (modalidade && valor > 0) {
+        lotes.push({ data_pagamento: dataBR(l.slice(16, 24)), modalidade, valor_liquido: valor });
+      }
     }
   }
 
@@ -3368,28 +3367,50 @@ async function gravarGetnet() {
   const db = obterSupabase();
   const fname = getnetImport.fileName;
   const { vendas, lotes } = getnetImport.resultado;
-
-  // Idempotência por arquivo: reimportar o mesmo arquivo substitui os dados dele.
-  await q(db.from('card_transacoes').delete().eq('arquivo_origem', fname));
-  await q(db.from('card_lotes_pagamento').delete().eq('arquivo_origem', fname));
-
   const utc = (d, h) => d ? new Date(`${d}T${h || '00:00:00'}-03:00`).toISOString() : null;
-  const rowsVendas = vendas.map(v => ({
-    nsu: v.nsu || null, codigo_autorizacao: v.codigo_autorizacao || null,
-    bandeira: v.bandeira || null, modalidade: v.modalidade,
-    parcelas: v.parcelas, cartao_mascarado: v.cartao_mascarado || null, terminal: v.terminal || null,
-    data_venda: v.data_venda, hora_venda: v.hora_venda, data_hora_utc: utc(v.data_venda, v.hora_venda),
-    data_pagamento_prevista: v.data_pagamento_prevista,
-    valor_bruto: v.valor_bruto, valor_taxa: v.valor_taxa, valor_liquido: v.valor_liquido,
-    tipo_registro: 'venda', origem: 'upload_edi', arquivo_origem: fname
-  }));
-  const rowsLotes = lotes.map(x => ({
-    data_pagamento: x.data_pagamento, valor_liquido_esperado: x.valor_liquido,
-    banco: x.banco || null, agencia: x.agencia || null, conta: x.conta || null,
-    arquivo_origem: fname, status: 'pendente'
-  }));
 
-  // Insere em lotes de 500
+  // Os arquivos diários se sobrepõem (uma venda/liquidação aparece em vários dias).
+  // Por isso dedup GLOBAL contra o que já existe — nunca por arquivo.
+  // VENDAS: chave (nsu, data_venda, valor_bruto)
+  const dsV = [...new Set(vendas.map(v => v.data_venda).filter(Boolean))];
+  let exV = [];
+  try { exV = await ccFetchPaginado(() => db.from('card_transacoes')
+    .select('nsu,data_venda,valor_bruto').eq('tipo_registro', 'venda').in('data_venda', dsV)); } catch (e) {}
+  const kV = x => `${x.nsu || ''}|${x.data_venda}|${Number(x.valor_bruto).toFixed(2)}`;
+  const temV = new Set(exV.map(kV));
+  const rowsVendas = [];
+  vendas.forEach(v => {
+    if (!v.data_venda) return;
+    const k = kV(v);
+    if (temV.has(k)) return;
+    temV.add(k);
+    rowsVendas.push({
+      nsu: v.nsu || null, codigo_autorizacao: v.codigo_autorizacao || null,
+      bandeira: v.bandeira || null, modalidade: v.modalidade, parcelas: v.parcelas,
+      cartao_mascarado: v.cartao_mascarado || null, terminal: v.terminal || null,
+      data_venda: v.data_venda, hora_venda: v.hora_venda, data_hora_utc: utc(v.data_venda, v.hora_venda),
+      data_pagamento_prevista: v.data_pagamento_prevista,
+      valor_bruto: v.valor_bruto, valor_taxa: v.valor_taxa, valor_liquido: v.valor_liquido,
+      tipo_registro: 'venda', origem: 'upload_edi', arquivo_origem: fname
+    });
+  });
+  // LIQUIDAÇÕES FINANCEIRAS (tipo 6): chave (data_pagamento, modalidade, valor)
+  const dsL = [...new Set(lotes.map(x => x.data_pagamento).filter(Boolean))];
+  let exL = [];
+  try { exL = await ccFetchPaginado(() => db.from('card_lotes_pagamento')
+    .select('data_pagamento,modalidade,valor_liquido_esperado').in('data_pagamento', dsL)); } catch (e) {}
+  const kL = x => `${x.data_pagamento}|${x.modalidade}|${Number(x.valor_liquido_esperado).toFixed(2)}`;
+  const temL = new Set(exL.map(kL));
+  const rowsLotes = [];
+  lotes.forEach(x => {
+    if (!x.data_pagamento) return;
+    const k = kL({ data_pagamento: x.data_pagamento, modalidade: x.modalidade, valor_liquido_esperado: x.valor_liquido });
+    if (temL.has(k)) return;
+    temL.add(k);
+    rowsLotes.push({ data_pagamento: x.data_pagamento, modalidade: x.modalidade,
+      valor_liquido_esperado: x.valor_liquido, arquivo_origem: 'getnet_edi', status: 'pendente' });
+  });
+
   const chunk = async (tabela, rows) => {
     for (let i = 0; i < rows.length; i += 500) {
       const { error } = await q(db.from(tabela).insert(rows.slice(i, i + 500)));
@@ -3403,7 +3424,7 @@ async function gravarGetnet() {
     tratarErro(err, 'Erro ao gravar as transações da Getnet');
     return;
   }
-  mostrarToast(`Getnet importado: ${rowsVendas.length} vendas e ${rowsLotes.length} lotes.`, 'sucesso');
+  mostrarToast(`Getnet importado: ${rowsVendas.length} vendas novas e ${rowsLotes.length} liquidações.`, 'sucesso');
   carregarImportarGetnet();
 }
 
@@ -3446,84 +3467,81 @@ async function renderConciliacaoCartao() {
   const corpo = document.getElementById('cc-corpo');
   const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
   if (!de || !ate || !corpo) return;
-  corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Carregando…</td></tr>';
+  corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Carregando…</td></tr>';
 
-  // Vendas: pega data_venda de (de-6) até ate (p/ cobrir acúmulo de fim de semana)
+  // ESPERADO = líquido financeiro do extrato (Registro Tipo 6: CS=antecipação + PG=débito),
+  // por data de crédito. Esse valor JÁ inclui o custo de antecipação → bate EXATO com o banco.
+  let fin;
+  try {
+    fin = await ccFetchPaginado(() => db.from('card_lotes_pagamento')
+      .select('data_pagamento,modalidade,valor_liquido_esperado')
+      .gte('data_pagamento', de).lte('data_pagamento', ate));
+  } catch (e) {
+    corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
+    return;
+  }
+  const esperado = {}, debFin = {};
+  fin.forEach(x => {
+    const d = x.data_pagamento; if (!d) return;
+    const v = Number(x.valor_liquido_esperado) || 0;
+    esperado[d] = (esperado[d] || 0) + v;
+    if (x.modalidade === 'debito') debFin[d] = (debFin[d] || 0) + v;
+  });
+
+  // RECEBIDO = créditos GETNET no banco (OFX)
+  const { data: banco } = await db.from('lancamentos')
+    .select('data_pagamento,valor').eq('tipo', 'receber').eq('status', 'pago')
+    .ilike('descricao', '%GETNET%').gte('data_pagamento', de).lte('data_pagamento', ate);
+  const recebido = {};
+  (banco || []).forEach(b => { const d = (b.data_pagamento || '').slice(0, 10); recebido[d] = (recebido[d] || 0) + (Number(b.valor) || 0); });
+
+  // Vendas líquido (por dia de liquidação = próximo dia útil) — só para calcular o custo de antecipação
   const deV = new Date(de + 'T12:00:00'); deV.setDate(deV.getDate() - 6);
-  let vendas;
+  let vendas = [];
   try {
     vendas = await ccFetchPaginado(() => db.from('card_transacoes')
       .select('data_venda,valor_liquido').eq('tipo_registro', 'venda')
       .gte('data_venda', deV.toISOString().slice(0, 10)).lte('data_venda', ate));
-  } catch (e) {
-    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
-    return;
-  }
-  // Banco: créditos GETNET no período (com descrição p/ separar débito × antecipação)
-  const { data: banco } = await db.from('lancamentos')
-    .select('data_pagamento,valor,descricao').eq('tipo', 'receber').eq('status', 'pago')
-    .ilike('descricao', '%GETNET%').gte('data_pagamento', de).lte('data_pagamento', ate);
-
-  // Agrega esperado por data de liquidação (dia útil seguinte à venda)
-  const esperado = {}; // dataLiq -> { liq, dias:Set }
-  vendas.forEach(v => {
-    if (!v.data_venda) return;
-    const s = ccProximoDiaUtil(v.data_venda);
-    (esperado[s] = esperado[s] || { liq: 0, dias: new Set() });
-    esperado[s].liq += Number(v.valor_liquido) || 0;
-    esperado[s].dias.add(v.data_venda);
-  });
-  const recebido = {}, debitoDia = {};
-  (banco || []).forEach(b => {
-    const d = (b.data_pagamento || '').slice(0, 10);
-    const v = Number(b.valor) || 0;
-    recebido[d] = (recebido[d] || 0) + v;
-    // Débito cai D+1 sem antecipação; antecipação é o crédito. Separa para o % de custo.
-    if (/D[EÉ]BITO/i.test(b.descricao || '')) debitoDia[d] = (debitoDia[d] || 0) + v;
-  });
+  } catch (e) {}
+  const vLiq = {};
+  vendas.forEach(v => { if (!v.data_venda) return; const s = ccProximoDiaUtil(v.data_venda); vLiq[s] = (vLiq[s] || 0) + (Number(v.valor_liquido) || 0); });
 
   const hoje = new Date().toISOString().slice(0, 10);
   const datas = [...new Set([...Object.keys(esperado), ...Object.keys(recebido)])]
     .filter(d => d >= de && d <= ate).sort().reverse();
-
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   const dt = d => d.split('-').reverse().join('/');
+
   let totEsp = 0, totRec = 0, nDiv = 0, custoAntecip = 0, baseCredito = 0;
   const linhas = datas.map(d => {
-    const esp = esperado[d]?.liq || 0, rec = recebido[d] || 0;
+    const esp = esperado[d] || 0, rec = recebido[d] || 0, dif = esp - rec;
     totEsp += esp; totRec += rec;
-    const dif = rec - esp;
     let cor, txt;
-    if (rec === 0 && esp > 0 && d >= hoje) { cor = '#7f8c8d'; txt = '⏳ aguardando'; }
-    else if (rec === 0 && esp > 0)        { cor = '#e74c3c'; txt = '🔴 não recebido'; nDiv++; }
-    else if (esp === 0 && rec > 0)        { cor = '#e67e22'; txt = '🟠 crédito sem venda'; }
-    else {
-      const pct = esp > 0 ? dif / esp : 0;
-      if (pct >= -CC_TOLERANCIA && pct <= 0.01) { cor = '#27ae60'; txt = '🟢 ok'; custoAntecip += (esp - rec); baseCredito += (esp - (debitoDia[d] || 0)); }
-      else if (pct > 0.01)                       { cor = '#e67e22'; txt = '🟠 conferir (base incompleta?)'; }
-      else                                       { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }
-    }
-    const diasArr = [...(esperado[d]?.dias || [])].sort();
-    const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
+    if (esp === 0 && rec > 0 && d >= hoje) { cor = '#7f8c8d'; txt = '⏳ aguardando extrato'; }
+    else if (Math.abs(dif) <= 1)           { cor = '#27ae60'; txt = '🟢 exato';
+      if (vLiq[d]) { custoAntecip += (vLiq[d] - esp); baseCredito += (vLiq[d] - (debFin[d] || 0)); } }
+    else if (dif < 0)                      { cor = '#e67e22'; txt = '🟠 aguardando (arquivo seguinte)'; } // extrato < banco: antecipação ainda não veio no arquivo
+    else if (rec === 0)                    { cor = '#7f8c8d'; txt = '⏳ aguardando extrato'; }
+    else                                   { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }        // extrato > banco: dinheiro faltando
     return `<tr>
       <td><strong>${dt(d)}</strong></td>
-      <td style="font-size:12px;color:#777">${diasTxt}</td>
       <td style="text-align:right">${brl(esp)}</td>
       <td style="text-align:right">${brl(rec)}</td>
-      <td style="text-align:right;color:${dif < -0.01 ? '#e74c3c' : '#555'}">${brl(dif)}</td>
+      <td style="text-align:right;color:${Math.abs(dif) > 1 ? '#e67e22' : '#555'}">${brl(dif)}</td>
       <td style="color:${cor};font-weight:600">${txt}</td>
     </tr>`;
   }).join('');
 
-  corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
+  corpo.innerHTML = linhas || '<tr><td colspan="5" class="sem-dados">Sem dados no período.</td></tr>';
   const cards = document.getElementById('cc-cards');
   if (cards) {
     const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px">
       <div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
+    const pctCusto = baseCredito > 0 ? (custoAntecip / baseCredito * 100) : 0;
     cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
-      ${card('Esperado (vendas)', brl(totEsp), '#2c3e50')}
+      ${card('Esperado (extrato)', brl(totEsp), '#2c3e50')}
       ${card('Recebido (banco)', brl(totRec), '#27ae60')}
-      ${card('Custo de antecipação', brl(custoAntecip) + (baseCredito > 0 ? `  <span style="font-size:12px;color:#888">(${(custoAntecip / baseCredito * 100).toFixed(2).replace('.', ',')}% do crédito)</span>` : ''), '#e67e22')}
+      ${card('Custo de antecipação', brl(custoAntecip > 0 ? custoAntecip : 0) + (baseCredito > 0 ? `  <span style="font-size:12px;color:#888">(${pctCusto.toFixed(2).replace('.', ',')}% do crédito)</span>` : ''), '#e67e22')}
       ${card('Divergências', String(nDiv), nDiv ? '#e74c3c' : '#27ae60')}
     </div>`;
   }

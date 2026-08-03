@@ -792,10 +792,10 @@
         </div>
         <div class="info-box">
           <i class="fas fa-lightbulb"></i>
-          Compara o <strong>líquido das vendas Getnet de cada dia</strong> com o que <strong>caiu no banco no dia útil seguinte</strong>
-          (suas vendas caem em D+1 via antecipação). A diferença normal é o <strong>custo da antecipação</strong> (~1%).
-          🟢 bateu · 🔴 recebeu menos (dinheiro faltando) · 🟠 conferir / crédito sem venda · ⏳ ainda vai cair.
-          <br><span style="font-size:12px;color:#888">Obs.: dias no começo do período podem aparecer 🟠 "base incompleta" se ainda não há arquivo Getnet das vendas daquele dia.</span>
+          Compara o <strong>líquido financeiro do extrato Getnet</strong> (já com a antecipação descontada) com o que
+          <strong>caiu no banco</strong>, por dia de crédito. Como os dois já são líquidos, a diferença tem que ser <strong>exata (R$ 0,00)</strong>.
+          🟢 exato · 🔴 recebeu menos (dinheiro faltando) · 🟠 aguardando o arquivo do dia seguinte · ⏳ crédito ainda não veio no extrato.
+          <br><span style="font-size:12px;color:#888">O card "Custo de antecipação" mostra à parte quanto você paga por receber adiantado (deve ficar ~1,45% do crédito).</span>
         </div>
         <div class="filtros">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -811,12 +811,12 @@
           <table class="tabela">
             <thead>
               <tr>
-                <th>Liquidação</th><th>Vendas de</th><th style="text-align:right">Esperado (líquido)</th>
+                <th>Liquidação</th><th style="text-align:right">Esperado (extrato)</th>
                 <th style="text-align:right">Recebido (banco)</th><th style="text-align:right">Diferença</th><th>Status</th>
               </tr>
             </thead>
             <tbody id="cc-corpo">
-              <tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr>
+              <tr><td colspan="5" class="sem-dados">Selecione o período.</td></tr>
             </tbody>
           </table>
         </div>
