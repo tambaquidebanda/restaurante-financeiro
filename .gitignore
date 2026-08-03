@@ -6,6 +6,7 @@
 *.ofx
 *.json
 *.py
+!scripts/pull_getnet.py
 *.sql
 github-backup/
 .claude/

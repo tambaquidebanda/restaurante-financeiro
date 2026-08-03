@@ -1,0 +1,35 @@
+name: Robô Getnet (SFTP → Supabase)
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # 09:00 Manaus — após a Getnet depositar o arquivo do dia
+    - cron: '0 16 * * *'   # 12:00 Manaus — segunda tentativa
+  workflow_dispatch: {}     # botão "Run workflow" para rodar na hora
+
+# Evita duas execuções simultâneas
+concurrency:
+  group: pull-getnet
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install --quiet paramiko
+
+      - name: Baixar e importar extrato Getnet
+        env:
+          GETNET_SFTP_HOST: ${{ secrets.GETNET_SFTP_HOST }}
+          GETNET_SFTP_USER: ${{ secrets.GETNET_SFTP_USER }}
+          GETNET_SFTP_PASS: ${{ secrets.GETNET_SFTP_PASS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/pull_getnet.py
