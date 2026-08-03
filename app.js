@@ -3290,8 +3290,9 @@ function parsearGetnetEDI(conteudo) {
       // CS (Cessão) = valor antecipado (crédito), campo [86:98]. PG (Agenda Livre) = débito, campo [110:122].
       const op = l.slice(44, 46);
       let modalidade = null, valor = 0;
-      if (op === 'CS')      { modalidade = 'antecipacao'; valor = money(l.slice(86, 98)); }
-      else if (op === 'PG') { modalidade = 'debito';      valor = money(l.slice(110, 122)); }
+      // CS (Cessão) e AC (Antecipação) = crédito antecipado, campo [86:98]. PG (Agenda Livre) = débito.
+      if (op === 'CS' || op === 'AC') { modalidade = 'antecipacao'; valor = money(l.slice(86, 98)); }
+      else if (op === 'PG')           { modalidade = 'debito';      valor = money(l.slice(110, 122)); }
       if (modalidade && valor > 0) {
         lotes.push({ data_pagamento: dataBR(l.slice(16, 24)), modalidade, valor_liquido: valor });
       }
@@ -3533,24 +3534,35 @@ async function renderConciliacaoCartao() {
   const linhas = datas.map(d => {
     const esp = esperado[d] || 0, rec = recebido[d] || 0, dif = esp - rec;
     totEsp += esp; totRec += rec;
-    let cor, txt;
-    if (rec > 0 && Math.abs(dif) <= 1)     { cor = '#27ae60'; txt = '🟢 exato';
-      if (vLiq[d]) { custoAntecip += (vLiq[d] - esp); baseCredito += (vLiq[d] - (debFin[d] || 0)); } }
-    else if (esp > 0 && rec === 0) {
-      if (!maxBankDate || d > maxBankDate) { cor = '#e67e22'; txt = '⏳ importe o OFX de ' + dt(d); faltaOFX.push(dt(d)); }
-      else                                 { cor = '#e74c3c'; txt = '🔴 não recebido'; nDiv++; }
+    let cor, txt, aguardando = false, espMostrar = esp, difMostrar = dif, provTitle = '';
+    if (rec > 0 && Math.abs(dif) <= 1) {
+      // Extrato financeiro final = banco, ao centavo.
+      cor = '#27ae60'; txt = '🟢 exato';
+      if (vLiq[d]) { custoAntecip += (vLiq[d] - esp); baseCredito += (vLiq[d] - (debFin[d] || 0)); }
+    } else if (dif > 1) {
+      // Extrato diz MAIS que o banco.
+      if (rec === 0 && (!maxBankDate || d > maxBankDate)) { cor = '#e67e22'; txt = '⏳ importe o OFX de ' + dt(d); faltaOFX.push(dt(d)); aguardando = true; }
+      else { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }
+    } else {
+      // Extrato < banco: a liquidação FINAL da antecipação ainda não veio (fecha no arquivo
+      // do dia seguinte). Faz uma checagem PROVISÓRIA pelo líquido das vendas.
+      const ep = vLiq[d] || 0, dp = ep - rec, pc = ep > 0 ? dp / ep : null;
+      if (pc !== null && pc >= -0.01 && pc <= 0.03) {
+        cor = '#c9930a'; txt = '🟡 provisório (~' + (pc * 100).toFixed(1).replace('.', ',') + '%)';
+        espMostrar = ep; difMostrar = dp; provTitle = 'Estimado pelas vendas (o valor exato fecha no arquivo Getnet de amanhã)';
+      } else if (esp === 0 && rec > 0) { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; aguardando = true; }
+      else { cor = '#e67e22'; txt = '🟠 aguardando (arquivo Getnet seguinte)'; aguardando = true; }
     }
-    else if (esp === 0 && rec > 0)         { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; }        // banco tem, extrato Getnet não
-    else if (dif < 0)                      { cor = '#e67e22'; txt = '🟠 aguardando (arquivo Getnet seguinte)'; } // extrato < banco: antecipação vem no arquivo do dia seguinte
-    else                                   { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }        // extrato > banco: dinheiro faltando
     const diasArr = [...(vLiqDias[d] || [])].sort();
     const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
-    return `<tr>
+    const difCel = aguardando ? '<span style="color:#999">—</span>'
+      : `<span style="color:${Math.abs(difMostrar) > 1 ? (provTitle ? '#c9930a' : '#e74c3c') : '#555'}">${brl(difMostrar)}</span>`;
+    return `<tr${provTitle ? ` title="${provTitle}"` : ''}>
       <td><strong>${dt(d)}</strong></td>
       <td style="font-size:12px;color:#777">${diasTxt}</td>
-      <td style="text-align:right">${brl(esp)}</td>
+      <td style="text-align:right">${brl(espMostrar)}${provTitle ? ' <span style="font-size:11px;color:#c9930a">(vendas)</span>' : ''}</td>
       <td style="text-align:right">${brl(rec)}</td>
-      <td style="text-align:right;color:${Math.abs(dif) > 1 ? '#e67e22' : '#555'}">${brl(dif)}</td>
+      <td style="text-align:right">${difCel}</td>
       <td style="color:${cor};font-weight:600">${txt}</td>
     </tr>`;
   }).join('');

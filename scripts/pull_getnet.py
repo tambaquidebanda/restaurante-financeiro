@@ -64,8 +64,9 @@ def parse(txt, arquivo):
                 tipo_registro='venda', origem='sftp_edi', arquivo_origem=arquivo))
         elif t == '6':
             op = l[44:46]
-            if op == 'CS':   modalidade, cents = 'antecipacao', l[86:98]
-            elif op == 'PG': modalidade, cents = 'debito', l[110:122]
+            # CS (Cessão) e AC (Antecipação) = crédito antecipado [86:98]; PG (Agenda Livre) = débito.
+            if op in ('CS', 'AC'): modalidade, cents = 'antecipacao', l[86:98]
+            elif op == 'PG':       modalidade, cents = 'debito', l[110:122]
             else: continue
             v = money(cents)
             if v > 0:
