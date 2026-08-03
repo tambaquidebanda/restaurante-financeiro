@@ -3427,7 +3427,7 @@ async function gravarGetnet() {
     return;
   }
   mostrarToast(`Getnet importado: ${rowsVendas.length} vendas novas e ${rowsLotes.length} liquidações.`, 'sucesso');
-  carregarImportarGetnet();
+  irPara('conciliacao-cartao');
 }
 
 // =========================================================
@@ -3509,7 +3509,8 @@ function renderResumoPDV() {
     `<tr><td>${PDV_GRUPOS[k] || k}</td><td style="text-align:right">${g[k].n}</td><td style="text-align:right">${brl(g[k].s)}</td></tr>`).join('');
   el.innerHTML = `
     <p style="margin:12px 0 6px;color:#555">${vs.length} vendas · período ${dias[0]?.split('-').reverse().join('/')} a ${dias[dias.length-1]?.split('-').reverse().join('/')}
-    · <strong>cartão (Getnet): ${g.cartao?.n || 0} vendas, ${brl(g.cartao?.s || 0)}</strong></p>
+    · <strong>cartão (Getnet): ${g.cartao?.n || 0} vendas, ${brl(g.cartao?.s || 0)}</strong>
+    <span style="color:#888;font-size:12px">(só o cartão é gravado; o resto é só pra você conferir o fechamento)</span></p>
     <div class="tabela-box"><table class="tabela"><thead><tr><th>Forma</th><th style="text-align:right">Qtd</th><th style="text-align:right">Total</th></tr></thead>
     <tbody>${linhas}</tbody></table></div>`;
   const btn = document.getElementById('btn-gravar-pdv'); if (btn) btn.style.display = 'inline-flex';
@@ -3531,6 +3532,7 @@ async function gravarPDV() {
   const tem = new Set(ex.map(x => x.id_venda_externa));
   const rows = [];
   vs.forEach(v => {
+    if (v.grupo !== 'cartao') return;        // grava só o cartão (o que cruza com a Getnet)
     if (tem.has(v.id_ext)) return; tem.add(v.id_ext);
     rows.push({ id_venda_externa: v.id_ext, data_hora_local: v.data_hora_local + '-04:00', data_hora_utc: utc(v.data_hora_local),
       valor_bruto: v.valor, forma_pagamento: v.grupo, bandeira: v.bandeira, modalidade: v.modalidade,
@@ -3542,8 +3544,8 @@ async function gravarPDV() {
       if (error) throw error;
     }
   } catch (err) { tratarErro(err, 'Erro ao gravar vendas do PDV'); return; }
-  mostrarToast(`PDV importado: ${rows.length} vendas novas (de ${vs.length}).`, 'sucesso');
-  carregarImportarPDV();
+  mostrarToast(`PDV importado: ${rows.length} vendas de cartão gravadas.`, 'sucesso');
+  irPara('conciliacao-cartao');
 }
 
 // =========================================================

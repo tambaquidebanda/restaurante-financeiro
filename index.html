@@ -101,12 +101,6 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('conciliacao', this)">
               <i class="fas fa-balance-scale"></i><span>Conciliação</span>
             </a>
-            <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar-getnet', this)">
-              <i class="fas fa-cash-register"></i><span>Importar Getnet</span>
-            </a>
-            <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar-pdv', this)">
-              <i class="fas fa-desktop"></i><span>Importar PDV</span>
-            </a>
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('conciliacao-cartao', this)">
               <i class="fas fa-credit-card"></i><span>Conciliação Cartão</span>
             </a>
@@ -792,6 +786,7 @@
       <section id="pagina-importar-pdv" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-desktop"></i> Importar Relatório do PDV</h2>
+          <button class="btn btn-outline btn-sm" onclick="irPara('conciliacao-cartao')"><i class="fas fa-arrow-left"></i> Voltar</button>
         </div>
         <div class="info-box">
           <i class="fas fa-lightbulb"></i>
@@ -816,6 +811,10 @@
       <section id="pagina-conciliacao-cartao" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-credit-card"></i> Conciliação de Cartão</h2>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-outline btn-sm" onclick="irPara('importar-getnet')"><i class="fas fa-cash-register"></i> Importar Getnet</button>
+            <button class="btn btn-outline btn-sm" onclick="irPara('importar-pdv')"><i class="fas fa-desktop"></i> Importar Relatório do PDV</button>
+          </div>
         </div>
         <div class="info-box">
           <i class="fas fa-lightbulb"></i>
@@ -855,6 +854,7 @@
       <section id="pagina-importar-getnet" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-cash-register"></i> Importar Arquivo Getnet</h2>
+          <button class="btn btn-outline btn-sm" onclick="irPara('conciliacao-cartao')"><i class="fas fa-arrow-left"></i> Voltar</button>
         </div>
         <div class="info-box">
           <i class="fas fa-lightbulb"></i>
