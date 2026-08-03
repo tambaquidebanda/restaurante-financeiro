@@ -3817,8 +3817,13 @@ async function renderEtapaA() {
 
   const dias = {};
   pdv.forEach(p => { const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, semPar: [] }); D.n++; if (p.ok) D.ok++; else D.semPar.push(p); });
-  const gSemPar = {};
-  pool.forEach(arr => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gSemPar[g.data] = (gSemPar[g.data] || 0) + 1; }));
+  const gSemPar = {}, gSemParList = {};
+  pool.forEach((arr, k) => arr.forEach(g => {
+    if (!g.used && g.data >= de && g.data <= ate) {
+      gSemPar[g.data] = (gSemPar[g.data] || 0) + 1;
+      (gSemParList[g.data] = gSemParList[g.data] || []).push({ valor: k / 100, band: g.band });
+    }
+  }));
 
   const datas = [...new Set([...Object.keys(dias), ...Object.keys(gSemPar)])].filter(d => d >= de && d <= ate).sort().reverse();
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
@@ -3831,16 +3836,26 @@ async function renderEtapaA() {
     if (D.semPar.length) { cor = '#e74c3c'; txt = `🔴 ${D.semPar.length} não processou`; }
     else if (gs)         { cor = '#e67e22'; txt = `🟠 ${gs} sem venda no PDV`; }
     else                 { cor = '#27ae60'; txt = '🟢 tudo casou'; }
-    const det = D.semPar.sort((a, b) => a.hora.localeCompare(b.hora)).map(p =>
-      `<div style="display:flex;gap:14px;padding:2px 0;font-size:12px;color:#555"><span style="width:48px">${p.hora}</span><span style="width:70px">${p.bandeira || '-'}</span><span style="width:90px;text-align:right">${brl(p.valor_bruto)}</span></div>`).join('');
-    return `<tr onclick="ccaToggle('${d}')" style="cursor:${D.semPar.length ? 'pointer' : 'default'}">
-        <td><strong>${dt(d)}</strong>${D.semPar.length ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
+    const cel = (a, b, c) => `<div style="display:flex;gap:12px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:64px">${b}</span><span style="width:88px;text-align:right">${c}</span></div>`;
+    const pdvList = D.semPar.slice().sort((a, b) => a.hora.localeCompare(b.hora))
+      .map(p => cel(p.hora, p.bandeira || '-', brl(p.valor_bruto))).join('') || '<div style="font-size:12px;color:#999">—</div>';
+    const gList = (gSemParList[d] || []).slice().sort((a, b) => b.valor - a.valor)
+      .map(x => cel('', x.band || '-', brl(x.valor))).join('') || '<div style="font-size:12px;color:#999">—</div>';
+    const temDet = D.semPar.length || gs;
+    return `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
+        <td><strong>${dt(d)}</strong>${temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
         <td style="text-align:right">${D.n}</td>
         <td style="text-align:right;color:#27ae60">${D.ok}</td>
         <td style="text-align:right;color:${D.semPar.length ? '#e74c3c' : '#999'}">${D.semPar.length || '-'}</td>
         <td style="text-align:right;color:${gs ? '#e67e22' : '#999'}">${gs || '-'}</td>
         <td style="color:${cor};font-weight:600">${txt}</td>
-      </tr>` + (det ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:8px 16px"><div style="font-size:12px;color:#888;margin-bottom:4px">Vendas no PDV sem par na Getnet (hora Manaus · bandeira · valor):</div>${det}</td></tr>` : '');
+      </tr>` + (temDet ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:10px 16px">
+        <div style="display:flex;gap:40px;flex-wrap:wrap">
+          <div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">🔴 No PDV, sem par &nbsp;<span style="color:#999;font-weight:400">(hora · bandeira · valor)</span></div>${pdvList}</div>
+          <div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Na Getnet, sem venda &nbsp;<span style="color:#999;font-weight:400">(bandeira · valor)</span></div>${gList}</div>
+        </div>
+        <div style="font-size:11px;color:#999;margin-top:8px">💡 Mesmo valor dos dois lados (com bandeira diferente) costuma ser a <strong>mesma venda</strong> — ruído do match. Valor que aparece <strong>só de um lado</strong> é o que vale investigar.</div>
+      </td></tr>` : '');
   }).join('');
   corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
 
