@@ -3467,7 +3467,7 @@ async function renderConciliacaoCartao() {
   const corpo = document.getElementById('cc-corpo');
   const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
   if (!de || !ate || !corpo) return;
-  corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Carregando…</td></tr>';
+  corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Carregando…</td></tr>';
 
   // ESPERADO = líquido financeiro do extrato (Registro Tipo 6: CS=antecipação + PG=débito),
   // por data de crédito. Esse valor JÁ inclui o custo de antecipação → bate EXATO com o banco.
@@ -3477,7 +3477,7 @@ async function renderConciliacaoCartao() {
       .select('data_pagamento,modalidade,valor_liquido_esperado')
       .gte('data_pagamento', de).lte('data_pagamento', ate));
   } catch (e) {
-    corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
+    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
     return;
   }
   const esperado = {}, debFin = {};
@@ -3503,8 +3503,19 @@ async function renderConciliacaoCartao() {
       .select('data_venda,valor_liquido').eq('tipo_registro', 'venda')
       .gte('data_venda', deV.toISOString().slice(0, 10)).lte('data_venda', ate));
   } catch (e) {}
-  const vLiq = {};
-  vendas.forEach(v => { if (!v.data_venda) return; const s = ccProximoDiaUtil(v.data_venda); vLiq[s] = (vLiq[s] || 0) + (Number(v.valor_liquido) || 0); });
+  // Mapeia cada venda para a PRÓXIMA data de crédito que EXISTE no extrato. Assim o
+  // acúmulo de fim de semana E de feriado segue o calendário real da Getnet (não um
+  // seg-sex fixo) — as datas de crédito do extrato já pulam finais de semana/feriados.
+  const creditDates = [...new Set(fin.map(x => x.data_pagamento).filter(Boolean))].sort();
+  const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
+  const vLiq = {}, vLiqDias = {};
+  vendas.forEach(v => {
+    if (!v.data_venda) return;
+    const s = proxCredito(v.data_venda);
+    if (!s) return;
+    vLiq[s] = (vLiq[s] || 0) + (Number(v.valor_liquido) || 0);
+    (vLiqDias[s] = vLiqDias[s] || new Set()).add(v.data_venda);
+  });
 
   const hoje = new Date().toISOString().slice(0, 10);
   const datas = [...new Set([...Object.keys(esperado), ...Object.keys(recebido)])]
@@ -3532,8 +3543,11 @@ async function renderConciliacaoCartao() {
     else if (esp === 0 && rec > 0)         { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; }        // banco tem, extrato Getnet não
     else if (dif < 0)                      { cor = '#e67e22'; txt = '🟠 aguardando (arquivo Getnet seguinte)'; } // extrato < banco: antecipação vem no arquivo do dia seguinte
     else                                   { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }        // extrato > banco: dinheiro faltando
+    const diasArr = [...(vLiqDias[d] || [])].sort();
+    const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
     return `<tr>
       <td><strong>${dt(d)}</strong></td>
+      <td style="font-size:12px;color:#777">${diasTxt}</td>
       <td style="text-align:right">${brl(esp)}</td>
       <td style="text-align:right">${brl(rec)}</td>
       <td style="text-align:right;color:${Math.abs(dif) > 1 ? '#e67e22' : '#555'}">${brl(dif)}</td>
@@ -3541,7 +3555,7 @@ async function renderConciliacaoCartao() {
     </tr>`;
   }).join('');
 
-  corpo.innerHTML = linhas || '<tr><td colspan="5" class="sem-dados">Sem dados no período.</td></tr>';
+  corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
   const aviso = document.getElementById('cc-aviso');
   if (aviso) {
     const dias = [...new Set(faltaOFX)];
