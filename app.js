@@ -3535,8 +3535,8 @@ async function gravarPDV() {
     if (v.grupo !== 'cartao') return;        // grava só o cartão (o que cruza com a Getnet)
     if (tem.has(v.id_ext)) return; tem.add(v.id_ext);
     rows.push({ id_venda_externa: v.id_ext, data_hora_local: v.data_hora_local + '-04:00', data_hora_utc: utc(v.data_hora_local),
-      valor_bruto: v.valor, forma_pagamento: v.grupo, bandeira: v.bandeira, modalidade: v.modalidade,
-      status_conciliacao: 'pendente', fonte: 'relatorio_pdv', raw: { forma: v.forma_raw } });
+      valor_bruto: v.valor, forma_pagamento: v.grupo, bandeira: v.bandeira,
+      status_conciliacao: 'pendente', fonte: 'relatorio_pdv', raw: { forma: v.forma_raw, modalidade: v.modalidade } });
   });
   try {
     for (let i = 0; i < rows.length; i += 500) {
@@ -3574,12 +3574,26 @@ async function ccFetchPaginado(build) {
   return out;
 }
 
+let ccTab = 'banco';
+function ccRenderAtual() { if (ccTab === 'pdv') renderEtapaA(); else renderConciliacaoCartao(); }
+function ccMudarTab(t) {
+  ccTab = t;
+  document.getElementById('cc-view-banco').style.display = t === 'banco' ? '' : 'none';
+  document.getElementById('cc-view-pdv').style.display = t === 'pdv' ? '' : 'none';
+  const tb = document.getElementById('cc-tab-banco'), tp = document.getElementById('cc-tab-pdv');
+  if (tb && tp) {
+    tb.style.borderBottomColor = t === 'banco' ? '#2c3e50' : 'transparent'; tb.style.color = t === 'banco' ? '#2c3e50' : '#999';
+    tp.style.borderBottomColor = t === 'pdv' ? '#2c3e50' : 'transparent'; tp.style.color = t === 'pdv' ? '#2c3e50' : '#999';
+  }
+  ccRenderAtual();
+}
+
 async function carregarConciliacaoCartao() {
   if (!(await garantirSessao())) return;
   const de = document.getElementById('cc-de'), ate = document.getElementById('cc-ate');
   if (ate && !ate.value) ate.value = new Date().toISOString().slice(0, 10);
   if (de && !de.value) { const d = new Date(); d.setDate(d.getDate() - 14); de.value = d.toISOString().slice(0, 10); }
-  await renderConciliacaoCartao();
+  ccRenderAtual();
 }
 
 async function renderConciliacaoCartao() {
@@ -3708,6 +3722,105 @@ async function renderConciliacaoCartao() {
       ${card('Recebido (banco)', brl(totRec), '#27ae60')}
       ${card('Custo de antecipação', brl(custoAntecip > 0 ? custoAntecip : 0) + (baseCredito > 0 ? `  <span style="font-size:12px;color:#888">(${pctCusto.toFixed(2).replace('.', ',')}% do crédito)</span>` : ''), '#e67e22')}
       ${card('Divergências', String(nDiv), nDiv ? '#e74c3c' : '#27ae60')}
+    </div>`;
+  }
+}
+
+// ── Etapa A: PDV × Getnet (venda por venda) ──────────────────────────────────
+let ccaDetalhe = {};
+function ccaToggle(dia) {
+  const el = document.getElementById('cca-det-' + dia.replace(/-/g, ''));
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+async function renderEtapaA() {
+  const db = obterSupabase();
+  const corpo = document.getElementById('cca-corpo');
+  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
+  if (!de || !ate || !corpo) return;
+  corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Cruzando vendas…</td></tr>';
+  document.getElementById('cca-cards').innerHTML = '';
+
+  // Vendas de cartão do PDV no período (filtra por dia LOCAL de Manaus via -04:00)
+  let pdv;
+  try {
+    pdv = await ccFetchPaginado(() => db.from('pdv_vendas')
+      .select('data_hora_utc,valor_bruto,bandeira').eq('forma_pagamento', 'cartao')
+      .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
+  } catch (e) {
+    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; return;
+  }
+  if (!pdv.length) {
+    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Nenhuma venda de cartão do PDV no período. Use "Importar Relatório do PDV".</td></tr>'; return;
+  }
+  // Getnet no período ±1 dia
+  const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
+  const gnet = await ccFetchPaginado(() => db.from('card_transacoes')
+    .select('data_venda,valor_bruto,bandeira').eq('tipo_registro', 'venda')
+    .gte('data_venda', dd(de, -1)).lte('data_venda', dd(ate, 1)));
+
+  // Data local Manaus (o instante UTC − 4h) e hora
+  const manaus = iso => new Date(Date.parse(iso) - 4 * 3600000).toISOString();
+  const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
+  pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); });
+
+  // Pool Getnet por valor (centavos)
+  const pool = new Map();
+  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); (pool.get(k) || pool.set(k, []).get(k)).push({ band: g.bandeira, data: g.data_venda, used: false }); });
+  // Casa por valor + bandeira, dentro de ±1 dia (prefere o mesmo dia). Sem bandeira num 2º passe.
+  const casar = (p, exigeBand) => {
+    const arr = pool.get(Math.round(p.valor_bruto * 100)); if (!arr) return false;
+    let best = null;
+    for (const g of arr) {
+      if (g.used) continue;
+      if (exigeBand && p.bandeira && g.band && p.bandeira !== g.band) continue;
+      const gap = Math.abs(diaDiff(p.dia, g.data)); if (gap > 1) continue;
+      if (!best || gap < best.gap) best = { g, gap };
+    }
+    if (best) { best.g.used = true; return true; }
+    return false;
+  };
+  pdv.forEach(p => { p.ok = casar(p, true); });
+  pdv.filter(p => !p.ok).forEach(p => { p.ok = casar(p, false); });
+
+  const dias = {};
+  pdv.forEach(p => { const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, semPar: [] }); D.n++; if (p.ok) D.ok++; else D.semPar.push(p); });
+  const gSemPar = {};
+  pool.forEach(arr => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gSemPar[g.data] = (gSemPar[g.data] || 0) + 1; }));
+
+  const datas = [...new Set([...Object.keys(dias), ...Object.keys(gSemPar)])].filter(d => d >= de && d <= ate).sort().reverse();
+  const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const dt = d => d.split('-').reverse().join('/');
+  let totN = 0, totOk = 0, totNP = 0, totGS = 0;
+  const linhas = datas.map(d => {
+    const D = dias[d] || { n: 0, ok: 0, semPar: [] }, gs = gSemPar[d] || 0;
+    totN += D.n; totOk += D.ok; totNP += D.semPar.length; totGS += gs;
+    let cor, txt;
+    if (D.semPar.length) { cor = '#e74c3c'; txt = `🔴 ${D.semPar.length} não processou`; }
+    else if (gs)         { cor = '#e67e22'; txt = `🟠 ${gs} sem venda no PDV`; }
+    else                 { cor = '#27ae60'; txt = '🟢 tudo casou'; }
+    const det = D.semPar.sort((a, b) => a.hora.localeCompare(b.hora)).map(p =>
+      `<div style="display:flex;gap:14px;padding:2px 0;font-size:12px;color:#555"><span style="width:48px">${p.hora}</span><span style="width:70px">${p.bandeira || '-'}</span><span style="width:90px;text-align:right">${brl(p.valor_bruto)}</span></div>`).join('');
+    return `<tr onclick="ccaToggle('${d}')" style="cursor:${D.semPar.length ? 'pointer' : 'default'}">
+        <td><strong>${dt(d)}</strong>${D.semPar.length ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
+        <td style="text-align:right">${D.n}</td>
+        <td style="text-align:right;color:#27ae60">${D.ok}</td>
+        <td style="text-align:right;color:${D.semPar.length ? '#e74c3c' : '#999'}">${D.semPar.length || '-'}</td>
+        <td style="text-align:right;color:${gs ? '#e67e22' : '#999'}">${gs || '-'}</td>
+        <td style="color:${cor};font-weight:600">${txt}</td>
+      </tr>` + (det ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:8px 16px"><div style="font-size:12px;color:#888;margin-bottom:4px">Vendas no PDV sem par na Getnet (hora Manaus · bandeira · valor):</div>${det}</td></tr>` : '');
+  }).join('');
+  corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
+
+  const cards = document.getElementById('cca-cards');
+  if (cards) {
+    const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
+    const pctOk = totN ? (totOk / totN * 100).toFixed(1).replace('.', ',') : '0';
+    cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      ${card('Vendas de cartão (PDV)', String(totN), '#2c3e50')}
+      ${card('Casaram com a Getnet', totOk + ' (' + pctOk + '%)', '#27ae60')}
+      ${card('Não processaram', String(totNP), totNP ? '#e74c3c' : '#27ae60')}
+      ${card('Getnet sem venda no PDV', String(totGS), totGS ? '#e67e22' : '#27ae60')}
     </div>`;
   }
 }

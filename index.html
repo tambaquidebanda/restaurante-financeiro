@@ -816,37 +816,65 @@
             <button class="btn btn-outline btn-sm" onclick="irPara('importar-pdv')"><i class="fas fa-desktop"></i> Importar Relatório do PDV</button>
           </div>
         </div>
-        <div class="info-box">
-          <i class="fas fa-lightbulb"></i>
-          Compara o <strong>líquido financeiro do extrato Getnet</strong> (já com a antecipação descontada) com o que
-          <strong>caiu no banco</strong>, por dia de crédito. Como os dois já são líquidos, a diferença tem que ser <strong>exata (R$ 0,00)</strong>.
-          🟢 exato · 🟠 fecha amanhã (o dinheiro já caiu, mas o valor exato da antecipação desse dia só vem no arquivo Getnet do dia seguinte) ·
-          🔴 recebeu menos (dinheiro faltando) · ⏳ falta importar o OFX do dia.
-          <br><span style="font-size:12px;color:#888">O card "Custo de antecipação" mostra à parte quanto você paga por receber adiantado (deve ficar ~1,45% do crédito).</span>
+        <!-- Abas -->
+        <div style="display:flex;gap:4px;border-bottom:2px solid #eee;margin:4px 0 12px;">
+          <button id="cc-tab-banco" onclick="ccMudarTab('banco')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">Getnet × Banco</button>
+          <button id="cc-tab-pdv" onclick="ccMudarTab('pdv')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">PDV × Getnet</button>
         </div>
         <div class="filtros">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <label style="font-size:13px;color:#555;">Liquidação de</label>
-            <input type="date" id="cc-de" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="renderConciliacaoCartao()">
+            <label style="font-size:13px;color:#555;">Período de</label>
+            <input type="date" id="cc-de" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="ccRenderAtual()">
             <span style="font-size:13px;color:#555;">até</span>
-            <input type="date" id="cc-ate" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="renderConciliacaoCartao()">
-            <button class="btn btn-outline btn-sm" onclick="renderConciliacaoCartao()"><i class="fas fa-sync"></i> Atualizar</button>
+            <input type="date" id="cc-ate" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="ccRenderAtual()">
+            <button class="btn btn-outline btn-sm" onclick="ccRenderAtual()"><i class="fas fa-sync"></i> Atualizar</button>
           </div>
         </div>
-        <div id="cc-cards"></div>
-        <div id="cc-aviso"></div>
-        <div class="tabela-box">
-          <table class="tabela">
-            <thead>
-              <tr>
-                <th>Liquidação</th><th>Vendas de</th><th style="text-align:right">Esperado (extrato)</th>
-                <th style="text-align:right">Recebido (banco)</th><th style="text-align:right">Diferença</th><th>Status</th>
-              </tr>
-            </thead>
-            <tbody id="cc-corpo">
-              <tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr>
-            </tbody>
-          </table>
+
+        <!-- Aba: Getnet × Banco (Etapa B) -->
+        <div id="cc-view-banco">
+          <div class="info-box">
+            <i class="fas fa-lightbulb"></i>
+            Compara o <strong>líquido financeiro do extrato Getnet</strong> (já com a antecipação descontada) com o que
+            <strong>caiu no banco</strong>, por dia de crédito. Diferença tem que ser <strong>exata (R$ 0,00)</strong>.
+            🟢 exato · 🟠 fecha amanhã · 🔴 recebeu menos · ⏳ falta importar o OFX do dia.
+          </div>
+          <div id="cc-cards"></div>
+          <div id="cc-aviso"></div>
+          <div class="tabela-box">
+            <table class="tabela">
+              <thead>
+                <tr>
+                  <th>Liquidação</th><th>Vendas de</th><th style="text-align:right">Esperado (extrato)</th>
+                  <th style="text-align:right">Recebido (banco)</th><th style="text-align:right">Diferença</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="cc-corpo"><tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Aba: PDV × Getnet (Etapa A) -->
+        <div id="cc-view-pdv" style="display:none">
+          <div class="info-box">
+            <i class="fas fa-lightbulb"></i>
+            Cruza <strong>venda por venda</strong> as vendas de cartão do <strong>PDV</strong> com as que a <strong>Getnet</strong> processou
+            (por valor + bandeira + horário, com o fuso Manaus×Brasília normalizado). Mostra o que ficou <strong>sem par</strong>.
+            🔴 venda que <strong>não processou</strong> (está no PDV, não na Getnet) · 🟠 cobrança na Getnet <strong>sem venda</strong> no PDV · 🟢 tudo casou.
+            <br><span style="font-size:12px;color:#888">Clique num dia para ver as vendas sem par. Precisa ter importado o relatório do PDV e a Getnet.</span>
+          </div>
+          <div id="cca-cards"></div>
+          <div class="tabela-box">
+            <table class="tabela">
+              <thead>
+                <tr>
+                  <th>Dia (venda)</th><th style="text-align:right">Vendas PDV</th><th style="text-align:right">Casadas</th>
+                  <th style="text-align:right">Não processou</th><th style="text-align:right">Getnet s/ venda</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="cca-corpo"><tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
