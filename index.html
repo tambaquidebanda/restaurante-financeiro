@@ -812,8 +812,10 @@
         <div class="pagina-header">
           <h2><i class="fas fa-credit-card"></i> Conciliação de Cartão</h2>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-outline btn-sm" onclick="irPara('importar-getnet')"><i class="fas fa-cash-register"></i> Importar Getnet</button>
-            <button class="btn btn-outline btn-sm" onclick="irPara('importar-pdv')"><i class="fas fa-desktop"></i> Importar Relatório do PDV</button>
+            <button class="btn btn-outline btn-sm" onclick="document.getElementById('cc-file-getnet').click()"><i class="fas fa-cash-register"></i> Importar Getnet</button>
+            <input type="file" id="cc-file-getnet" accept=".txt,.TXT" style="display:none" onchange="importarGetnetDireto(this)" />
+            <button class="btn btn-outline btn-sm" onclick="document.getElementById('cc-file-pdv').click()"><i class="fas fa-desktop"></i> Importar Relatório do PDV</button>
+            <input type="file" id="cc-file-pdv" accept=".xls,.xlsx,.html,.htm" style="display:none" onchange="importarPDVDireto(this)" />
           </div>
         </div>
         <!-- Abas -->

@@ -3427,7 +3427,22 @@ async function gravarGetnet() {
     return;
   }
   mostrarToast(`Getnet importado: ${rowsVendas.length} vendas novas e ${rowsLotes.length} liquidações.`, 'sucesso');
-  irPara('conciliacao-cartao');
+}
+
+// Import direto do arquivo Getnet (botão na Conciliação de Cartão)
+function importarGetnetDireto(input) {
+  const file = input.files && input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async e => {
+    input.value = '';
+    const r = parsearGetnetEDI(e.target.result);
+    if (r.erro) { mostrarToast(r.erro, 'erro'); return; }
+    if (!confirm(`Importar arquivo Getnet: ${r.totais.qtd_vendas} vendas e ${r.totais.qtd_lotes} liquidações?`)) return;
+    getnetImport = { fileName: file.name, resultado: r };
+    await gravarGetnet();
+    if (document.getElementById('cc-tab-banco')) ccMudarTab('banco');
+  };
+  reader.readAsText(file, 'latin1');
 }
 
 // =========================================================
@@ -3545,7 +3560,26 @@ async function gravarPDV() {
     }
   } catch (err) { tratarErro(err, 'Erro ao gravar vendas do PDV'); return; }
   mostrarToast(`PDV importado: ${rows.length} vendas de cartão gravadas.`, 'sucesso');
-  irPara('conciliacao-cartao');
+}
+
+// Import direto (botão na Conciliação de Cartão abre o seletor e já grava)
+function importarPDVDireto(input) {
+  const file = input.files && input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async e => {
+    input.value = '';
+    const r = parsearPDV(e.target.result);
+    if (r.erro) { mostrarToast(r.erro, 'erro'); return; }
+    const cartao = r.vendas.filter(v => v.grupo === 'cartao');
+    if (!cartao.length) { mostrarToast('Nenhuma venda de cartão no relatório.', 'erro'); return; }
+    const dias = [...new Set(cartao.map(v => v.data))].sort();
+    const p = d => d ? d.split('-').reverse().join('/') : '';
+    if (!confirm(`Importar ${cartao.length} vendas de cartão do PDV (${p(dias[0])} a ${p(dias[dias.length - 1])})?\n\nAs outras formas (Pix, dinheiro, iFood…) são ignoradas.`)) return;
+    pdvImport = { fileName: file.name, resultado: r };
+    await gravarPDV();
+    if (document.getElementById('cc-tab-pdv')) ccMudarTab('pdv');
+  };
+  reader.readAsText(file, 'utf-8');
 }
 
 // =========================================================
