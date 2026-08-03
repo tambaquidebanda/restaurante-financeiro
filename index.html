@@ -104,6 +104,9 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar-getnet', this)">
               <i class="fas fa-cash-register"></i><span>Importar Getnet</span>
             </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('importar-pdv', this)">
+              <i class="fas fa-desktop"></i><span>Importar PDV</span>
+            </a>
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('conciliacao-cartao', this)">
               <i class="fas fa-credit-card"></i><span>Conciliação Cartão</span>
             </a>
@@ -782,6 +785,30 @@
               <tr><td colspan="2" class="sem-dados">Nenhuma forma de pagamento cadastrada.</td></tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- ===== IMPORTAR PDV ===== -->
+      <section id="pagina-importar-pdv" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-desktop"></i> Importar Relatório do PDV</h2>
+        </div>
+        <div class="info-box">
+          <i class="fas fa-lightbulb"></i>
+          Exporte o relatório <strong>"Conciliação de Pagamento"</strong> do seu PDV (.xls) e solte aqui.
+          O sistema lê todas as vendas (cartão, pix, dinheiro, iFood, voucher…) e guarda as de <strong>cartão</strong>
+          para cruzar com a Getnet (Etapa A: pega venda que não processou).
+        </div>
+        <div class="tabela-box" style="padding:16px">
+          <label class="btn btn-primary" style="cursor:pointer">
+            <i class="fas fa-file-upload"></i> Escolher relatório do PDV
+            <input type="file" id="arquivo-pdv" accept=".xls,.xlsx,.html,.htm" style="display:none" onchange="carregarArquivoPDV(this)" />
+          </label>
+          <span id="nome-arquivo-pdv" style="margin-left:10px;color:#555;font-size:13px"></span>
+          <div id="pdv-resumo"></div>
+          <button id="btn-gravar-pdv" class="btn btn-success" style="display:none;margin-top:8px" onclick="gravarPDV()">
+            <i class="fas fa-save"></i> Gravar no sistema
+          </button>
         </div>
       </section>
 

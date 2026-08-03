@@ -410,6 +410,7 @@ function irPara(pagina, elemento) {
   if (pagina === 'usuarios')         carregarUsuarios();
   if (pagina === 'importar')         { preencherSelectBancoImportar(); carregarLancamentosPendentes(); }
   if (pagina === 'importar-getnet')  carregarImportarGetnet();
+  if (pagina === 'importar-pdv')     carregarImportarPDV();
   if (pagina === 'conciliacao-cartao') carregarConciliacaoCartao();
   if (pagina === 'conciliacao')      { preencherFiltrosConciliacao(); carregarConciliacao(); }
   if (pagina === 'integracoes')      carregarIntegracoes();
@@ -417,7 +418,7 @@ function irPara(pagina, elemento) {
   // Auto-expandir o grupo accordion correto
   const grupoNavPorPagina = {
     'pagar': 'gestao', 'receber': 'gestao', 'importar': 'gestao',
-    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao', 'importar-getnet': 'gestao', 'conciliacao-cartao': 'gestao',
+    'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao', 'importar-getnet': 'gestao', 'importar-pdv': 'gestao', 'conciliacao-cartao': 'gestao',
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
     'dre': 'relatorios', 'relatorios': 'relatorios',
@@ -3427,6 +3428,122 @@ async function gravarGetnet() {
   }
   mostrarToast(`Getnet importado: ${rowsVendas.length} vendas novas e ${rowsLotes.length} liquidações.`, 'sucesso');
   carregarImportarGetnet();
+}
+
+// =========================================================
+// IMPORTAR PDV — relatório "Conciliação de Pagamento" (HTML disfarçado de .xls)
+// =========================================================
+let pdvImport = null;
+const PDV_GRUPOS = { cartao:'💳 Cartão (Getnet)', pix:'⚡ Pix', ifood:'🛵 iFood', dinheiro:'💵 Dinheiro',
+  voucher:'🎟️ Voucher/Benefício', conta_assinada:'📝 Conta Assinada', cortesia:'🎁 Cortesia', outro:'❔ Outro' };
+
+function classificarFormaPDV(forma) {
+  const low = (forma || '').toLowerCase();
+  const band = () => low.includes('master') ? 'Master' : low.includes('visa') ? 'Visa' : low.includes('elo') ? 'Elo'
+    : low.includes('amex') ? 'Amex' : low.includes('hiper') ? 'Hipercard' : low.includes('diners') ? 'Diners' : null;
+  const cred = low.includes('crédito') || low.includes('credito');
+  const deb  = low.includes('débito') || low.includes('debito');
+  if ((cred || deb) && (low.includes('cartão') || low.includes('cartao') || low.includes('pos')))
+    return { grupo: 'cartao', modalidade: deb ? 'debito' : 'credito', bandeira: band() || 'Outro' };
+  if (low.startsWith('pix'))            return { grupo: 'pix', modalidade: null, bandeira: null };
+  if (low.includes('ifood'))            return { grupo: 'ifood', modalidade: null, bandeira: null };
+  if (low.includes('dinheiro'))         return { grupo: 'dinheiro', modalidade: null, bandeira: null };
+  if (low.includes('cortesia'))         return { grupo: 'cortesia', modalidade: null, bandeira: null };
+  if (low.includes('conta assinada'))   return { grupo: 'conta_assinada', modalidade: null, bandeira: null };
+  if (/alelo|sodexo|\bvr\b|ticket|voucher|vale/.test(low)) return { grupo: 'voucher', modalidade: null, bandeira: band() };
+  return { grupo: 'outro', modalidade: null, bandeira: null };
+}
+
+function parsearPDV(conteudo) {
+  const txt = String(conteudo);
+  if (!/<tr/i.test(txt)) return { erro: 'Arquivo não reconhecido. Esperado o relatório "Conciliação de Pagamento" do PDV.' };
+  const strip = s => s.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&#\d+;/g, '').replace(/\s+/g, ' ').trim();
+  const trs = txt.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  const vendas = [];
+  for (const tr of trs) {
+    const tds = (tr.match(/<t[dh][^>]*>[\s\S]*?<\/t[dh]>/gi) || []).map(strip);
+    if (tds.length < 7 || !/^\d+$/.test(tds[0])) continue;
+    const m = tds[2].match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+    if (!m) continue;
+    const dataLocal = `${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}`;
+    const valor = parseFloat(String(tds[6]).replace(/[R$\s.]/g, '').replace(',', '.')) || 0;
+    if (valor <= 0) continue;
+    const cls = classificarFormaPDV(tds[5]);
+    vendas.push({
+      id_ext: `pdv|${dataLocal}|${tds[5]}|${Math.round(valor * 100)}`,
+      data_hora_local: dataLocal, data: dataLocal.slice(0, 10), valor: +valor.toFixed(2),
+      forma_raw: tds[5], grupo: cls.grupo, modalidade: cls.modalidade, bandeira: cls.bandeira
+    });
+  }
+  if (!vendas.length) return { erro: 'Nenhuma venda encontrada no relatório.' };
+  return { vendas };
+}
+
+function carregarImportarPDV() {
+  pdvImport = null;
+  const n = document.getElementById('nome-arquivo-pdv'); if (n) n.textContent = '';
+  const r = document.getElementById('pdv-resumo'); if (r) r.innerHTML = '';
+  const b = document.getElementById('btn-gravar-pdv'); if (b) b.style.display = 'none';
+}
+
+function carregarArquivoPDV(input) {
+  const file = input.files && input.files[0]; if (!file) return;
+  document.getElementById('nome-arquivo-pdv').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const r = parsearPDV(e.target.result);
+    if (r.erro) { mostrarToast(r.erro, 'erro'); return; }
+    pdvImport = { fileName: file.name, resultado: r };
+    renderResumoPDV();
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+function renderResumoPDV() {
+  const el = document.getElementById('pdv-resumo'); if (!el || !pdvImport) return;
+  const vs = pdvImport.resultado.vendas;
+  const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const g = {}; vs.forEach(v => { (g[v.grupo] = g[v.grupo] || { n: 0, s: 0 }).n++; g[v.grupo].s += v.valor; });
+  const dias = [...new Set(vs.map(v => v.data))].sort();
+  const linhas = Object.keys(g).sort((a, b) => g[b].s - g[a].s).map(k =>
+    `<tr><td>${PDV_GRUPOS[k] || k}</td><td style="text-align:right">${g[k].n}</td><td style="text-align:right">${brl(g[k].s)}</td></tr>`).join('');
+  el.innerHTML = `
+    <p style="margin:12px 0 6px;color:#555">${vs.length} vendas · período ${dias[0]?.split('-').reverse().join('/')} a ${dias[dias.length-1]?.split('-').reverse().join('/')}
+    · <strong>cartão (Getnet): ${g.cartao?.n || 0} vendas, ${brl(g.cartao?.s || 0)}</strong></p>
+    <div class="tabela-box"><table class="tabela"><thead><tr><th>Forma</th><th style="text-align:right">Qtd</th><th style="text-align:right">Total</th></tr></thead>
+    <tbody>${linhas}</tbody></table></div>`;
+  const btn = document.getElementById('btn-gravar-pdv'); if (btn) btn.style.display = 'inline-flex';
+}
+
+async function gravarPDV() {
+  if (!pdvImport) { mostrarToast('Nenhum arquivo carregado.', 'erro'); return; }
+  if (!await garantirSessao()) return;
+  const db = obterSupabase();
+  const vs = pdvImport.resultado.vendas;
+  const utc = dl => new Date(dl + '-04:00').toISOString(); // PDV é hora de Manaus (UTC-4)
+  // dedup contra o que já existe (por id_venda_externa)
+  const ds = [...new Set(vs.map(v => v.data))];
+  let ex = [];
+  try { ex = await ccFetchPaginado(() => db.from('pdv_vendas').select('id_venda_externa')
+    .gte('data_hora_local', ds[0] + 'T00:00:00').lte('data_hora_local', ds[ds.length-1] + 'T23:59:59')); } catch (e) {
+    mostrarToast('Rode o SQL_CARD_CONCILIACAO.sql antes (tabela pdv_vendas não existe).', 'erro'); return;
+  }
+  const tem = new Set(ex.map(x => x.id_venda_externa));
+  const rows = [];
+  vs.forEach(v => {
+    if (tem.has(v.id_ext)) return; tem.add(v.id_ext);
+    rows.push({ id_venda_externa: v.id_ext, data_hora_local: v.data_hora_local + '-04:00', data_hora_utc: utc(v.data_hora_local),
+      valor_bruto: v.valor, forma_pagamento: v.grupo, bandeira: v.bandeira, modalidade: v.modalidade,
+      status_conciliacao: 'pendente', fonte: 'relatorio_pdv', raw: { forma: v.forma_raw } });
+  });
+  try {
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await q(db.from('pdv_vendas').insert(rows.slice(i, i + 500)));
+      if (error) throw error;
+    }
+  } catch (err) { tratarErro(err, 'Erro ao gravar vendas do PDV'); return; }
+  mostrarToast(`PDV importado: ${rows.length} vendas novas (de ${vs.length}).`, 'sucesso');
+  carregarImportarPDV();
 }
 
 // =========================================================
