@@ -3512,16 +3512,25 @@ async function renderConciliacaoCartao() {
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   const dt = d => d.split('-').reverse().join('/');
 
+  // Até que data o extrato bancário (OFX) já foi importado — depois disso, dias sem
+  // crédito no banco significam "OFX ainda não importado", não "dinheiro faltando".
+  const bankDates = Object.keys(recebido);
+  const maxBankDate = bankDates.length ? bankDates.sort().slice(-1)[0] : null;
+
   let totEsp = 0, totRec = 0, nDiv = 0, custoAntecip = 0, baseCredito = 0;
+  const faltaOFX = [];
   const linhas = datas.map(d => {
     const esp = esperado[d] || 0, rec = recebido[d] || 0, dif = esp - rec;
     totEsp += esp; totRec += rec;
     let cor, txt;
-    if (esp === 0 && rec > 0 && d >= hoje) { cor = '#7f8c8d'; txt = '⏳ aguardando extrato'; }
-    else if (Math.abs(dif) <= 1)           { cor = '#27ae60'; txt = '🟢 exato';
+    if (rec > 0 && Math.abs(dif) <= 1)     { cor = '#27ae60'; txt = '🟢 exato';
       if (vLiq[d]) { custoAntecip += (vLiq[d] - esp); baseCredito += (vLiq[d] - (debFin[d] || 0)); } }
-    else if (dif < 0)                      { cor = '#e67e22'; txt = '🟠 aguardando (arquivo seguinte)'; } // extrato < banco: antecipação ainda não veio no arquivo
-    else if (rec === 0)                    { cor = '#7f8c8d'; txt = '⏳ aguardando extrato'; }
+    else if (esp > 0 && rec === 0) {
+      if (!maxBankDate || d > maxBankDate) { cor = '#e67e22'; txt = '⏳ importe o OFX de ' + dt(d); faltaOFX.push(dt(d)); }
+      else                                 { cor = '#e74c3c'; txt = '🔴 não recebido'; nDiv++; }
+    }
+    else if (esp === 0 && rec > 0)         { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; }        // banco tem, extrato Getnet não
+    else if (dif < 0)                      { cor = '#e67e22'; txt = '🟠 aguardando (arquivo Getnet seguinte)'; } // extrato < banco: antecipação vem no arquivo do dia seguinte
     else                                   { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }        // extrato > banco: dinheiro faltando
     return `<tr>
       <td><strong>${dt(d)}</strong></td>
@@ -3533,6 +3542,16 @@ async function renderConciliacaoCartao() {
   }).join('');
 
   corpo.innerHTML = linhas || '<tr><td colspan="5" class="sem-dados">Sem dados no período.</td></tr>';
+  const aviso = document.getElementById('cc-aviso');
+  if (aviso) {
+    const dias = [...new Set(faltaOFX)];
+    aviso.innerHTML = dias.length
+      ? `<div style="background:#fff8e1;border:1px solid #f0c36d;border-radius:10px;padding:12px 16px;margin:4px 0 10px;color:#7a5c00">
+           <i class="fas fa-hourglass-half"></i> <strong>Falta importar o extrato bancário (OFX)</strong> de: ${dias.join(', ')}.
+           Esses dias só conciliam depois do time importar o extrato do banco (Gestão → Importar Extrato).
+         </div>`
+      : '';
+  }
   const cards = document.getElementById('cc-cards');
   if (cards) {
     const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px">
