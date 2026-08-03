@@ -3788,32 +3788,38 @@ async function renderEtapaA() {
   // Getnet no período ±1 dia
   const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
   const gnet = await ccFetchPaginado(() => db.from('card_transacoes')
-    .select('data_venda,valor_bruto,bandeira,modalidade').eq('tipo_registro', 'venda')
+    .select('data_venda,data_hora_utc,valor_bruto,bandeira,modalidade').eq('tipo_registro', 'venda')
     .gte('data_venda', dd(de, -1)).lte('data_venda', dd(ate, 1)));
 
-  // Data local Manaus (o instante UTC − 4h) e hora
-  const manaus = iso => new Date(Date.parse(iso) - 4 * 3600000).toISOString();
+  // Data/hora local Manaus (o instante UTC − 4h) — deixa PDV e Getnet no mesmo relógio p/ comparar
+  const manaus = iso => iso ? new Date(Date.parse(iso) - 4 * 3600000).toISOString() : '';
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
-  pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.mod = p.raw && p.raw.modalidade; });
+  pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.mod = p.raw && p.raw.modalidade; p.ok = false; });
 
   // Pool Getnet por valor (centavos)
   const pool = new Map();
-  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); (pool.get(k) || pool.set(k, []).get(k)).push({ band: g.bandeira, mod: g.modalidade, data: g.data_venda, used: false }); });
-  // Casa por valor + bandeira, dentro de ±1 dia (prefere o mesmo dia). Sem bandeira num 2º passe.
-  const casar = (p, exigeBand) => {
-    const arr = pool.get(Math.round(p.valor_bruto * 100)); if (!arr) return false;
-    let best = null;
-    for (const g of arr) {
-      if (g.used) continue;
-      if (exigeBand && p.bandeira && g.band && p.bandeira !== g.band) continue;
-      const gap = Math.abs(diaDiff(p.dia, g.data)); if (gap > 1) continue;
-      if (!best || gap < best.gap) best = { g, gap };
+  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), used: false }); });
+  // Casa por valor (com tolerância de centavos, p/ arredondamento/entrada manual do PDV) +
+  // bandeira, dentro de ±1 dia. Passes: exato primeiro, depois com tolerância.
+  const TOL = 50; // R$ 0,50
+  const casar = (p, tol, exigeBand) => {
+    const C = Math.round(p.valor_bruto * 100); let best = null;
+    for (let k = C - tol; k <= C + tol; k++) {
+      const arr = pool.get(k); if (!arr) continue;
+      for (const g of arr) {
+        if (g.used) continue;
+        if (exigeBand && p.bandeira && g.band && p.bandeira !== g.band) continue;
+        const gap = Math.abs(diaDiff(p.dia, g.data)); if (gap > 1) continue;
+        const score = Math.abs(k - C) * 10 + gap;
+        if (!best || score < best.score) best = { g, score };
+      }
     }
     if (best) { best.g.used = true; return true; }
     return false;
   };
-  pdv.forEach(p => { p.ok = casar(p, true); });
-  pdv.filter(p => !p.ok).forEach(p => { p.ok = casar(p, false); });
+  [[0, true], [0, false], [TOL, true], [TOL, false]].forEach(([tol, eb]) => {
+    pdv.filter(p => !p.ok).forEach(p => { p.ok = casar(p, tol, eb); });
+  });
 
   const dias = {};
   pdv.forEach(p => { const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, semPar: [] }); D.n++; if (p.ok) D.ok++; else D.semPar.push(p); });
@@ -3821,7 +3827,7 @@ async function renderEtapaA() {
   pool.forEach((arr, k) => arr.forEach(g => {
     if (!g.used && g.data >= de && g.data <= ate) {
       gSemPar[g.data] = (gSemPar[g.data] || 0) + 1;
-      (gSemParList[g.data] = gSemParList[g.data] || []).push({ valor: k / 100, band: g.band, mod: g.mod });
+      (gSemParList[g.data] = gSemParList[g.data] || []).push({ valor: k / 100, band: g.band, mod: g.mod, hora: g.hora });
     }
   }));
 
@@ -3841,8 +3847,8 @@ async function renderEtapaA() {
     const cel = (a, m, b, c) => `<div style="display:flex;gap:10px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:56px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:56px">${b}</span><span style="width:84px;text-align:right">${c}</span></div>`;
     const pdvList = D.semPar.slice().sort((a, b) => a.hora.localeCompare(b.hora))
       .map(p => cel(p.hora, p.mod, p.bandeira || '-', brl(p.valor_bruto))).join('') || '<div style="font-size:12px;color:#999">—</div>';
-    const gList = (gSemParList[d] || []).slice().sort((a, b) => b.valor - a.valor)
-      .map(x => cel('', x.mod, x.band || '-', brl(x.valor))).join('') || '<div style="font-size:12px;color:#999">—</div>';
+    const gList = (gSemParList[d] || []).slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''))
+      .map(x => cel(x.hora || '', x.mod, x.band || '-', brl(x.valor))).join('') || '<div style="font-size:12px;color:#999">—</div>';
     const temDet = D.semPar.length || gs;
     return `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
         <td><strong>${dt(d)}</strong>${temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
@@ -3854,7 +3860,7 @@ async function renderEtapaA() {
       </tr>` + (temDet ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:10px 16px">
         <div style="display:flex;gap:40px;flex-wrap:wrap">
           <div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">🔴 No PDV, sem par &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${pdvList}</div>
-          <div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Na Getnet, sem venda &nbsp;<span style="color:#999;font-weight:400">(tipo · bandeira · valor)</span></div>${gList}</div>
+          <div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Na Getnet, sem venda &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${gList}</div>
         </div>
         <div style="font-size:11px;color:#999;margin-top:8px">💡 Mesmo valor dos dois lados (com bandeira diferente) costuma ser a <strong>mesma venda</strong> — ruído do match. Valor que aparece <strong>só de um lado</strong> é o que vale investigar.</div>
       </td></tr>` : '');
