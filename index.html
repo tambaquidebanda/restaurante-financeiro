@@ -860,10 +860,10 @@
         <div id="cc-view-pdv" style="display:none">
           <div class="info-box">
             <i class="fas fa-lightbulb"></i>
-            Cruza <strong>venda por venda</strong> as vendas de cartão do <strong>PDV</strong> com as que a <strong>Getnet</strong> processou
-            (por valor + bandeira + horário, com o fuso Manaus×Brasília normalizado). Mostra o que ficou <strong>sem par</strong>.
-            🔴 venda que <strong>não processou</strong> (está no PDV, não na Getnet) · 🟠 cobrança na Getnet <strong>sem venda</strong> no PDV · 🟢 tudo casou.
-            <br><span style="font-size:12px;color:#888">Clique num dia para ver as vendas sem par. Precisa ter importado o relatório do PDV e a Getnet.</span>
+            Cruza <strong>venda por venda</strong> o cartão do <strong>PDV</strong> com a <strong>Getnet</strong> (valor±R$0,50 + horário, fuso normalizado)
+            e <strong>separa o ruído</strong> do erro real automaticamente.
+            <strong>⚠️ Investigar</strong> = venda no PDV sem NADA na Getnet (provável venda perdida) · <strong>🟠 Cobrança sem venda</strong> = a Getnet cobrou e não tem venda no PDV (duplicidade/não lançada) · 🟢 ok.
+            <br><span style="font-size:12px;color:#888">O "ruído" (mesma venda digitada com valor/forma diferente) é detectado por horário e sai da conta. Clique num dia para ver os detalhes.</span>
           </div>
           <div id="cca-cards"></div>
           <div class="tabela-box">
@@ -871,7 +871,7 @@
               <thead>
                 <tr>
                   <th>Dia (venda)</th><th style="text-align:right">Vendas PDV</th><th style="text-align:right">Casadas</th>
-                  <th style="text-align:right">Não processou</th><th style="text-align:right">Getnet s/ venda</th><th>Status</th>
+                  <th style="text-align:right">⚠️ Investigar</th><th style="text-align:right">Cobrança s/ venda</th><th>Status</th>
                 </tr>
               </thead>
               <tbody id="cca-corpo"><tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr></tbody>

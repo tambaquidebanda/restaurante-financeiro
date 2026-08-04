@@ -3475,6 +3475,7 @@ function parsearPDV(conteudo) {
   const strip = s => s.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&#\d+;/g, '').replace(/\s+/g, ' ').trim();
   const trs = txt.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
   const vendas = [];
+  const seq = new Map(); // sequência p/ vendas idênticas (mesma hora+forma+valor) não colapsarem
   for (const tr of trs) {
     const tds = (tr.match(/<t[dh][^>]*>[\s\S]*?<\/t[dh]>/gi) || []).map(strip);
     if (tds.length < 7 || !/^\d+$/.test(tds[0])) continue;
@@ -3484,8 +3485,10 @@ function parsearPDV(conteudo) {
     const valor = parseFloat(String(tds[6]).replace(/[R$\s.]/g, '').replace(',', '.')) || 0;
     if (valor <= 0) continue;
     const cls = classificarFormaPDV(tds[5]);
+    const base = `pdv|${dataLocal}|${tds[5]}|${Math.round(valor * 100)}`;
+    const n = seq.get(base) || 0; seq.set(base, n + 1);
     vendas.push({
-      id_ext: `pdv|${dataLocal}|${tds[5]}|${Math.round(valor * 100)}`,
+      id_ext: n ? `${base}#${n}` : base,
       data_hora_local: dataLocal, data: dataLocal.slice(0, 10), valor: +valor.toFixed(2),
       forma_raw: tds[5], grupo: cls.grupo, modalidade: cls.modalidade, bandeira: cls.bandeira
     });
@@ -3794,11 +3797,11 @@ async function renderEtapaA() {
   // Data/hora local Manaus (o instante UTC − 4h) — deixa PDV e Getnet no mesmo relógio p/ comparar
   const manaus = iso => iso ? new Date(Date.parse(iso) - 4 * 3600000).toISOString() : '';
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
-  pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.mod = p.raw && p.raw.modalidade; p.ok = false; });
+  pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.dtMs = Date.parse(p.data_hora_utc); p.mod = p.raw && p.raw.modalidade; p.ok = false; });
 
   // Pool Getnet por valor (centavos)
   const pool = new Map();
-  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), used: false }); });
+  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), used: false }); });
   // Casa por valor (com tolerância de centavos, p/ arredondamento/entrada manual do PDV) +
   // bandeira, dentro de ±1 dia. Passes: exato primeiro, depois com tolerância.
   const TOL = 50; // R$ 0,50
@@ -3821,48 +3824,65 @@ async function renderEtapaA() {
     pdv.filter(p => !p.ok).forEach(p => { p.ok = casar(p, tol, eb); });
   });
 
-  const dias = {};
-  pdv.forEach(p => { const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, semPar: [] }); D.n++; if (p.ok) D.ok++; else D.semPar.push(p); });
-  const gSemPar = {}, gSemParList = {};
-  pool.forEach((arr, k) => arr.forEach(g => {
-    if (!g.used && g.data >= de && g.data <= ate) {
-      gSemPar[g.data] = (gSemPar[g.data] || 0) + 1;
-      (gSemParList[g.data] = gSemParList[g.data] || []).push({ valor: k / 100, band: g.band, mod: g.mod, hora: g.hora });
+  // Vendas do PDV sem par exato/tolerância. Getnet sem par (candidatas).
+  const gUnmatched = [];
+  pool.forEach((arr, k) => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gUnmatched.push({ valor: k / 100, band: g.band, mod: g.mod, hora: g.hora, data: g.data, dtMs: g.dtMs, noise: false }); }));
+  // SEPARADOR DE RUÍDO: para cada PDV sem par, procura um Getnet sem par no MESMO horário
+  // (±15 min). Se achar, é a mesma venda digitada diferente → ruído. Senão → investigar.
+  const JANELA = 15 * 60 * 1000;
+  const semParPDV = pdv.filter(p => !p.ok);
+  semParPDV.forEach(p => {
+    let par = null;
+    for (const g of gUnmatched) {
+      if (g.noise) continue;
+      if (isNaN(p.dtMs) || isNaN(g.dtMs)) continue;
+      const dtm = Math.abs(p.dtMs - g.dtMs); if (dtm > JANELA) continue;
+      if (!par || dtm < par.dtm) par = { g, dtm };
     }
-  }));
+    if (par) { par.g.noise = true; p.ruido = par.g; } else { p.investigar = true; }
+  });
 
-  const datas = [...new Set([...Object.keys(dias), ...Object.keys(gSemPar)])].filter(d => d >= de && d <= ate).sort().reverse();
+  const dias = {};
+  pdv.forEach(p => {
+    const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [] });
+    D.n++; if (p.ok) D.ok++; else if (p.investigar) D.invest.push(p); else D.ruido.push(p);
+  });
+  gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [] }); D.gAlone.push(g); } });
+
+  const datas = Object.keys(dias).filter(d => d >= de && d <= ate).sort().reverse();
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   const dt = d => d.split('-').reverse().join('/');
-  let totN = 0, totOk = 0, totNP = 0, totGS = 0;
+  const modLbl = m => m === 'debito' ? 'Déb' : m === 'credito_parcelado' ? 'Créd.parc' : m ? 'Créd' : '-';
+  const modCor = m => m === 'debito' ? '#2980b9' : '#8e44ad';
+  const cel = (a, m, b, c) => `<div style="display:flex;gap:10px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:56px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:52px">${b}</span><span style="width:84px;text-align:right">${c}</span></div>`;
+  const vazio = '<div style="font-size:12px;color:#999">—</div>';
+
+  let totN = 0, totOk = 0, totInv = 0, totGA = 0, totRuido = 0;
   const linhas = datas.map(d => {
-    const D = dias[d] || { n: 0, ok: 0, semPar: [] }, gs = gSemPar[d] || 0;
-    totN += D.n; totOk += D.ok; totNP += D.semPar.length; totGS += gs;
+    const D = dias[d];
+    totN += D.n; totOk += D.ok; totInv += D.invest.length; totGA += D.gAlone.length; totRuido += D.ruido.length;
     let cor, txt;
-    if (D.semPar.length) { cor = '#e74c3c'; txt = `🔴 ${D.semPar.length} não processou`; }
-    else if (gs)         { cor = '#e67e22'; txt = `🟠 ${gs} sem venda no PDV`; }
-    else                 { cor = '#27ae60'; txt = '🟢 tudo casou'; }
-    const modLbl = m => m === 'debito' ? 'Déb' : m === 'credito_parcelado' ? 'Créd.parc' : m ? 'Créd' : '-';
-    const modCor = m => m === 'debito' ? '#2980b9' : '#8e44ad';
-    const cel = (a, m, b, c) => `<div style="display:flex;gap:10px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:56px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:56px">${b}</span><span style="width:84px;text-align:right">${c}</span></div>`;
-    const pdvList = D.semPar.slice().sort((a, b) => a.hora.localeCompare(b.hora))
-      .map(p => cel(p.hora, p.mod, p.bandeira || '-', brl(p.valor_bruto))).join('') || '<div style="font-size:12px;color:#999">—</div>';
-    const gList = (gSemParList[d] || []).slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''))
-      .map(x => cel(x.hora || '', x.mod, x.band || '-', brl(x.valor))).join('') || '<div style="font-size:12px;color:#999">—</div>';
-    const temDet = D.semPar.length || gs;
+    if (D.invest.length)      { cor = '#e74c3c'; txt = `⚠️ ${D.invest.length} a investigar`; }
+    else if (D.gAlone.length) { cor = '#e67e22'; txt = `🟠 ${D.gAlone.length} cobrança sem venda`; }
+    else                      { cor = '#27ae60'; txt = '🟢 ok' + (D.ruido.length ? ` (${D.ruido.length} ruído)` : ''); }
+    const invList = D.invest.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p => cel(p.hora, p.mod, p.bandeira || '-', brl(p.valor_bruto))).join('') || vazio;
+    const gaList = D.gAlone.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => cel(x.hora || '', x.mod, x.band || '-', brl(x.valor))).join('') || vazio;
+    const ruList = D.ruido.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p =>
+      `<div style="font-size:11px;color:#999;padding:1px 0">${p.hora} · ${brl(p.valor_bruto)} (PDV) ↔ ${brl(p.ruido.valor)} (Getnet)</div>`).join('');
+    const temDet = D.invest.length || D.gAlone.length || D.ruido.length;
     return `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
         <td><strong>${dt(d)}</strong>${temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
         <td style="text-align:right">${D.n}</td>
         <td style="text-align:right;color:#27ae60">${D.ok}</td>
-        <td style="text-align:right;color:${D.semPar.length ? '#e74c3c' : '#999'}">${D.semPar.length || '-'}</td>
-        <td style="text-align:right;color:${gs ? '#e67e22' : '#999'}">${gs || '-'}</td>
+        <td style="text-align:right;color:${D.invest.length ? '#e74c3c' : '#999'};font-weight:${D.invest.length ? 700 : 400}">${D.invest.length || '-'}</td>
+        <td style="text-align:right;color:${D.gAlone.length ? '#e67e22' : '#999'}">${D.gAlone.length || '-'}</td>
         <td style="color:${cor};font-weight:600">${txt}</td>
       </tr>` + (temDet ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:10px 16px">
         <div style="display:flex;gap:40px;flex-wrap:wrap">
-          <div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">🔴 No PDV, sem par &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${pdvList}</div>
-          <div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Na Getnet, sem venda &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${gList}</div>
+          <div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${invList}</div>
+          <div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${gaList}</div>
         </div>
-        <div style="font-size:11px;color:#999;margin-top:8px">💡 Mesmo valor dos dois lados (com bandeira diferente) costuma ser a <strong>mesma venda</strong> — ruído do match. Valor que aparece <strong>só de um lado</strong> é o que vale investigar.</div>
+        ${D.ruido.length ? `<div style="margin-top:8px"><div style="font-size:11px;color:#999;font-weight:600">🔗 ${D.ruido.length} pares de ruído (mesma venda, valor/forma digitado diferente no PDV — não é problema):</div>${ruList}</div>` : ''}
       </td></tr>` : '');
   }).join('');
   corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
@@ -3870,12 +3890,12 @@ async function renderEtapaA() {
   const cards = document.getElementById('cca-cards');
   if (cards) {
     const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
-    const pctOk = totN ? (totOk / totN * 100).toFixed(1).replace('.', ',') : '0';
+    const pctOk = totN ? ((totOk + totRuido) / totN * 100).toFixed(1).replace('.', ',') : '0';
     cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
       ${card('Vendas de cartão (PDV)', String(totN), '#2c3e50')}
-      ${card('Casaram com a Getnet', totOk + ' (' + pctOk + '%)', '#27ae60')}
-      ${card('Não processaram', String(totNP), totNP ? '#e74c3c' : '#27ae60')}
-      ${card('Getnet sem venda no PDV', String(totGS), totGS ? '#e67e22' : '#27ae60')}
+      ${card('Casaram (inclui ruído)', (totOk + totRuido) + ' (' + pctOk + '%)', '#27ae60')}
+      ${card('⚠️ A investigar (PDV)', String(totInv), totInv ? '#e74c3c' : '#27ae60')}
+      ${card('🟠 Cobrança sem venda', String(totGA), totGA ? '#e67e22' : '#27ae60')}
     </div>`;
   }
 }
