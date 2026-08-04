@@ -3547,8 +3547,7 @@ async function gravarPDV() {
   }
   const tem = new Set(ex.map(x => x.id_venda_externa));
   const rows = [];
-  vs.forEach(v => {
-    if (v.grupo !== 'cartao') return;        // grava só o cartão (o que cruza com a Getnet)
+  vs.forEach(v => {                          // grava TODAS as formas (fechamento do dia); cartão cruza com a Getnet
     if (tem.has(v.id_ext)) return; tem.add(v.id_ext);
     rows.push({ id_venda_externa: v.id_ext, data_hora_local: v.data_hora_local + '-04:00', data_hora_utc: utc(v.data_hora_local),
       valor_bruto: v.valor, forma_pagamento: v.grupo, bandeira: v.bandeira,
@@ -3560,7 +3559,7 @@ async function gravarPDV() {
       if (error) throw error;
     }
   } catch (err) { tratarErro(err, 'Erro ao gravar vendas do PDV'); return; }
-  mostrarToast(rows.length ? `PDV importado: ${rows.length} vendas de cartão novas.` : 'PDV já estava importado (nada novo).', 'sucesso');
+  mostrarToast(rows.length ? `PDV importado: ${rows.length} vendas novas (todas as formas).` : 'PDV já estava importado (nada novo).', 'sucesso');
 }
 
 // Import direto (botão na Conciliação de Cartão abre o seletor e já grava)
@@ -3571,11 +3570,11 @@ function importarPDVDireto(input) {
     input.value = '';
     const r = parsearPDV(e.target.result);
     if (r.erro) { mostrarToast(r.erro, 'erro'); return; }
+    if (!r.vendas.length) { mostrarToast('Nenhuma venda no relatório.', 'erro'); return; }
     const cartao = r.vendas.filter(v => v.grupo === 'cartao');
-    if (!cartao.length) { mostrarToast('Nenhuma venda de cartão no relatório.', 'erro'); return; }
-    const dias = [...new Set(cartao.map(v => v.data))].sort();
+    const dias = [...new Set(r.vendas.map(v => v.data))].sort();
     const p = d => d ? d.split('-').reverse().join('/') : '';
-    if (!confirm(`Importar ${cartao.length} vendas de cartão do PDV (${p(dias[0])} a ${p(dias[dias.length - 1])})?\n\nAs outras formas (Pix, dinheiro, iFood…) são ignoradas.`)) return;
+    if (!confirm(`Importar ${r.vendas.length} vendas do PDV (${p(dias[0])} a ${p(dias[dias.length - 1])})?\n\nTodas as formas entram no Resumo do dia; ${cartao.length} são de cartão e cruzam com a Getnet.`)) return;
     pdvImport = { fileName: file.name, resultado: r };
     await gravarPDV();
     if (document.getElementById('cc-tab-pdv')) ccMudarTab('pdv');
@@ -3610,17 +3609,68 @@ async function ccFetchPaginado(build) {
 }
 
 let ccTab = 'banco';
-function ccRenderAtual() { if (ccTab === 'pdv') renderEtapaA(); else renderConciliacaoCartao(); }
+function ccRenderAtual() { if (ccTab === 'pdv') renderEtapaA(); else if (ccTab === 'resumo') renderResumoDia(); else renderConciliacaoCartao(); }
 function ccMudarTab(t) {
   ccTab = t;
-  document.getElementById('cc-view-banco').style.display = t === 'banco' ? '' : 'none';
-  document.getElementById('cc-view-pdv').style.display = t === 'pdv' ? '' : 'none';
-  const tb = document.getElementById('cc-tab-banco'), tp = document.getElementById('cc-tab-pdv');
-  if (tb && tp) {
-    tb.style.borderBottomColor = t === 'banco' ? '#2c3e50' : 'transparent'; tb.style.color = t === 'banco' ? '#2c3e50' : '#999';
-    tp.style.borderBottomColor = t === 'pdv' ? '#2c3e50' : 'transparent'; tp.style.color = t === 'pdv' ? '#2c3e50' : '#999';
-  }
+  const vb = document.getElementById('cc-view-banco'), vp = document.getElementById('cc-view-pdv'), vr = document.getElementById('cc-view-resumo');
+  if (vb) vb.style.display = t === 'banco' ? '' : 'none';
+  if (vp) vp.style.display = t === 'pdv' ? '' : 'none';
+  if (vr) vr.style.display = t === 'resumo' ? '' : 'none';
+  [['cc-tab-banco', 'banco'], ['cc-tab-pdv', 'pdv'], ['cc-tab-resumo', 'resumo']].forEach(([id, key]) => {
+    const el = document.getElementById(id); if (!el) return;
+    el.style.borderBottomColor = t === key ? '#2c3e50' : 'transparent'; el.style.color = t === key ? '#2c3e50' : '#999';
+  });
   ccRenderAtual();
+}
+
+// ============ RESUMO DO DIA (fechamento) — todas as formas do PDV, por dia ============
+// Colunas fixas na ordem de leitura do caixa. 'outro' entra só no total do dia.
+const RESUMO_COLS = ['cartao', 'pix', 'dinheiro', 'ifood', 'voucher', 'conta_assinada', 'cortesia'];
+async function renderResumoDia() {
+  const db = obterSupabase();
+  const corpo = document.getElementById('crd-corpo');
+  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
+  if (!de || !ate || !corpo) return;
+  const ncol = RESUMO_COLS.length + 2;
+  corpo.innerHTML = `<tr><td colspan="${ncol}" class="sem-dados">Carregando…</td></tr>`;
+  let vs;
+  try {
+    vs = await ccFetchPaginado(() => db.from('pdv_vendas')
+      .select('data_hora_utc,valor_bruto,forma_pagamento')
+      .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
+  } catch (e) { corpo.innerHTML = `<tr><td colspan="${ncol}" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>`; return; }
+  if (!vs.length) { corpo.innerHTML = `<tr><td colspan="${ncol}" class="sem-dados">Nenhuma venda no período. Use "Importar Relatório do PDV".</td></tr>`; return; }
+
+  const dias = {}; const totCol = {};
+  vs.forEach(v => {
+    const dia = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString().slice(0, 10);
+    const D = (dias[dia] = dias[dia] || { total: 0 });
+    const f = v.forma_pagamento || 'outro';
+    D[f] = (D[f] || 0) + (v.valor_bruto || 0);
+    D.total += (v.valor_bruto || 0);
+    totCol[f] = (totCol[f] || 0) + (v.valor_bruto || 0);
+    totCol.total = (totCol.total || 0) + (v.valor_bruto || 0);
+  });
+
+  const brl = v => v ? 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '<span style="color:#ccc">—</span>';
+  const dt = d => d.split('-').reverse().join('/');
+  const datas = Object.keys(dias).filter(d => d >= de && d <= ate).sort().reverse();
+  const cell = v => `<td style="text-align:right;font-variant-numeric:tabular-nums">${brl(v)}</td>`;
+  corpo.innerHTML = datas.map(d => {
+    const D = dias[d];
+    return `<tr><td><strong>${dt(d)}</strong></td>${RESUMO_COLS.map(c => cell(D[c])).join('')}<td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${brl(D.total)}</td></tr>`;
+  }).join('') + `<tr style="border-top:2px solid #ddd;background:#faf9f5"><td><strong>Total</strong></td>${RESUMO_COLS.map(c => `<td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${brl(totCol[c])}</td>`).join('')}<td style="text-align:right;font-weight:800;font-variant-numeric:tabular-nums">${brl(totCol.total)}</td></tr>`;
+
+  const cards = document.getElementById('crd-cards');
+  if (cards) {
+    const card = (r, v, c, sub) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${brl(v)}</div>${sub ? `<div style="font-size:11px;color:#999">${sub}</div>` : ''}</div>`;
+    cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      ${card('💳 Cartão (Getnet)', totCol.cartao, '#8e44ad', 'confere na aba PDV × Getnet')}
+      ${card('⚡ Pix', totCol.pix, '#16a085', 'cai direto no banco')}
+      ${card('💵 Dinheiro', totCol.dinheiro, '#e67e22', 'fica na gaveta (fundo de caixa)')}
+      ${card('Total do período', totCol.total, '#2c3e50', '')}
+    </div>`;
+  }
 }
 
 async function carregarConciliacaoCartao() {
