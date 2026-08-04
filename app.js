@@ -3780,7 +3780,7 @@ async function renderEtapaA() {
   let pdv;
   try {
     pdv = await ccFetchPaginado(() => db.from('pdv_vendas')
-      .select('data_hora_utc,valor_bruto,bandeira,raw').eq('forma_pagamento', 'cartao')
+      .select('id,data_hora_utc,valor_bruto,bandeira,raw').eq('forma_pagamento', 'cartao')
       .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
   } catch (e) {
     corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; return;
@@ -3791,7 +3791,7 @@ async function renderEtapaA() {
   // Getnet no período ±1 dia
   const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
   const gnet = await ccFetchPaginado(() => db.from('card_transacoes')
-    .select('data_venda,data_hora_utc,valor_bruto,bandeira,modalidade').eq('tipo_registro', 'venda')
+    .select('id,data_venda,data_hora_utc,valor_bruto,bandeira,modalidade').eq('tipo_registro', 'venda')
     .gte('data_venda', dd(de, -1)).lte('data_venda', dd(ate, 1)));
 
   // Data/hora local Manaus (o instante UTC − 4h) — deixa PDV e Getnet no mesmo relógio p/ comparar
@@ -3801,7 +3801,7 @@ async function renderEtapaA() {
 
   // Pool Getnet por valor (centavos)
   const pool = new Map();
-  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), used: false }); });
+  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ id: g.id, band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), used: false }); });
   // Casa por valor (com tolerância de centavos, p/ arredondamento/entrada manual do PDV) +
   // bandeira, dentro de ±1 dia. Passes: exato primeiro, depois com tolerância.
   const TOL = 50; // R$ 0,50
@@ -3826,7 +3826,7 @@ async function renderEtapaA() {
 
   // Vendas do PDV sem par exato/tolerância. Getnet sem par (candidatas).
   const gUnmatched = [];
-  pool.forEach((arr, k) => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gUnmatched.push({ valor: k / 100, band: g.band, mod: g.mod, hora: g.hora, data: g.data, dtMs: g.dtMs, noise: false }); }));
+  pool.forEach((arr, k) => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gUnmatched.push({ id: g.id, valor: k / 100, band: g.band, mod: g.mod, hora: g.hora, data: g.data, dtMs: g.dtMs, noise: false }); }));
   // SEPARADOR DE RUÍDO: para cada PDV sem par, procura um Getnet sem par no MESMO horário
   // (±15 min). Se achar, é a mesma venda digitada diferente → ruído. Senão → investigar.
   const JANELA = 15 * 60 * 1000;
@@ -3842,12 +3842,24 @@ async function renderEtapaA() {
     if (par) { par.g.noise = true; p.ruido = par.g; } else { p.investigar = true; }
   });
 
+  // Casos já resolvidos manualmente (o caixa conferiu e justificou) — saem das pendências.
+  const resPdv = new Map(), resGnet = new Map();
+  try {
+    const resol = await ccFetchPaginado(() => db.from('conc_conciliacoes')
+      .select('venda_pdv_id,transacao_id,tipo_divergencia,observacao,resolvido_por,resolvido_em')
+      .eq('etapa', 'pdv_operadora').eq('status', 'resolvido_manual'));
+    resol.forEach(r => { if (r.venda_pdv_id) resPdv.set(r.venda_pdv_id, r); if (r.transacao_id) resGnet.set(r.transacao_id, r); });
+  } catch (e) { /* tabela pode não ter linhas ainda */ }
+
   const dias = {};
   pdv.forEach(p => {
-    const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [] });
-    D.n++; if (p.ok) D.ok++; else if (p.investigar) D.invest.push(p); else D.ruido.push(p);
+    const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [] });
+    D.n++;
+    if (p.ok) D.ok++;
+    else if (p.investigar) { const r = resPdv.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else D.invest.push(p); }
+    else D.ruido.push(p);
   });
-  gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [] }); D.gAlone.push(g); } });
+  gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [] }); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
 
   const datas = Object.keys(dias).filter(d => d >= de && d <= ate).sort().reverse();
   const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
@@ -3857,19 +3869,33 @@ async function renderEtapaA() {
   const cel = (a, m, b, c) => `<div style="display:flex;gap:10px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:56px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:52px">${b}</span><span style="width:84px;text-align:right">${c}</span></div>`;
   const vazio = '<div style="font-size:12px;color:#999">—</div>';
 
-  let totN = 0, totOk = 0, totInv = 0, totGA = 0, totRuido = 0;
+  // Botão de resolução: grava a justificativa em conc_conciliacoes e some da pendência.
+  const rb = (kind, id, tipo, valor, label) =>
+    `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 7px;cursor:pointer;white-space:nowrap">${label}</button>`;
+  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:8px">${rb('pdv', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ Conferido')}</span>`;
+  const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:8px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 Cartão 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ Conferido')}</span>`;
+  const motivoLbl = m => ({ forma_errada: 'Pago em outra forma', venda_nao_processada: 'Venda perdida', conferido: 'Conferido', outra_comanda: 'Lançada em outra comanda', cartao_duplicado: 'Cartão passado 2x', recebimento_sem_venda: 'Conferido' }[m] || m || 'Resolvido');
+  const linhaAcao = inner => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:2px 0">${inner}</div>`;
+
+  let totN = 0, totOk = 0, totInv = 0, totGA = 0, totRuido = 0, totResolv = 0;
   const linhas = datas.map(d => {
     const D = dias[d];
-    totN += D.n; totOk += D.ok; totInv += D.invest.length; totGA += D.gAlone.length; totRuido += D.ruido.length;
+    totN += D.n; totOk += D.ok; totInv += D.invest.length; totGA += D.gAlone.length; totRuido += D.ruido.length; totResolv += D.resolv.length;
     let cor, txt;
     if (D.invest.length)      { cor = '#e74c3c'; txt = `⚠️ ${D.invest.length} a investigar`; }
     else if (D.gAlone.length) { cor = '#e67e22'; txt = `🟠 ${D.gAlone.length} cobrança sem venda`; }
     else                      { cor = '#27ae60'; txt = '🟢 ok' + (D.ruido.length ? ` (${D.ruido.length} ruído)` : ''); }
-    const invList = D.invest.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p => cel(p.hora, p.mod, p.bandeira || '-', brl(p.valor_bruto))).join('') || vazio;
-    const gaList = D.gAlone.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => cel(x.hora || '', x.mod, x.band || '-', brl(x.valor))).join('') || vazio;
+    if (D.resolv.length) txt += ` <span style="color:#16a085;font-weight:400">· ✔️ ${D.resolv.length} resolvido${D.resolv.length > 1 ? 's' : ''}</span>`;
+    const invList = D.invest.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p => linhaAcao(cel(p.hora, p.mod, p.bandeira || '-', brl(p.valor_bruto)) + btnsPdv(p))).join('') || vazio;
+    const gaList = D.gAlone.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => linhaAcao(cel(x.hora || '', x.mod, x.band || '-', brl(x.valor)) + btnsGnet(x))).join('') || vazio;
     const ruList = D.ruido.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p =>
       `<div style="font-size:11px;color:#999;padding:1px 0">${p.hora} · ${brl(p.valor_bruto)} (PDV) ↔ ${brl(p.ruido.valor)} (Getnet)</div>`).join('');
-    const temDet = D.invest.length || D.gAlone.length || D.ruido.length;
+    const resolvList = D.resolv.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => {
+      const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet';
+      const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor;
+      return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.8">${cel(x.hora || '', x.mod, band, brl(val))}<span style="font-size:11px;color:#16a085;margin-left:8px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:6px">desfazer</button></div>`;
+    }).join('');
+    const temDet = D.invest.length || D.gAlone.length || D.ruido.length || D.resolv.length;
     return `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
         <td><strong>${dt(d)}</strong>${temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
         <td style="text-align:right">${D.n}</td>
@@ -3879,9 +3905,10 @@ async function renderEtapaA() {
         <td style="color:${cor};font-weight:600">${txt}</td>
       </tr>` + (temDet ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:10px 16px">
         <div style="display:flex;gap:40px;flex-wrap:wrap">
-          <div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${invList}</div>
-          <div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor)</span></div>${gaList}</div>
+          ${D.invest.length ? `<div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${invList}</div>` : ''}
+          ${D.gAlone.length ? `<div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${gaList}</div>` : ''}
         </div>
+        ${D.resolv.length ? `<div style="margin-top:8px"><div style="font-size:12px;color:#16a085;font-weight:700;margin-bottom:3px">✔️ Resolvidos (caixa conferido)</div>${resolvList}</div>` : ''}
         ${D.ruido.length ? `<div style="margin-top:8px"><div style="font-size:11px;color:#999;font-weight:600">🔗 ${D.ruido.length} pares de ruído (mesma venda, valor/forma digitado diferente no PDV — não é problema):</div>${ruList}</div>` : ''}
       </td></tr>` : '');
   }).join('');
@@ -3889,15 +3916,44 @@ async function renderEtapaA() {
 
   const cards = document.getElementById('cca-cards');
   if (cards) {
-    const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
+    const card = (r, v, c) => `<div style="flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
     const pctOk = totN ? ((totOk + totRuido) / totN * 100).toFixed(1).replace('.', ',') : '0';
     cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
       ${card('Vendas de cartão (PDV)', String(totN), '#2c3e50')}
       ${card('Casaram (inclui ruído)', (totOk + totRuido) + ' (' + pctOk + '%)', '#27ae60')}
       ${card('⚠️ A investigar (PDV)', String(totInv), totInv ? '#e74c3c' : '#27ae60')}
       ${card('🟠 Cobrança sem venda', String(totGA), totGA ? '#e67e22' : '#27ae60')}
+      ${totResolv ? card('✔️ Resolvidos', String(totResolv), '#16a085') : ''}
     </div>`;
   }
+}
+
+// Marca um caso da Etapa A como resolvido (o caixa conferiu/corrigiu) → sai das pendências.
+async function ccResolver(kind, id, tipo, valor) {
+  if (!id) return;
+  const db = obterSupabase();
+  let email = '';
+  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const row = { etapa: 'pdv_operadora', status: 'resolvido_manual', tipo_divergencia: tipo,
+    resolvido_por: email, resolvido_em: new Date().toISOString() };
+  if (kind === 'pdv') { row.venda_pdv_id = id; row.valor_esperado = valor; row.tipo_divergencia = tipo; }
+  else { row.transacao_id = id; row.valor_real = valor; if (tipo === 'conferido') row.tipo_divergencia = 'recebimento_sem_venda'; }
+  const { error } = await db.from('conc_conciliacoes').insert(row);
+  if (error) { mostrarToast('Erro ao resolver: ' + error.message, 'erro'); return; }
+  mostrarToast('Caso resolvido ✔️', 'sucesso');
+  renderEtapaA();
+}
+
+// Desfaz a resolução (remove a marca) → o caso volta a aparecer como pendência.
+async function ccDesfazer(kind, id) {
+  if (!id) return;
+  const db = obterSupabase();
+  const col = kind === 'pdv' ? 'venda_pdv_id' : 'transacao_id';
+  const { error } = await db.from('conc_conciliacoes').delete()
+    .eq('etapa', 'pdv_operadora').eq('status', 'resolvido_manual').eq(col, id);
+  if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
+  mostrarToast('Resolução desfeita', 'sucesso');
+  renderEtapaA();
 }
 
 // =========================================================
