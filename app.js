@@ -3701,15 +3701,18 @@ async function computeEtapaA(db, de, ate) {
   } catch (e) { /* tabela pode não ter linhas ainda */ }
 
   const dias = {};
-  const novoD = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [] });
+  const novoD = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], pdvBruto: 0, gnetBruto: 0 });
   pdv.forEach(p => {
     const D = (dias[p.dia] = dias[p.dia] || novoD());
     D.n++;
+    D.pdvBruto += (Number(p.valor_bruto) || 0);
     if (p.ok) D.ok++;
     else if (p.investigar) { const r = resPdv.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else D.invest.push(p); }
     else D.ruido.push(p);
   });
   gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || novoD()); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
+  // Soma o bruto de TODAS as vendas Getnet por dia (não só as sem par) para a coluna de valor.
+  gnet.forEach(g => { if (!g.data_venda) return; const D = (dias[g.data_venda] = dias[g.data_venda] || novoD()); D.gnetBruto += (Number(g.valor_bruto) || 0); });
   return { dias };
 }
 
@@ -3820,12 +3823,12 @@ async function renderCartao() {
   const corpo = document.getElementById('car-corpo');
   const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
   if (!de || !ate || !corpo) return;
-  corpo.innerHTML = '<tr><td colspan="4" class="sem-dados">Cruzando…</td></tr>';
+  corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Cruzando…</td></tr>';
   const db = obterSupabase();
 
   const A = await computeEtapaA(db, de, ate);
   const cardsEl = document.getElementById('car-cards');
-  if (A.erro === 'pdv') { corpo.innerHTML = '<tr><td colspan="4" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
+  if (A.erro === 'pdv') { corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
   const B = await computeEtapaB(db, de, ate);
 
   // Pix: concilia venda a venda PDV × banco (valor + data, ±1 dia — banco não tem horário)
@@ -3837,13 +3840,13 @@ async function renderCartao() {
   // Dias recentes ainda sem crédito ficam no próprio dia (aguardando liquidar).
   const creditDates = B.creditDates || [];
   const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
-  const novoT = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set() });
+  const novoT = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set(), pdvBruto: 0, gnetBruto: 0 });
   const diasA = {}, pixG = {};
   Object.keys(A.dias).forEach(sd => {
     const c = proxCredito(sd) || sd;
     const T = diasA[c] = diasA[c] || novoT();
     const DA = A.dias[sd];
-    T.n += DA.n; T.ok += DA.ok;
+    T.n += DA.n; T.ok += DA.ok; T.pdvBruto += DA.pdvBruto || 0; T.gnetBruto += DA.gnetBruto || 0;
     ['invest', 'ruido', 'gAlone', 'resolv'].forEach(k => DA[k].forEach(x => { x._vd = sd; T[k].push(x); }));
     if (sd !== c) T.saleDays.add(sd);
   });
@@ -3857,7 +3860,7 @@ async function renderCartao() {
     PD.semBanco.forEach(x => { x._vd = sd; T.semBanco.push(x); });
   });
   const datas = [...new Set([...Object.keys(diasA), ...Object.keys(diasB), ...Object.keys(pixG)])].filter(d => d >= de && d <= ate).sort().reverse();
-  if (!datas.length) { corpo.innerHTML = '<tr><td colspan="4" class="sem-dados">Sem dados no período.</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
+  if (!datas.length) { corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Sem dados no período.</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
 
   // helpers de detalhe (Etapa A)
   const modLbl = m => m === 'debito' ? 'Déb' : m === 'credito_parcelado' ? 'Créd.parc' : m ? 'Créd' : '-';
@@ -3873,35 +3876,35 @@ async function renderCartao() {
   let totInv = 0, totGA = 0, totDivB = 0, totRec = 0, totPixOk = 0, totPixKO = 0;
   const linhas = datas.map(d => {
     const DA = diasA[d], DB = diasB[d];
-    // Coluna Vendas → Getnet (Etapa A)
-    let aCor = '#27ae60', aTxt = '<span style="color:#bbb">—</span>', aTemDet = false;
+    const aTemDet = DA ? (DA.invest.length || DA.gAlone.length || DA.ruido.length || DA.resolv.length) : 0;
+    // Coluna PDV — valor vendido + toda venda achou par na Getnet?
+    let pdvCell = '<span style="color:#ccc">—</span>';
     if (DA) {
-      aTemDet = DA.invest.length || DA.gAlone.length || DA.ruido.length || DA.resolv.length;
-      if (DA.invest.length) { aCor = '#e74c3c'; aTxt = `⚠️ ${DA.invest.length} a investigar`; totInv += DA.invest.length; }
-      else if (DA.gAlone.length) { aCor = '#e67e22'; aTxt = `🟠 ${DA.gAlone.length} cobrança s/ venda`; totGA += DA.gAlone.length; }
-      else { aTxt = '🟢 ok' + (DA.ruido.length ? ` (${DA.ruido.length} ruído)` : ''); }
-      if (DA.resolv.length) aTxt += ` · ✔️${DA.resolv.length}`;
-      aTxt = `<span style="color:#999;font-size:11px">${DA.ok}/${DA.n}</span> ${aTxt}`;
+      const invN = DA.invest.length; if (invN) totInv += invN;
+      const st = invN ? `<span style="color:#e74c3c">⚠️ ${invN} a investigar</span>` : '<span style="color:#27ae60">✓ bate</span>';
+      pdvCell = `<div style="font-weight:700">${ccBRL(DA.pdvBruto)}</div><div style="font-size:11px;margin-top:1px">${st}${DA.resolv.length ? ` <span style="color:#16a085">·✔️${DA.resolv.length}</span>` : ''}</div>`;
     }
-    // Coluna Getnet → Banco (Etapa B) — mostra recebido, esperado e o que falta cair
-    let bCor = '#999', bTxt = '<span style="color:#bbb">—</span>';
+    // Coluna Getnet — bruto → líquido + toda cobrança tem venda no PDV?
+    let gnetCell = '<span style="color:#ccc">—</span>';
+    if (DA || (DB && DB.esp)) {
+      const bruto = DA ? DA.gnetBruto : 0;
+      const liq = DB ? DB.esp : 0, til = DB && DB.estimado ? '~' : '';
+      const gaN = DA ? DA.gAlone.length : 0; if (gaN) totGA += gaN;
+      const st = gaN ? `<span style="color:#e67e22">🟠 ${gaN} cobrança s/ venda</span>` : '<span style="color:#27ae60">✓ bate</span>';
+      const flow = `<span style="color:#888">${bruto ? ccBRL(bruto) : '—'}</span> <span style="color:#ccc">→</span> <strong style="color:#333">${liq ? til + ccBRL(liq) : '…'}</strong>`;
+      gnetCell = `<div style="font-size:12px">${flow}</div><div style="font-size:11px;margin-top:1px">${st}</div>`;
+    }
+    // Coluna Banco — o que caiu + Etapa B (exato / falta a cair / recebeu menos)
+    let bancoCell = '<span style="color:#ccc">—</span>';
     if (DB) {
-      bCor = DB.cor;
-      const sub = t => `<div style="font-size:11px;color:#888;font-weight:400;margin-top:1px">${t}</div>`;
-      const de2 = v => `<span style="color:#bbb">de ${DB.estimado ? '~' : ''}${ccBRL(v)}</span>`;
-      if (DB.txt.indexOf('exato') >= 0) {
-        bTxt = `${DB.txt}${sub(ccBRL(DB.rec) + ' caiu no banco')}`;
-      } else if (DB.estimado) {
-        const falta = Math.max(0, DB.dif);
-        bTxt = `${DB.txt}${sub(`caiu ${ccBRL(DB.rec)} · faltam ~${ccBRL(falta)} ${de2(DB.esp)}`)}`;
-      } else if (DB.aguardando) {
-        if (DB.esp > 0) bTxt = `${DB.txt}${sub('esperado ' + ccBRL(DB.esp))}`;
-        else if (DB.rec > 0) bTxt = `${DB.txt}${sub('caiu ' + ccBRL(DB.rec) + ' · aguardando conferência')}`;
-        else bTxt = DB.txt;
-      } else {
-        // recebeu menos (divergência real — arquivo Getnet já completo)
-        bTxt = `${DB.txt}${sub(`caiu ${ccBRL(DB.rec)} · faltam ${ccBRL(DB.dif)} ${de2(DB.esp)}`)}`;
-      }
+      let big, st;
+      if (DB.txt.indexOf('exato') >= 0) { big = ccBRL(DB.rec); st = '🟢 exato'; }
+      else if (DB.estimado) { big = ccBRL(DB.rec); st = `⏳ faltam ~${ccBRL(Math.max(0, DB.dif))}`; }
+      else if (DB.aguardando) {
+        if (DB.rec > 0) { big = ccBRL(DB.rec); st = DB.txt; }
+        else { big = `<span style="color:#bbb;font-weight:400">${DB.esp > 0 ? '~' + ccBRL(DB.esp) : '—'}</span>`; st = DB.txt; }
+      } else { big = ccBRL(DB.rec); st = `🔴 faltam ${ccBRL(DB.dif)}`; }
+      bancoCell = `<div style="font-weight:700">${big}</div><div style="font-size:11px;margin-top:1px;color:${DB.cor}">${st}</div>`;
       totRec += DB.rec;
       if (DB.txt.indexOf('recebeu menos') >= 0) totDivB++;
     }
@@ -3917,14 +3920,15 @@ async function renderCartao() {
     }
     const sdArr = DA ? [...DA.saleDays].sort() : [];
     const multiSale = sdArr.length > 1;
-    const sub = sdArr.length ? `<div style="font-size:10px;color:#aaa;font-weight:400">vendas ${sdArr.map(s => s.slice(8, 10) + '/' + s.slice(5, 7)).join(', ')}</div>` : '';
+    const subVendas = sdArr.length ? `<div style="font-size:10px;color:#aaa;font-weight:400">vendas ${sdArr.map(s => s.slice(8, 10) + '/' + s.slice(5, 7)).join(', ')}</div>` : '';
 
     const temDet = aTemDet || pixTemDet;
     const caret = temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : '';
     let row = `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
-      <td><strong>${ccDT(d)}</strong>${caret}${sub}</td>
-      <td style="color:${aCor};font-weight:600">${aTxt}</td>
-      <td style="color:${bCor};font-weight:600">${bTxt}</td>
+      <td><strong>${ccDT(d)}</strong>${caret}${subVendas}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${pdvCell}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${gnetCell}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${bancoCell}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${pixCell}</td>
     </tr>`;
 
@@ -3942,7 +3946,7 @@ async function renderCartao() {
         }).join('');
       }
       const pixList = (PG && PG.semBanco.length) ? PG.semBanco.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => `<div style="font-size:12px;color:#555;padding:1px 0">${multiSale && p._vd ? `<span style="font-size:10px;color:#999;width:38px;display:inline-block">${p._vd.slice(8, 10)}/${p._vd.slice(5, 7)}</span> ` : ''}${p.hora || ''} · ${ccBRL(p.valor_bruto)}</div>`).join('') : '';
-      row += `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="4" style="background:#fbfaf6;padding:10px 16px">
+      row += `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="5" style="background:#fbfaf6;padding:10px 16px">
         <div style="display:flex;gap:40px;flex-wrap:wrap">
           ${DA && DA.invest.length ? `<div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${invList}</div>` : ''}
           ${DA && DA.gAlone.length ? `<div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${gaList}</div>` : ''}

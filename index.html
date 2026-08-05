@@ -837,9 +837,8 @@
         <div id="cc-view-cartao">
           <div class="info-box">
             <i class="fas fa-lightbulb"></i>
-            <strong>Uma linha por dia de liquidação.</strong> Cada linha mostra as duas conferências do cartão: <strong>Vendas → Getnet</strong> (o PDV bateu com a operadora?)
-            e <strong>Getnet → Banco</strong> (o dinheiro caiu?). O <strong>⚡ Pix</strong> confere venda a venda (PDV × "PIX RECEBIDO" do banco, por valor).
-            <br><span style="font-size:12px;color:#888">As vendas são agrupadas pelo <strong>dia em que o dinheiro cai</strong> (igual ao banco): fim de semana e feriado entram na linha da segunda — veja o "vendas ..." embaixo da data. 🟢 tudo certo · ⚠️/🟠 tem algo pra ver — <strong>clique no dia</strong> pra abrir os detalhes e resolver caso a caso.</span>
+            <strong>Uma linha por dia de liquidação.</strong> Acompanhe o dinheiro nas três pontas: <strong>PDV</strong> (o que foi vendido) → <strong>Getnet</strong> (bruto → líquido, já descontada a taxa) → <strong>Banco</strong> (o que caiu). Se a corrente fecha, está tudo certo.
+            <br><span style="font-size:12px;color:#888">As vendas são agrupadas pelo <strong>dia em que o dinheiro cai</strong> (igual ao banco): fim de semana e feriado entram na linha da segunda — veja o "vendas ..." embaixo da data. 🟢 bate · ⚠️/🟠 tem algo pra ver — <strong>clique no dia</strong> pra abrir os detalhes e resolver caso a caso.</span>
           </div>
           <div id="car-cards"></div>
           <div id="car-aviso"></div>
@@ -848,12 +847,13 @@
               <thead>
                 <tr>
                   <th>Dia (liquidação)</th>
-                  <th>💳 Vendas → Getnet</th>
-                  <th>🏦 Getnet → Banco</th>
-                  <th style="text-align:right">⚡ Pix (PDV)</th>
+                  <th style="text-align:right">💳 PDV <span style="font-weight:400;color:#999;font-size:11px">vendido</span></th>
+                  <th style="text-align:right">🌐 Getnet <span style="font-weight:400;color:#999;font-size:11px">bruto → líquido</span></th>
+                  <th style="text-align:right">🏦 Banco <span style="font-weight:400;color:#999;font-size:11px">caiu</span></th>
+                  <th style="text-align:right">⚡ Pix</th>
                 </tr>
               </thead>
-              <tbody id="car-corpo"><tr><td colspan="4" class="sem-dados">Selecione o período.</td></tr></tbody>
+              <tbody id="car-corpo"><tr><td colspan="5" class="sem-dados">Selecione o período.</td></tr></tbody>
             </table>
           </div>
         </div>
