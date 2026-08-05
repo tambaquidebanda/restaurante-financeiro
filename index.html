@@ -823,6 +823,7 @@
           <button id="cc-tab-banco" onclick="ccMudarTab('banco')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">Getnet × Banco</button>
           <button id="cc-tab-pdv" onclick="ccMudarTab('pdv')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">PDV × Getnet</button>
           <button id="cc-tab-resumo" onclick="ccMudarTab('resumo')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">Resumo do dia</button>
+          <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Caixa (dinheiro)</button>
         </div>
         <div class="filtros">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -899,6 +900,30 @@
                 </tr>
               </thead>
               <tbody id="crd-corpo"><tr><td colspan="9" class="sem-dados">Selecione o período.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ===== CAIXA (fechamento do dinheiro físico) ===== -->
+        <div id="cc-view-caixa" style="display:none">
+          <div class="info-box">
+            <i class="fas fa-lightbulb"></i>
+            <strong>Fechamento de Caixa</strong> — confere o dinheiro contado na gaveta com o que o sistema espera.
+            <br><span style="font-size:12px;color:#888">Esperado = <strong>fundo inicial</strong> + <strong>vendas em dinheiro</strong> (PDV) − <strong>pagamentos em dinheiro</strong> (contas pagas no Caixa). A diferença mostra sobra (+) ou falta (−).</span>
+          </div>
+          <div id="cxa-painel" style="margin:14px 0"></div>
+          <h4 style="margin:22px 0 8px;color:#2c3e50">Histórico de fechamentos</h4>
+          <div class="tabela-box" style="overflow-x:auto">
+            <table class="tabela">
+              <thead>
+                <tr>
+                  <th>Dia</th>
+                  <th style="text-align:right">Fundo</th><th style="text-align:right">+ Vendas</th><th style="text-align:right">− Pagtos</th>
+                  <th style="text-align:right">Esperado</th><th style="text-align:right">Contado</th><th style="text-align:right">Diferença</th>
+                  <th>Fechado por</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="cxa-historico"><tr><td colspan="9" class="sem-dados">Selecione o período.</td></tr></tbody>
             </table>
           </div>
         </div>

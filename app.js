@@ -3609,14 +3609,17 @@ async function ccFetchPaginado(build) {
 }
 
 let ccTab = 'banco';
-function ccRenderAtual() { if (ccTab === 'pdv') renderEtapaA(); else if (ccTab === 'resumo') renderResumoDia(); else renderConciliacaoCartao(); }
+function ccRenderAtual() {
+  if (ccTab === 'pdv') renderEtapaA();
+  else if (ccTab === 'resumo') renderResumoDia();
+  else if (ccTab === 'caixa') renderFechamentoCaixa();
+  else renderConciliacaoCartao();
+}
 function ccMudarTab(t) {
   ccTab = t;
-  const vb = document.getElementById('cc-view-banco'), vp = document.getElementById('cc-view-pdv'), vr = document.getElementById('cc-view-resumo');
-  if (vb) vb.style.display = t === 'banco' ? '' : 'none';
-  if (vp) vp.style.display = t === 'pdv' ? '' : 'none';
-  if (vr) vr.style.display = t === 'resumo' ? '' : 'none';
-  [['cc-tab-banco', 'banco'], ['cc-tab-pdv', 'pdv'], ['cc-tab-resumo', 'resumo']].forEach(([id, key]) => {
+  const views = { banco: 'cc-view-banco', pdv: 'cc-view-pdv', resumo: 'cc-view-resumo', caixa: 'cc-view-caixa' };
+  Object.entries(views).forEach(([key, id]) => { const el = document.getElementById(id); if (el) el.style.display = t === key ? '' : 'none'; });
+  [['cc-tab-banco', 'banco'], ['cc-tab-pdv', 'pdv'], ['cc-tab-resumo', 'resumo'], ['cc-tab-caixa', 'caixa']].forEach(([id, key]) => {
     const el = document.getElementById(id); if (!el) return;
     el.style.borderBottomColor = t === key ? '#2c3e50' : 'transparent'; el.style.color = t === key ? '#2c3e50' : '#999';
   });
@@ -3671,6 +3674,162 @@ async function renderResumoDia() {
       ${card('Total do período', totCol.total, '#2c3e50', '')}
     </div>`;
   }
+}
+
+// ============ FECHAMENTO DE CAIXA (dinheiro físico da gaveta) ============
+let cxaDataSel = '';
+let cxaCtx = { data: '', entradas: 0, saidas: 0, semCaixa: false };
+function cxaBRL(v) { return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }); }
+function cxaHoje() { return new Date().toISOString().slice(0, 10); }
+function cxaNum(id) { const el = document.getElementById(id); return el ? (parseFloat(el.value) || 0) : 0; }
+function cxaCaixaBancoId() {
+  return (bancosCadastrados || []).find(b => { const n = (b.nome || '').toLowerCase(); return n.includes('caixa') || n.includes('dinheiro'); })?.id || null;
+}
+function cxaTrocarData(d) { cxaDataSel = d; cxaRenderPainel(); }
+
+async function renderFechamentoCaixa() {
+  if (!document.getElementById('cxa-painel')) return;
+  if (!cxaDataSel) cxaDataSel = cxaHoje();
+  await cxaRenderPainel();
+  await cxaRenderHistorico();
+}
+
+async function cxaRenderPainel() {
+  const painel = document.getElementById('cxa-painel');
+  if (!painel) return;
+  const data = cxaDataSel;
+  painel.innerHTML = `<div style="background:#fff;border:1px solid #eee;border-radius:10px;padding:16px 18px">Carregando ${data.split('-').reverse().join('/')}…</div>`;
+  const db = obterSupabase();
+
+  // Entradas = vendas em dinheiro do dia (local Manaus)
+  let entradas = 0;
+  try {
+    const vs = await ccFetchPaginado(() => db.from('pdv_vendas').select('valor_bruto')
+      .eq('forma_pagamento', 'dinheiro')
+      .gte('data_hora_utc', data + 'T00:00:00-04:00').lte('data_hora_utc', data + 'T23:59:59-04:00'));
+    entradas = vs.reduce((s, v) => s + (v.valor_bruto || 0), 0);
+  } catch (e) {}
+
+  // Saídas = pagamentos em dinheiro (lançamentos pagos no banco Caixa) do dia
+  const caixaId = cxaCaixaBancoId();
+  let saidas = 0;
+  if (caixaId) {
+    try {
+      const ls = await ccFetchPaginado(() => db.from('lancamentos').select('valor')
+        .eq('tipo', 'pagar').eq('status', 'pago').eq('banco_id', caixaId).eq('data_pagamento', data));
+      saidas = ls.reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    } catch (e) {}
+  }
+
+  // Fechamento já salvo desse dia (se houver) + fundo herdado do último dia fechado
+  let ex = null, fundoDefault = 0;
+  try { const { data: a } = await db.from('caixa_fechamentos').select('*').eq('data', data).limit(1); ex = a && a[0]; } catch (e) {}
+  if (ex) { fundoDefault = Number(ex.fundo_inicial) || 0; }
+  else {
+    try { const { data: p } = await db.from('caixa_fechamentos').select('contagem_fisica').lt('data', data).order('data', { ascending: false }).limit(1); if (p && p[0]) fundoDefault = Number(p[0].contagem_fisica) || 0; } catch (e) {}
+  }
+  const contadoDefault = ex ? (Number(ex.contagem_fisica) || 0) : '';
+  const obsDefault = ex ? (ex.observacao || '') : '';
+
+  cxaCtx = { data, entradas, saidas, semCaixa: !caixaId };
+
+  const linha = (lbl, val, extra) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f2f2f2">
+      <span style="color:#555">${lbl}</span><span style="font-weight:600;font-variant-numeric:tabular-nums">${val}</span></div>` + (extra || '');
+  const inp = (id, v, ph) => `<input type="number" step="0.01" min="0" id="${id}" value="${v}" placeholder="${ph || '0,00'}" oninput="cxaRecalc()" style="width:140px;text-align:right;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-variant-numeric:tabular-nums">`;
+
+  painel.innerHTML = `
+    <div style="background:#fff;border:1px solid #eee;border-radius:10px;padding:16px 18px;max-width:520px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-weight:700;color:#2c3e50">Fechamento do dia</span>
+          <input type="date" id="cxa-data" value="${data}" onchange="cxaTrocarData(this.value)" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+        </div>
+        ${ex ? `<span style="font-size:12px;background:#e8f5e9;color:#2e7d32;border-radius:12px;padding:3px 10px;font-weight:600">✔️ fechado</span>` : ''}
+      </div>
+      ${cxaCtx.semCaixa ? `<div style="background:#fff3cd;color:#856404;font-size:12px;border-radius:6px;padding:7px 10px;margin-bottom:10px">⚠️ Banco "Caixa/Dinheiro" não encontrado — os pagamentos em dinheiro não foram somados.</div>` : ''}
+      ${linha('Fundo inicial (troco)', inp('cxa-fundo', fundoDefault, '0,00'))}
+      ${linha('+ Vendas em dinheiro (PDV)', `<span style="color:#2e7d32">${cxaBRL(entradas)}</span>`)}
+      ${linha('− Pagamentos em dinheiro (Caixa)', `<span style="color:#c0392b">${cxaBRL(saidas)}</span>`)}
+      ${linha('= Saldo esperado na gaveta', `<span id="cxa-esperado" style="font-weight:700">—</span>`)}
+      ${linha('Contagem física (gaveta)', inp('cxa-contado', contadoDefault, '0,00'))}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;margin-top:4px;border-top:2px solid #eee">
+        <span style="font-weight:700;color:#2c3e50">Diferença</span>
+        <span id="cxa-diferenca" style="font-weight:800;font-size:17px;font-variant-numeric:tabular-nums">—</span>
+      </div>
+      <textarea id="cxa-obs" placeholder="Observação (opcional)" style="width:100%;margin-top:8px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;min-height:44px">${obsDefault}</textarea>
+      <button onclick="salvarFechamentoCaixa()" style="margin-top:10px;width:100%;background:#2c3e50;color:#fff;border:0;border-radius:8px;padding:10px;font-size:14px;font-weight:600;cursor:pointer">${ex ? 'Atualizar fechamento' : 'Fechar caixa'}</button>
+    </div>`;
+  cxaRecalc();
+}
+
+// Recalcula esperado e diferença ao digitar (fundo + entradas − saídas; contado − esperado)
+function cxaRecalc() {
+  const esperado = cxaNum('cxa-fundo') + cxaCtx.entradas - cxaCtx.saidas;
+  const esp = document.getElementById('cxa-esperado'); if (esp) esp.textContent = cxaBRL(esperado);
+  const contadoEl = document.getElementById('cxa-contado');
+  const dif = document.getElementById('cxa-diferenca'); if (!dif) return;
+  if (!contadoEl || contadoEl.value === '') { dif.textContent = '—'; dif.style.color = '#999'; return; }
+  const d = cxaNum('cxa-contado') - esperado;
+  dif.textContent = (d > 0 ? '+' : '') + cxaBRL(d) + (Math.abs(d) < 0.005 ? ' ✔️' : (d < 0 ? ' (falta)' : ' (sobra)'));
+  dif.style.color = Math.abs(d) < 0.005 ? '#2e7d32' : (d < 0 ? '#c0392b' : '#e67e22');
+}
+
+async function salvarFechamentoCaixa() {
+  if (!(await garantirSessao())) return;
+  const contadoEl = document.getElementById('cxa-contado');
+  if (!contadoEl || contadoEl.value === '') { mostrarToast('Informe a contagem física da gaveta.', 'erro'); return; }
+  const db = obterSupabase();
+  const fundo = cxaNum('cxa-fundo'), contado = cxaNum('cxa-contado');
+  const esperado = fundo + cxaCtx.entradas - cxaCtx.saidas;
+  const diff = contado - esperado;
+  let email = '';
+  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const { error } = await db.from('caixa_fechamentos').upsert({
+    data: cxaCtx.data, fundo_inicial: fundo, entradas_dinheiro: cxaCtx.entradas, saidas_dinheiro: cxaCtx.saidas,
+    saldo_esperado: esperado, contagem_fisica: contado, diferenca: diff,
+    observacao: (document.getElementById('cxa-obs')?.value || '').trim(),
+    fechado_por: email, fechado_em: new Date().toISOString()
+  }, { onConflict: 'data' });
+  if (error) { mostrarToast('Erro ao salvar: ' + error.message, 'erro'); return; }
+  mostrarToast('Caixa fechado ✔️', 'sucesso');
+  cxaRenderPainel(); cxaRenderHistorico();
+}
+
+async function excluirFechamentoCaixa(data) {
+  if (!confirm('Reabrir/excluir o fechamento de ' + data.split('-').reverse().join('/') + '?')) return;
+  const db = obterSupabase();
+  const { error } = await db.from('caixa_fechamentos').delete().eq('data', data);
+  if (error) { mostrarToast('Erro ao excluir: ' + error.message, 'erro'); return; }
+  mostrarToast('Fechamento removido', 'sucesso');
+  cxaRenderPainel(); cxaRenderHistorico();
+}
+
+async function cxaRenderHistorico() {
+  const corpo = document.getElementById('cxa-historico');
+  if (!corpo) return;
+  const db = obterSupabase();
+  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
+  if (!de || !ate) return;
+  corpo.innerHTML = `<tr><td colspan="9" class="sem-dados">Carregando…</td></tr>`;
+  let rows = [];
+  try { const { data } = await db.from('caixa_fechamentos').select('*').gte('data', de).lte('data', ate).order('data', { ascending: false }); rows = data || []; } catch (e) {}
+  if (!rows.length) { corpo.innerHTML = `<tr><td colspan="9" class="sem-dados">Nenhum fechamento no período.</td></tr>`; return; }
+  const cor = d => Math.abs(d) < 0.005 ? '#2e7d32' : (d < 0 ? '#c0392b' : '#e67e22');
+  corpo.innerHTML = rows.map(r => {
+    const d = Number(r.diferenca) || 0;
+    const dtxt = (d > 0 ? '+' : '') + cxaBRL(d) + (Math.abs(d) < 0.005 ? ' ✔️' : (d < 0 ? ' ⚠️' : ''));
+    const td = v => `<td style="text-align:right;font-variant-numeric:tabular-nums">${cxaBRL(v)}</td>`;
+    return `<tr>
+      <td><strong>${r.data.split('-').reverse().join('/')}</strong></td>
+      ${td(r.fundo_inicial)}${td(r.entradas_dinheiro)}${td(r.saidas_dinheiro)}${td(r.saldo_esperado)}${td(r.contagem_fisica)}
+      <td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:${cor(d)}">${dtxt}</td>
+      <td style="font-size:12px;color:#888">${r.fechado_por || '—'}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button title="Reabrir" onclick="cxaTrocarData('${r.data}');window.scrollTo({top:0,behavior:'smooth'})" style="border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:12px">abrir</button>
+        <button title="Excluir" onclick="excluirFechamentoCaixa('${r.data}')" style="border:1px solid #f0d0d0;background:#fff;color:#c0392b;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:12px">excluir</button>
+      </td>
+    </tr>`;
+  }).join('');
 }
 
 async function carregarConciliacaoCartao() {
