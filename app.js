@@ -3883,9 +3883,28 @@ async function renderCartao() {
       if (DA.resolv.length) aTxt += ` · ✔️${DA.resolv.length}`;
       aTxt = `<span style="color:#999;font-size:11px">${DA.ok}/${DA.n}</span> ${aTxt}`;
     }
-    // Coluna Getnet → Banco (Etapa B)
+    // Coluna Getnet → Banco (Etapa B) — mostra recebido, esperado e o que falta cair
     let bCor = '#999', bTxt = '<span style="color:#bbb">—</span>';
-    if (DB) { bCor = DB.cor; bTxt = `${DB.txt} <span style="color:#999;font-size:11px">(${ccBRL(DB.rec)})</span>`; totRec += DB.rec; if (DB.txt.indexOf('recebeu menos') >= 0) totDivB++; }
+    if (DB) {
+      bCor = DB.cor;
+      const sub = t => `<div style="font-size:11px;color:#888;font-weight:400;margin-top:1px">${t}</div>`;
+      const de2 = v => `<span style="color:#bbb">de ${DB.estimado ? '~' : ''}${ccBRL(v)}</span>`;
+      if (DB.txt.indexOf('exato') >= 0) {
+        bTxt = `${DB.txt}${sub(ccBRL(DB.rec) + ' caiu no banco')}`;
+      } else if (DB.estimado) {
+        const falta = Math.max(0, DB.dif);
+        bTxt = `${DB.txt}${sub(`caiu ${ccBRL(DB.rec)} · faltam ~${ccBRL(falta)} ${de2(DB.esp)}`)}`;
+      } else if (DB.aguardando) {
+        if (DB.esp > 0) bTxt = `${DB.txt}${sub('esperado ' + ccBRL(DB.esp))}`;
+        else if (DB.rec > 0) bTxt = `${DB.txt}${sub('caiu ' + ccBRL(DB.rec) + ' · aguardando conferência')}`;
+        else bTxt = DB.txt;
+      } else {
+        // recebeu menos (divergência real — arquivo Getnet já completo)
+        bTxt = `${DB.txt}${sub(`caiu ${ccBRL(DB.rec)} · faltam ${ccBRL(DB.dif)} ${de2(DB.esp)}`)}`;
+      }
+      totRec += DB.rec;
+      if (DB.txt.indexOf('recebeu menos') >= 0) totDivB++;
+    }
     const PG = pixG[d];
     let pixCell = '<span style="color:#ccc">—</span>', pixTemDet = false;
     if (PG && PG.n) {
