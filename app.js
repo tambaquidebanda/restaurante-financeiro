@@ -3628,9 +3628,11 @@ function ccMudarTab(t) {
 
 async function carregarConciliacaoCartao() {
   if (!(await garantirSessao())) return;
+  if (!ccMes) ccMes = ccMesAtual();
+  // inputs cc-de/cc-ate ficam ocultos, mas o histórico do Caixa (espécie) ainda os usa como período.
   const de = document.getElementById('cc-de'), ate = document.getElementById('cc-ate');
   if (ate && !ate.value) ate.value = new Date().toISOString().slice(0, 10);
-  if (de && !de.value) { const d = new Date(); d.setDate(d.getDate() - 14); de.value = d.toISOString().slice(0, 10); }
+  if (de && !de.value) { const d = new Date(); d.setDate(d.getDate() - 60); de.value = d.toISOString().slice(0, 10); }
   ccRenderAtual();
 }
 
@@ -3819,25 +3821,98 @@ function ccaToggle(dia) {
 }
 
 // ---- Render unificado: uma linha por dia (Vendas→Getnet | Getnet→Banco | Pix) ----
+// ============ CARTÃO & PIX — CALENDÁRIO (valor recebido/dia; clicar abre as conferências) ============
+let ccMes = '';        // 'YYYY-MM' em exibição
+let ccDiaSel = '';     // dia selecionado 'YYYY-MM-DD'
+let ccDetalhes = {};   // HTML do painel de conferências por dia
+let ccResumoDia = {};  // { cor, valTxt, chip } por dia (para as células)
+
+function ccMesAtual() { return new Date().toISOString().slice(0, 7); }
+function ccPad(n) { return String(n).padStart(2, '0'); }
+function ccMudarMes(delta) {
+  const [Y, M] = (ccMes || ccMesAtual()).split('-').map(Number);
+  const d = new Date(Y, M - 1 + delta, 1);
+  ccMes = d.getFullYear() + '-' + ccPad(d.getMonth() + 1);
+  ccDiaSel = '';
+  renderCartao();
+}
+function ccDiaSemana(d) {
+  const nomes = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+  const [Y, M, D] = d.split('-').map(Number);
+  return nomes[new Date(Y, M - 1, D).getDay()];
+}
+function ccCalNav() {
+  const [Y, M] = (ccMes || ccMesAtual()).split('-').map(Number);
+  const nm = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  const btn = 'style="border:1px solid #ddd;background:#fff;border-radius:8px;width:34px;height:34px;font-size:18px;cursor:pointer;color:#2c3e50;line-height:1"';
+  return `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <button ${btn} onclick="ccMudarMes(-1)">‹</button>
+    <strong style="font-size:16px;color:#2c3e50">${nm[M - 1]} / ${Y}</strong>
+    <button ${btn} onclick="ccMudarMes(1)">›</button>
+  </div>`;
+}
+function ccCalGridHTML() {
+  const [Y, M] = (ccMes || ccMesAtual()).split('-').map(Number);
+  const lastDay = new Date(Y, M, 0).getDate();
+  const firstDow = new Date(Y, M - 1, 1).getDay();
+  const dows = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const head = dows.map(w => `<div style="text-align:center;font-size:11px;font-weight:700;color:#999;padding:2px 0">${w}</div>`).join('');
+  const vazio = () => '<div style="min-height:66px"></div>';
+  let cells = '';
+  for (let i = 0; i < firstDow; i++) cells += vazio();
+  for (let day = 1; day <= lastDay; day++) cells += ccCalCellHTML(`${Y}-${ccPad(M)}-${ccPad(day)}`, day);
+  const trail = (7 - ((firstDow + lastDay) % 7)) % 7;
+  for (let i = 0; i < trail; i++) cells += vazio();
+  return `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${head}${cells}</div>`;
+}
+function ccCalCellHTML(d, day) {
+  const R = ccResumoDia[d];
+  const sel = d === ccDiaSel ? 'box-shadow:0 0 0 2px #2c3e50;' : '';
+  if (!R) return `<div style="min-height:66px;border:1px solid #f2f2f2;border-radius:8px;padding:4px 6px;background:#fafafa"><div style="font-size:12px;color:#ccc">${day}</div></div>`;
+  return `<div onclick="ccAbrirDia('${d}')" style="min-height:66px;border:1px solid #eee;border-left:4px solid ${R.cor};border-radius:8px;padding:4px 6px;background:#fff;cursor:pointer;${sel}">
+    <div style="font-size:12px;color:#999">${day}</div>
+    <div style="font-size:13px;font-weight:700;color:#2c3e50;font-variant-numeric:tabular-nums;line-height:1.15">${R.valTxt}</div>
+    <div style="font-size:10px;color:${R.cor};line-height:1.2;margin-top:1px">${R.chip}</div>
+  </div>`;
+}
+function ccAbrirDia(d) {
+  ccDiaSel = d;
+  const cal = document.getElementById('car-cal');
+  if (cal) cal.innerHTML = ccCalNav() + ccCalGridHTML();
+  ccRenderDetalhe();
+}
+function ccRenderDetalhe() {
+  const el = document.getElementById('car-detalhe');
+  if (!el) return;
+  el.innerHTML = (ccDiaSel && ccDetalhes[ccDiaSel]) ? ccDetalhes[ccDiaSel]
+    : '<div class="sem-dados" style="padding:20px;color:#999">👈 Clique num dia do calendário para ver as conferências (PDV → Getnet → Banco e Pix).</div>';
+}
+function ccStatusBancoTxt(DB) {
+  if (DB.txt.indexOf('exato') >= 0) return '🟢 exato — bateu certinho';
+  if (DB.estimado) return `⏳ ainda vai cair ~${ccBRL(Math.max(0, DB.dif))} (fecha amanhã)`;
+  if (DB.aguardando) return DB.txt;
+  return `🔴 recebeu ${ccBRL(DB.dif)} a MENOS que o esperado`;
+}
+
 async function renderCartao() {
-  const corpo = document.getElementById('car-corpo');
-  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
-  if (!de || !ate || !corpo) return;
-  corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Cruzando…</td></tr>';
+  const cal = document.getElementById('car-cal');
+  if (!cal) return;
+  if (!ccMes) ccMes = ccMesAtual();
+  const [Y, M] = ccMes.split('-').map(Number);
+  const ate = `${Y}-${ccPad(M)}-${ccPad(new Date(Y, M, 0).getDate())}`;
+  const mesIni = `${Y}-${ccPad(M)}-01`;
+  const deB = new Date(Y, M - 1, 1); deB.setDate(deB.getDate() - 4);
+  const de = deB.getFullYear() + '-' + ccPad(deB.getMonth() + 1) + '-' + ccPad(deB.getDate());
+  cal.innerHTML = ccCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Cruzando…</div>';
   const db = obterSupabase();
 
   const A = await computeEtapaA(db, de, ate);
   const cardsEl = document.getElementById('car-cards');
-  if (A.erro === 'pdv') { corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
+  if (A.erro === 'pdv') { cal.innerHTML = ccCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Importe o relatório do PDV primeiro (botão no topo).</div>'; if (cardsEl) cardsEl.innerHTML = ''; ccResumoDia = {}; ccDetalhes = {}; ccRenderDetalhe(); return; }
   const B = await computeEtapaB(db, de, ate);
-
-  // Pix: concilia venda a venda PDV × banco (valor + data, ±1 dia — banco não tem horário)
   const P = await computePix(db, de, ate);
 
-  const diasB = B.dias;
-  // Agrupa as VENDAS pelo mesmo dia de CRÉDITO do banco (próximo dia útil de liquidação),
-  // igual à coluna Getnet→Banco: sexta+sábado+domingo caem juntos na linha da segunda.
-  // Dias recentes ainda sem crédito ficam no próprio dia (aguardando liquidar).
+  // Regroup por dia de liquidação (proxCredito), igual à versão em tabela.
   const creditDates = B.creditDates || [];
   const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
   const novoT = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set(), pdvBruto: 0, gnetBruto: 0 });
@@ -3859,122 +3934,111 @@ async function renderCartao() {
     if (PD.semExtrato) T.gapN += PD.n;
     PD.semBanco.forEach(x => { x._vd = sd; T.semBanco.push(x); });
   });
-  const datas = [...new Set([...Object.keys(diasA), ...Object.keys(diasB), ...Object.keys(pixG)])].filter(d => d >= de && d <= ate).sort().reverse();
-  if (!datas.length) { corpo.innerHTML = '<tr><td colspan="5" class="sem-dados">Sem dados no período.</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
+  const diasB = B.dias;
 
-  // helpers de detalhe (Etapa A)
+  // Helpers de detalhe (reaproveitados da versão em tabela)
   const modLbl = m => m === 'debito' ? 'Déb' : m === 'credito_parcelado' ? 'Créd.parc' : m ? 'Créd' : '-';
   const modCor = m => m === 'debito' ? '#2980b9' : '#8e44ad';
-  const cel = (a, m, b, c) => `<div style="display:flex;gap:10px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:56px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:52px">${b}</span><span style="width:84px;text-align:right">${c}</span></div>`;
-  const rb = (kind, id, tipo, valor, label) => `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 7px;cursor:pointer;white-space:nowrap">${label}</button>`;
-  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:8px">${rb('pdv', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ Conferido')}</span>`;
-  const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:8px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 Cartão 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ Conferido')}</span>`;
+  const cel = (a, m, b, c) => `<div style="display:flex;gap:8px;padding:1px 0;font-size:12px;color:#555"><span style="width:40px">${a}</span><span style="width:52px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:46px">${b}</span><span style="width:80px;text-align:right">${c}</span></div>`;
+  const rb = (kind, id, tipo, valor, label) => `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 6px;cursor:pointer;white-space:nowrap">${label}</button>`;
+  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('pdv', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
+  const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ OK')}</span>`;
   const motivoLbl = m => ({ forma_errada: 'Pago em outra forma', venda_nao_processada: 'Venda perdida', conferido: 'Conferido', outra_comanda: 'Lançada em outra comanda', cartao_duplicado: 'Cartão passado 2x', recebimento_sem_venda: 'Conferido' }[m] || m || 'Resolvido');
   const linhaAcao = inner => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:2px 0">${inner}</div>`;
-  const vazio = '<div style="font-size:12px;color:#999">—</div>';
+  const bloco = (tit, inner) => `<div style="border:1px solid #eee;border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">${tit}${inner}</div>`;
+  const linhaVal = (lbl, val, forte) => `<div style="display:flex;justify-content:space-between;font-size:13px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${forte ? 'font-weight:700;' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
 
+  ccDetalhes = {}; ccResumoDia = {};
   let totInv = 0, totGA = 0, totDivB = 0, totRec = 0, totPixOk = 0, totPixKO = 0;
-  const linhas = datas.map(d => {
-    const DA = diasA[d], DB = diasB[d];
-    const aTemDet = DA ? (DA.invest.length || DA.gAlone.length || DA.ruido.length || DA.resolv.length) : 0;
-    // Coluna PDV — valor vendido + toda venda achou par na Getnet?
-    let pdvCell = '<span style="color:#ccc">—</span>';
-    if (DA) {
-      const invN = DA.invest.length; if (invN) totInv += invN;
-      const st = invN ? `<span style="color:#e74c3c">⚠️ ${invN} a investigar</span>` : '<span style="color:#27ae60">✓ bate</span>';
-      pdvCell = `<div style="font-weight:700">${ccBRL(DA.pdvBruto)}</div><div style="font-size:11px;margin-top:1px">${st}${DA.resolv.length ? ` <span style="color:#16a085">·✔️${DA.resolv.length}</span>` : ''}</div>`;
-    }
-    // Coluna Getnet — bruto → líquido + toda cobrança tem venda no PDV?
-    let gnetCell = '<span style="color:#ccc">—</span>';
-    if (DA || (DB && DB.esp)) {
-      const bruto = DA ? DA.gnetBruto : 0;
-      const liq = DB ? DB.esp : 0, til = DB && DB.estimado ? '~' : '';
-      const gaN = DA ? DA.gAlone.length : 0; if (gaN) totGA += gaN;
-      const st = gaN ? `<span style="color:#e67e22">🟠 ${gaN} cobrança s/ venda</span>` : '<span style="color:#27ae60">✓ bate</span>';
-      const flow = `<span style="color:#888">${bruto ? ccBRL(bruto) : '—'}</span> <span style="color:#ccc">→</span> <strong style="color:#333">${liq ? til + ccBRL(liq) : '…'}</strong>`;
-      gnetCell = `<div style="font-size:12px">${flow}</div><div style="font-size:11px;margin-top:1px">${st}</div>`;
-    }
-    // Coluna Banco — o que caiu + Etapa B (exato / falta a cair / recebeu menos)
-    let bancoCell = '<span style="color:#ccc">—</span>';
-    if (DB) {
-      let big, st;
-      if (DB.txt.indexOf('exato') >= 0) { big = ccBRL(DB.rec); st = '🟢 exato'; }
-      else if (DB.estimado) { big = ccBRL(DB.rec); st = `⏳ faltam ~${ccBRL(Math.max(0, DB.dif))}`; }
-      else if (DB.aguardando) {
-        if (DB.rec > 0) { big = ccBRL(DB.rec); st = DB.txt; }
-        else { big = `<span style="color:#bbb;font-weight:400">${DB.esp > 0 ? '~' + ccBRL(DB.esp) : '—'}</span>`; st = DB.txt; }
-      } else { big = ccBRL(DB.rec); st = `🔴 faltam ${ccBRL(DB.dif)}`; }
-      bancoCell = `<div style="font-weight:700">${big}</div><div style="font-size:11px;margin-top:1px;color:${DB.cor}">${st}</div>`;
-      totRec += DB.rec;
-      if (DB.txt.indexOf('recebeu menos') >= 0) totDivB++;
-    }
-    const PG = pixG[d];
-    let pixCell = '<span style="color:#ccc">—</span>', pixTemDet = false;
-    if (PG && PG.n) {
-      const nk = PG.semBanco.length, confN = PG.n - PG.gapN;
-      const gapNota = PG.gapN ? ` <span style="color:#c9930a;font-size:11px">⏳${PG.gapN} s/ extrato</span>` : '';
-      pixTemDet = nk > 0;
-      if (nk > 0) { pixCell = `<span style="color:#e67e22;font-weight:700">⚠️ ${nk}</span> <span style="color:#999;font-size:11px">de ${confN}</span>${gapNota}`; totPixKO += nk; }
-      else if (confN > 0) { pixCell = `<span style="color:#16a085">✔️ ${ccBRL(PG.total)}</span>${gapNota}`; totPixOk += confN; }
-      else { pixCell = `<span style="color:#c9930a">⏳ sem extrato</span> <span style="color:#999;font-size:11px">${ccBRL(PG.total)}</span>`; }
-    }
+  const allDays = [...new Set([...Object.keys(diasA), ...Object.keys(diasB), ...Object.keys(pixG)])].filter(d => d >= mesIni && d <= ate);
+
+  allDays.forEach(d => {
+    const DA = diasA[d], DB = diasB[d], PG = pixG[d];
+    const invN = DA ? DA.invest.length : 0, gaN = DA ? DA.gAlone.length : 0;
+    const pixKO = PG ? PG.semBanco.length : 0;
+    const confN = PG ? (PG.n - PG.gapN) : 0;
+    const recebeuMenos = DB && DB.txt.indexOf('recebeu menos') >= 0;
+    const estimado = DB && DB.estimado;
+    const rec = DB ? DB.rec : 0;
+
+    // Resumo p/ a célula do calendário
+    let cor = '#27ae60', chip = DB ? '✓ conferido' : '';
+    if (recebeuMenos) { cor = '#e74c3c'; chip = '🔴 faltou ' + ccBRL(DB.dif); }
+    else if (invN) { cor = '#e74c3c'; chip = '⚠️ ' + invN + ' a investigar'; }
+    else if (gaN || pixKO) { cor = '#e67e22'; chip = [gaN ? '🟠 ' + gaN + ' cobrança' : '', pixKO ? '⚡ ' + pixKO + ' pix' : ''].filter(Boolean).join(' · '); }
+    else if (estimado) { cor = '#c9930a'; chip = '⏳ fecha amanhã'; }
+    else if (DB && DB.aguardando) { cor = DB.cor; chip = DB.txt; }
+    else if (!DB) { cor = '#bbb'; chip = 'sem liquidação'; }
+    const valTxt = rec > 0 ? ccBRL(rec) : (estimado ? ccBRL(rec) : (DB && DB.esp > 0 ? '~' + ccBRL(DB.esp) : '—'));
+    ccResumoDia[d] = { cor, valTxt, chip };
+
+    // Totais dos cards
+    if (invN) totInv += invN;
+    if (gaN) totGA += gaN;
+    if (recebeuMenos) totDivB++;
+    totRec += rec;
+    if (pixKO > 0) totPixKO += pixKO; else if (confN > 0) totPixOk += confN;
+
+    // ----- Painel de conferências do dia -----
     const sdArr = DA ? [...DA.saleDays].sort() : [];
     const multiSale = sdArr.length > 1;
-    const subVendas = sdArr.length ? `<div style="font-size:10px;color:#aaa;font-weight:400">vendas ${sdArr.map(s => s.slice(8, 10) + '/' + s.slice(5, 7)).join(', ')}</div>` : '';
+    const subVendas = sdArr.length ? `vendas de ${sdArr.map(s => s.slice(8, 10) + '/' + s.slice(5, 7)).join(', ')}` : '';
+    const dchip = x => multiSale && x._vd ? `<span style="font-size:10px;color:#999;width:36px;display:inline-block;flex:none">${x._vd.slice(8, 10)}/${x._vd.slice(5, 7)}</span>` : '';
 
-    const temDet = aTemDet || pixTemDet;
-    const caret = temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : '';
-    let row = `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
-      <td><strong>${ccDT(d)}</strong>${caret}${subVendas}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${pdvCell}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${gnetCell}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${bancoCell}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${pixCell}</td>
-    </tr>`;
+    // Bloco 1 — PDV → Getnet
+    let b1 = linhaVal('Vendido (PDV)', ccBRL(DA ? DA.pdvBruto : 0), true) + linhaVal('Getnet (bruto)', ccBRL(DA ? DA.gnetBruto : 0));
+    const stA = invN ? `<span style="color:#e74c3c">⚠️ ${invN} venda(s) a investigar</span>` : (gaN ? `<span style="color:#e67e22">🟠 ${gaN} cobrança sem venda</span>` : '<span style="color:#27ae60">✓ bate</span>');
+    b1 += `<div style="font-size:12px;margin-top:4px">${stA}</div>`;
+    if (DA && invN) { const l = DA.invest.slice().sort((a, b) => (a._vd + a.hora).localeCompare(b._vd + b.hora)).map(p => linhaAcao(dchip(p) + cel(p.hora, p.mod, p.bandeira || '-', ccBRL(p.valor_bruto)) + btnsPdv(p))).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#e74c3c;font-weight:700">Venda no PDV sem nada na Getnet:</div>${l}`; }
+    if (DA && gaN) { const l = DA.gAlone.slice().sort((a, b) => (a._vd + (a.hora || '')).localeCompare(b._vd + (b.hora || ''))).map(x => linhaAcao(dchip(x) + cel(x.hora || '', x.mod, x.band || '-', ccBRL(x.valor)) + btnsGnet(x))).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Cobrança na Getnet sem venda no PDV:</div>${l}`; }
+    if (DA && DA.resolv.length) { const l = DA.resolv.slice().map(x => { const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet'; const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor; return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.85">${dchip(x)}${cel(x.hora || '', x.mod, band, ccBRL(val))}<span style="font-size:11px;color:#16a085;margin-left:6px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:4px">desfazer</button></div>`; }).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#16a085;font-weight:700">✔️ Resolvidos:</div>${l}`; }
+    if (DA && DA.ruido.length) b1 += `<div style="margin-top:6px;font-size:11px;color:#999">🔗 ${DA.ruido.length} par(es) de ruído (mesma venda digitada torto — não é problema).</div>`;
 
-    if (temDet) {
-      const dchip = x => multiSale && x._vd ? `<span style="font-size:10px;color:#999;width:38px;display:inline-block;flex:none">${x._vd.slice(8, 10)}/${x._vd.slice(5, 7)}</span>` : '';
-      let invList = '', gaList = '', ruList = '', resolvList = '';
-      if (DA) {
-        invList = DA.invest.slice().sort((a, b) => (a._vd + a.hora).localeCompare(b._vd + b.hora)).map(p => linhaAcao(dchip(p) + cel(p.hora, p.mod, p.bandeira || '-', ccBRL(p.valor_bruto)) + btnsPdv(p))).join('') || vazio;
-        gaList = DA.gAlone.slice().sort((a, b) => (a._vd + (a.hora || '')).localeCompare(b._vd + (b.hora || ''))).map(x => linhaAcao(dchip(x) + cel(x.hora || '', x.mod, x.band || '-', ccBRL(x.valor)) + btnsGnet(x))).join('') || vazio;
-        ruList = DA.ruido.slice().sort((a, b) => (a._vd + a.hora).localeCompare(b._vd + b.hora)).map(p => `<div style="font-size:11px;color:#999;padding:1px 0">${multiSale ? ccDT(p._vd).slice(0, 5) + ' ' : ''}${p.hora} · ${ccBRL(p.valor_bruto)} (PDV) ↔ ${ccBRL(p.ruido.valor)} (Getnet)</div>`).join('');
-        resolvList = DA.resolv.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(x => {
-          const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet';
-          const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor;
-          return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.8">${dchip(x)}${cel(x.hora || '', x.mod, band, ccBRL(val))}<span style="font-size:11px;color:#16a085;margin-left:8px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:6px">desfazer</button></div>`;
-        }).join('');
-      }
-      const pixList = (PG && PG.semBanco.length) ? PG.semBanco.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => `<div style="font-size:12px;color:#555;padding:1px 0">${multiSale && p._vd ? `<span style="font-size:10px;color:#999;width:38px;display:inline-block">${p._vd.slice(8, 10)}/${p._vd.slice(5, 7)}</span> ` : ''}${p.hora || ''} · ${ccBRL(p.valor_bruto)}</div>`).join('') : '';
-      row += `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="5" style="background:#fbfaf6;padding:10px 16px">
-        <div style="display:flex;gap:40px;flex-wrap:wrap">
-          ${DA && DA.invest.length ? `<div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${invList}</div>` : ''}
-          ${DA && DA.gAlone.length ? `<div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${gaList}</div>` : ''}
-          ${pixList ? `<div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">⚡ Pix do PDV sem entrada no banco &nbsp;<span style="color:#999;font-weight:400">(hora · valor)</span></div>${pixList}</div>` : ''}
-        </div>
-        ${DA && DA.resolv.length ? `<div style="margin-top:8px"><div style="font-size:12px;color:#16a085;font-weight:700;margin-bottom:3px">✔️ Resolvidos (caixa conferido)</div>${resolvList}</div>` : ''}
-        ${DA && DA.ruido.length ? `<div style="margin-top:8px"><div style="font-size:11px;color:#999;font-weight:600">🔗 ${DA.ruido.length} pares de ruído (mesma venda, valor/forma digitado diferente no PDV — não é problema):</div>${ruList}</div>` : ''}
-      </td></tr>`;
-    }
-    return row;
-  }).join('');
-  corpo.innerHTML = linhas;
+    // Bloco 2 — Getnet → Banco
+    let b2 = linhaVal('Líquido a receber', DB ? (estimado ? '~' : '') + ccBRL(DB.esp) : '—') + linhaVal('Caiu no banco', DB ? ccBRL(DB.rec) : '—', true);
+    b2 += `<div style="font-size:12px;margin-top:4px;color:${DB ? DB.cor : '#999'}">${DB ? ccStatusBancoTxt(DB) : '— sem dados do banco'}</div>`;
+
+    // Bloco 3 — Pix
+    let b3;
+    if (PG && PG.n) {
+      const stP = pixKO > 0 ? `<span style="color:#e67e22">⚠️ ${pixKO} de ${confN} não caíram</span>` : (PG.gapN ? `<span style="color:#c9930a">⏳ ${PG.gapN} sem extrato importado</span>` : `<span style="color:#16a085">🟢 ${confN} conferidos</span>`);
+      b3 = linhaVal('Total Pix (PDV)', ccBRL(PG.total), true) + `<div style="font-size:12px;margin-top:4px">${stP}</div>`;
+      if (pixKO > 0) { const l = PG.semBanco.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => `<div style="font-size:12px;color:#555;padding:1px 0">${multiSale && p._vd ? `<span style="font-size:10px;color:#999;width:36px;display:inline-block">${p._vd.slice(8, 10)}/${p._vd.slice(5, 7)}</span> ` : ''}${p.hora || ''} · ${ccBRL(p.valor_bruto)}</div>`).join(''); b3 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Pix do PDV sem entrada no banco:</div>${l}`; }
+    } else { b3 = '<div style="font-size:12px;color:#999">Sem Pix nesse dia.</div>'; }
+
+    const header = `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:10px">
+      <div><div style="font-size:15px;font-weight:800;color:#2c3e50">${ccDiaSemana(d)}, ${ccDT(d)}</div>${subVendas ? `<div style="font-size:11px;color:#999">${subVendas}</div>` : ''}</div>
+      <div style="text-align:right"><div style="font-size:11px;color:#999">recebido no banco</div><div style="font-size:20px;font-weight:800;color:#16a085">${rec > 0 ? ccBRL(rec) : '—'}</div></div>
+    </div>`;
+    ccDetalhes[d] = header
+      + bloco('<div style="font-size:13px;font-weight:700;color:#2c3e50;margin-bottom:4px">💳 PDV → Getnet</div>', b1)
+      + bloco('<div style="font-size:13px;font-weight:700;color:#2c3e50;margin-bottom:4px">🌐 Getnet → Banco</div>', b2)
+      + bloco('<div style="font-size:13px;font-weight:700;color:#2c3e50;margin-bottom:4px">⚡ Pix (PDV × banco)</div>', b3);
+  });
+
+  // Seleção (mantém o dia aberto, ou pega o mais recente com dado)
+  if (!ccDiaSel || !ccResumoDia[ccDiaSel]) {
+    const comDado = Object.keys(ccResumoDia).sort();
+    ccDiaSel = comDado.length ? comDado[comDado.length - 1] : '';
+  }
+  cal.innerHTML = ccCalNav() + ccCalGridHTML();
 
   const aviso = document.getElementById('car-aviso');
-  if (aviso) {
-    aviso.innerHTML = (B.faltaOFX && B.faltaOFX.length)
-      ? `<div style="background:#fff8e1;border:1px solid #f0c36d;border-radius:10px;padding:12px 16px;margin:4px 0 10px;color:#7a5c00"><i class="fas fa-hourglass-half"></i> <strong>Falta importar o extrato bancário (OFX)</strong> de: ${B.faltaOFX.join(', ')}. Esses dias só conciliam depois de importar o extrato (Gestão → Importar Extrato).</div>`
-      : '';
-  }
+  if (aviso) aviso.innerHTML = (B.faltaOFX && B.faltaOFX.length)
+    ? `<div style="background:#fff8e1;border:1px solid #f0c36d;border-radius:10px;padding:12px 16px;margin:4px 0 10px;color:#7a5c00"><i class="fas fa-hourglass-half"></i> <strong>Falta importar o extrato bancário (OFX)</strong> de: ${B.faltaOFX.join(', ')}. Esses dias só conciliam depois de importar o extrato (Gestão → Importar Extrato).</div>`
+    : '';
+
   if (cardsEl) {
     const card = (r, v, c) => `<div style="flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
     cardsEl.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
       ${card('⚠️ Vendas a investigar', String(totInv), totInv ? '#e74c3c' : '#27ae60')}
       ${card('🟠 Cobrança sem venda', String(totGA), totGA ? '#e67e22' : '#27ae60')}
-      ${card('🏦 Recebido no banco', ccBRL(totRec), '#27ae60')}
+      ${card('🏦 Recebido no mês', ccBRL(totRec), '#27ae60')}
       ${card('⚡ Pix não caíram', totPixKO + (totPixOk + totPixKO ? ` <span style="font-size:12px;color:#888">de ${totPixOk + totPixKO}</span>` : ''), totPixKO ? '#e67e22' : '#16a085')}
     </div>`;
   }
+
+  ccRenderDetalhe();
 }
 
 // ============ CAIXA EM ESPÉCIE — confere o dinheiro do dia → gera recebimento no Caixa ============

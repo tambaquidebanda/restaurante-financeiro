@@ -823,38 +823,27 @@
           <button id="cc-tab-cartao" onclick="ccMudarTab('cartao')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">💳 Cartão &amp; Pix</button>
           <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Caixa (espécie)</button>
         </div>
-        <div class="filtros">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <label style="font-size:13px;color:#555;">Período de</label>
-            <input type="date" id="cc-de" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="ccRenderAtual()">
-            <span style="font-size:13px;color:#555;">até</span>
-            <input type="date" id="cc-ate" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="ccRenderAtual()">
-            <button class="btn btn-outline btn-sm" onclick="ccRenderAtual()"><i class="fas fa-sync"></i> Atualizar</button>
-          </div>
+        <!-- seletor de período legado (oculto — a aba Cartão navega por mês no calendário) -->
+        <div class="filtros" style="display:none">
+          <input type="date" id="cc-de"><input type="date" id="cc-ate">
         </div>
 
         <!-- ===== Aba: CARTÃO & PIX (PDV → Getnet → Banco, um dia por linha) ===== -->
         <div id="cc-view-cartao">
           <div class="info-box">
             <i class="fas fa-lightbulb"></i>
-            <strong>Uma linha por dia de liquidação.</strong> Acompanhe o dinheiro nas três pontas: <strong>PDV</strong> (o que foi vendido) → <strong>Getnet</strong> (bruto → líquido, já descontada a taxa) → <strong>Banco</strong> (o que caiu). Se a corrente fecha, está tudo certo.
-            <br><span style="font-size:12px;color:#888">As vendas são agrupadas pelo <strong>dia em que o dinheiro cai</strong> (igual ao banco): fim de semana e feriado entram na linha da segunda — veja o "vendas ..." embaixo da data. 🟢 bate · ⚠️/🟠 tem algo pra ver — <strong>clique no dia</strong> pra abrir os detalhes e resolver caso a caso.</span>
+            <strong>Calendário de conciliação.</strong> Cada dia mostra o <strong>valor que caiu no banco</strong> e a cor da borda indica se há divergência. <strong>Clique num dia</strong> para abrir as três conferências: <strong>PDV → Getnet</strong>, <strong>Getnet → Banco</strong> e <strong>Pix</strong>.
+            <br><span style="font-size:12px;color:#888">🟢 conferido · 🟡 fecha amanhã (ainda vai cair) · 🟠 cobrança/pix a ver · 🔴 investigar. Fim de semana e feriado caem na segunda (dia da liquidação).</span>
           </div>
           <div id="car-cards"></div>
           <div id="car-aviso"></div>
-          <div class="tabela-box" style="overflow-x:auto">
-            <table class="tabela">
-              <thead>
-                <tr>
-                  <th>Dia (liquidação)</th>
-                  <th style="text-align:right">💳 PDV <span style="font-weight:400;color:#999;font-size:11px">vendido</span></th>
-                  <th style="text-align:right">🌐 Getnet <span style="font-weight:400;color:#999;font-size:11px">bruto → líquido</span></th>
-                  <th style="text-align:right">🏦 Banco <span style="font-weight:400;color:#999;font-size:11px">caiu</span></th>
-                  <th style="text-align:right">⚡ Pix</th>
-                </tr>
-              </thead>
-              <tbody id="car-corpo"><tr><td colspan="5" class="sem-dados">Selecione o período.</td></tr></tbody>
-            </table>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-top:6px">
+            <div style="flex:2 1 480px;min-width:300px">
+              <div id="car-cal"><div class="sem-dados" style="padding:30px;color:#999">Carregando…</div></div>
+            </div>
+            <div style="flex:1 1 320px;min-width:280px">
+              <div id="car-detalhe" style="border:1px solid #eee;border-radius:12px;padding:14px;background:#fdfdfd;min-height:200px"><div class="sem-dados" style="padding:20px;color:#999">Selecione um dia no calendário.</div></div>
+            </div>
           </div>
         </div>
 
