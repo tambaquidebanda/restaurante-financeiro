@@ -820,10 +820,8 @@
         </div>
         <!-- Abas -->
         <div style="display:flex;gap:4px;border-bottom:2px solid #eee;margin:4px 0 12px;">
-          <button id="cc-tab-banco" onclick="ccMudarTab('banco')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">Getnet × Banco</button>
-          <button id="cc-tab-pdv" onclick="ccMudarTab('pdv')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">PDV × Getnet</button>
-          <button id="cc-tab-resumo" onclick="ccMudarTab('resumo')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">Resumo do dia</button>
-          <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Caixa (dinheiro)</button>
+          <button id="cc-tab-cartao" onclick="ccMudarTab('cartao')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">💳 Cartão &amp; Pix</button>
+          <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Caixa (espécie)</button>
         </div>
         <div class="filtros">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -835,95 +833,50 @@
           </div>
         </div>
 
-        <!-- Aba: Getnet × Banco (Etapa B) -->
-        <div id="cc-view-banco">
+        <!-- ===== Aba: CARTÃO & PIX (PDV → Getnet → Banco, um dia por linha) ===== -->
+        <div id="cc-view-cartao">
           <div class="info-box">
             <i class="fas fa-lightbulb"></i>
-            Compara o <strong>líquido financeiro do extrato Getnet</strong> (já com a antecipação descontada) com o que
-            <strong>caiu no banco</strong>, por dia de crédito. Diferença tem que ser <strong>exata (R$ 0,00)</strong>.
-            🟢 exato · 🟠 fecha amanhã · 🔴 recebeu menos · ⏳ falta importar o OFX do dia.
+            <strong>Um dia por linha.</strong> Cada dia mostra as duas conferências do cartão: <strong>Vendas → Getnet</strong> (o PDV bateu com a operadora?)
+            e <strong>Getnet → Banco</strong> (o dinheiro caiu?). O <strong>⚡ Pix</strong> cai direto no banco.
+            <br><span style="font-size:12px;color:#888">🟢 tudo certo · ⚠️/🟠 tem algo pra ver — <strong>clique no dia</strong> pra abrir os detalhes e resolver caso a caso. Só precisa olhar de perto os dias marcados.</span>
           </div>
-          <div id="cc-cards"></div>
-          <div id="cc-aviso"></div>
-          <div class="tabela-box">
-            <table class="tabela">
-              <thead>
-                <tr>
-                  <th>Liquidação</th><th>Vendas de</th><th style="text-align:right">Esperado (extrato)</th>
-                  <th style="text-align:right">Recebido (banco)</th><th style="text-align:right">Diferença</th><th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="cc-corpo"><tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Aba: PDV × Getnet (Etapa A) -->
-        <div id="cc-view-pdv" style="display:none">
-          <div class="info-box">
-            <i class="fas fa-lightbulb"></i>
-            Cruza <strong>venda por venda</strong> o cartão do <strong>PDV</strong> com a <strong>Getnet</strong> (valor±R$0,50 + horário, fuso normalizado)
-            e <strong>separa o ruído</strong> do erro real automaticamente.
-            <strong>⚠️ Investigar</strong> = venda no PDV sem NADA na Getnet (provável venda perdida) · <strong>🟠 Cobrança sem venda</strong> = a Getnet cobrou e não tem venda no PDV (duplicidade/não lançada) · 🟢 ok.
-            <br><span style="font-size:12px;color:#888">O "ruído" (mesma venda digitada com valor/forma diferente) é detectado por horário e sai da conta. Clique num dia para ver os detalhes e <strong>Resolver</strong> cada caso (Outra forma · Perdida · Conferido) — o caso resolvido some da pendência e fica com histórico de quem conferiu.</span>
-          </div>
-          <div id="cca-cards"></div>
-          <div class="tabela-box">
-            <table class="tabela">
-              <thead>
-                <tr>
-                  <th>Dia (venda)</th><th style="text-align:right">Vendas PDV</th><th style="text-align:right">Casadas</th>
-                  <th style="text-align:right">⚠️ Investigar</th><th style="text-align:right">Cobrança s/ venda</th><th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="cca-corpo"><tr><td colspan="6" class="sem-dados">Selecione o período.</td></tr></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Aba: Resumo do dia (fechamento — todas as formas do PDV) -->
-        <div id="cc-view-resumo" style="display:none">
-          <div class="info-box">
-            <i class="fas fa-lightbulb"></i>
-            <strong>Fechamento do dia</strong> — total de vendas do PDV por forma de pagamento, dia a dia.
-            <br><span style="font-size:12px;color:#888">💳 Cartão confere na aba <strong>PDV × Getnet</strong> · ⚡ Pix cai direto no banco · 💵 Dinheiro fica na gaveta (fundo de caixa, usado nos pagamentos em dinheiro) · 🎟️ Voucher, 📝 Conta Assinada e 🎁 Cortesia são informativos.</span>
-          </div>
-          <div id="crd-cards"></div>
+          <div id="car-cards"></div>
+          <div id="car-aviso"></div>
           <div class="tabela-box" style="overflow-x:auto">
             <table class="tabela">
               <thead>
                 <tr>
                   <th>Dia</th>
-                  <th style="text-align:right">💳 Cartão</th><th style="text-align:right">⚡ Pix</th><th style="text-align:right">💵 Dinheiro</th>
-                  <th style="text-align:right">🛵 iFood</th><th style="text-align:right">🎟️ Voucher</th><th style="text-align:right">📝 Fiado</th>
-                  <th style="text-align:right">🎁 Cortesia</th><th style="text-align:right">Total</th>
+                  <th>💳 Vendas → Getnet</th>
+                  <th>🏦 Getnet → Banco</th>
+                  <th style="text-align:right">⚡ Pix (PDV)</th>
                 </tr>
               </thead>
-              <tbody id="crd-corpo"><tr><td colspan="9" class="sem-dados">Selecione o período.</td></tr></tbody>
+              <tbody id="car-corpo"><tr><td colspan="4" class="sem-dados">Selecione o período.</td></tr></tbody>
             </table>
           </div>
         </div>
 
-        <!-- ===== CAIXA (fechamento do dinheiro físico) ===== -->
+        <!-- ===== Aba: CAIXA (espécie) — confere o dinheiro do dia → recebimento ===== -->
         <div id="cc-view-caixa" style="display:none">
           <div class="info-box">
             <i class="fas fa-lightbulb"></i>
-            <strong>Fechamento de Caixa</strong> — confere o dinheiro contado na gaveta com o que o sistema espera.
-            <br><span style="font-size:12px;color:#888">Esperado = <strong>fundo inicial</strong> + <strong>vendas em dinheiro</strong> (PDV) − <strong>pagamentos em dinheiro</strong> (contas pagas no Caixa). A diferença mostra sobra (+) ou falta (−).</span>
+            <strong>Caixa em espécie.</strong> A pessoa confere o <strong>dinheiro do dia</strong> e confirma — o valor vira um <strong>recebimento no Caixa</strong> (entra no financeiro).
+            <br><span style="font-size:12px;color:#888">Os pagamentos em dinheiro já são lançados no Contas a Pagar, então não entram aqui.</span>
           </div>
-          <div id="cxa-painel" style="margin:14px 0"></div>
-          <h4 style="margin:22px 0 8px;color:#2c3e50">Histórico de fechamentos</h4>
+          <div id="cxe-painel" style="margin:14px 0"></div>
+          <h4 style="margin:22px 0 8px;color:#2c3e50">Dias conferidos</h4>
           <div class="tabela-box" style="overflow-x:auto">
             <table class="tabela">
               <thead>
                 <tr>
                   <th>Dia</th>
-                  <th style="text-align:right">Fundo</th><th style="text-align:right">+ Vendas</th><th style="text-align:right">− Pagtos</th>
-                  <th style="text-align:right">Esperado</th><th style="text-align:right">Contado</th><th style="text-align:right">Diferença</th>
-                  <th>Fechado por</th><th></th>
+                  <th style="text-align:right">Vendas dinheiro (PDV)</th><th style="text-align:right">Conferido</th><th style="text-align:right">Diferença</th>
+                  <th>Recebimento</th><th>Confirmado por</th><th></th>
                 </tr>
               </thead>
-              <tbody id="cxa-historico"><tr><td colspan="9" class="sem-dados">Selecione o período.</td></tr></tbody>
+              <tbody id="cxe-corpo"><tr><td colspan="7" class="sem-dados">Selecione o período.</td></tr></tbody>
             </table>
           </div>
         </div>

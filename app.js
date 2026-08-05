@@ -3440,7 +3440,7 @@ function importarGetnetDireto(input) {
     if (!confirm(`Importar arquivo Getnet: ${r.totais.qtd_vendas} vendas e ${r.totais.qtd_lotes} liquidações?`)) return;
     getnetImport = { fileName: file.name, resultado: r };
     await gravarGetnet();
-    if (document.getElementById('cc-tab-banco')) ccMudarTab('banco');
+    if (document.getElementById('cc-tab-cartao')) ccMudarTab('cartao');
   };
   reader.readAsText(file, 'latin1');
 }
@@ -3574,10 +3574,10 @@ function importarPDVDireto(input) {
     const cartao = r.vendas.filter(v => v.grupo === 'cartao');
     const dias = [...new Set(r.vendas.map(v => v.data))].sort();
     const p = d => d ? d.split('-').reverse().join('/') : '';
-    if (!confirm(`Importar ${r.vendas.length} vendas do PDV (${p(dias[0])} a ${p(dias[dias.length - 1])})?\n\nTodas as formas entram no Resumo do dia; ${cartao.length} são de cartão e cruzam com a Getnet.`)) return;
+    if (!confirm(`Importar ${r.vendas.length} vendas do PDV (${p(dias[0])} a ${p(dias[dias.length - 1])})?\n\n${cartao.length} são de cartão (cruzam com a Getnet); as em dinheiro/pix aparecem na conferência.`)) return;
     pdvImport = { fileName: file.name, resultado: r };
     await gravarPDV();
-    if (document.getElementById('cc-tab-pdv')) ccMudarTab('pdv');
+    if (document.getElementById('cc-tab-cartao')) ccMudarTab('cartao');
   };
   reader.readAsText(file, 'utf-8');
 }
@@ -3608,229 +3608,23 @@ async function ccFetchPaginado(build) {
   return out;
 }
 
-let ccTab = 'banco';
+let ccTab = 'cartao';
 function ccRenderAtual() {
-  if (ccTab === 'pdv') renderEtapaA();
-  else if (ccTab === 'resumo') renderResumoDia();
-  else if (ccTab === 'caixa') renderFechamentoCaixa();
-  else renderConciliacaoCartao();
+  if (ccTab === 'caixa') renderCaixaEspecie();
+  else renderCartao();
 }
 function ccMudarTab(t) {
   ccTab = t;
-  const views = { banco: 'cc-view-banco', pdv: 'cc-view-pdv', resumo: 'cc-view-resumo', caixa: 'cc-view-caixa' };
+  const views = { cartao: 'cc-view-cartao', caixa: 'cc-view-caixa' };
   Object.entries(views).forEach(([key, id]) => { const el = document.getElementById(id); if (el) el.style.display = t === key ? '' : 'none'; });
-  [['cc-tab-banco', 'banco'], ['cc-tab-pdv', 'pdv'], ['cc-tab-resumo', 'resumo'], ['cc-tab-caixa', 'caixa']].forEach(([id, key]) => {
+  [['cc-tab-cartao', 'cartao'], ['cc-tab-caixa', 'caixa']].forEach(([id, key]) => {
     const el = document.getElementById(id); if (!el) return;
     el.style.borderBottomColor = t === key ? '#2c3e50' : 'transparent'; el.style.color = t === key ? '#2c3e50' : '#999';
   });
   ccRenderAtual();
 }
 
-// ============ RESUMO DO DIA (fechamento) — todas as formas do PDV, por dia ============
-// Colunas fixas na ordem de leitura do caixa. 'outro' entra só no total do dia.
-const RESUMO_COLS = ['cartao', 'pix', 'dinheiro', 'ifood', 'voucher', 'conta_assinada', 'cortesia'];
-async function renderResumoDia() {
-  const db = obterSupabase();
-  const corpo = document.getElementById('crd-corpo');
-  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
-  if (!de || !ate || !corpo) return;
-  const ncol = RESUMO_COLS.length + 2;
-  corpo.innerHTML = `<tr><td colspan="${ncol}" class="sem-dados">Carregando…</td></tr>`;
-  let vs;
-  try {
-    vs = await ccFetchPaginado(() => db.from('pdv_vendas')
-      .select('data_hora_utc,valor_bruto,forma_pagamento')
-      .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
-  } catch (e) { corpo.innerHTML = `<tr><td colspan="${ncol}" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>`; return; }
-  if (!vs.length) { corpo.innerHTML = `<tr><td colspan="${ncol}" class="sem-dados">Nenhuma venda no período. Use "Importar Relatório do PDV".</td></tr>`; return; }
-
-  const dias = {}; const totCol = {};
-  vs.forEach(v => {
-    const dia = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString().slice(0, 10);
-    const D = (dias[dia] = dias[dia] || { total: 0 });
-    const f = v.forma_pagamento || 'outro';
-    D[f] = (D[f] || 0) + (v.valor_bruto || 0);
-    D.total += (v.valor_bruto || 0);
-    totCol[f] = (totCol[f] || 0) + (v.valor_bruto || 0);
-    totCol.total = (totCol.total || 0) + (v.valor_bruto || 0);
-  });
-
-  const brl = v => v ? 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '<span style="color:#ccc">—</span>';
-  const dt = d => d.split('-').reverse().join('/');
-  const datas = Object.keys(dias).filter(d => d >= de && d <= ate).sort().reverse();
-  const cell = v => `<td style="text-align:right;font-variant-numeric:tabular-nums">${brl(v)}</td>`;
-  corpo.innerHTML = datas.map(d => {
-    const D = dias[d];
-    return `<tr><td><strong>${dt(d)}</strong></td>${RESUMO_COLS.map(c => cell(D[c])).join('')}<td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${brl(D.total)}</td></tr>`;
-  }).join('') + `<tr style="border-top:2px solid #ddd;background:#faf9f5"><td><strong>Total</strong></td>${RESUMO_COLS.map(c => `<td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${brl(totCol[c])}</td>`).join('')}<td style="text-align:right;font-weight:800;font-variant-numeric:tabular-nums">${brl(totCol.total)}</td></tr>`;
-
-  const cards = document.getElementById('crd-cards');
-  if (cards) {
-    const card = (r, v, c, sub) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${brl(v)}</div>${sub ? `<div style="font-size:11px;color:#999">${sub}</div>` : ''}</div>`;
-    cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
-      ${card('💳 Cartão (Getnet)', totCol.cartao, '#8e44ad', 'confere na aba PDV × Getnet')}
-      ${card('⚡ Pix', totCol.pix, '#16a085', 'cai direto no banco')}
-      ${card('💵 Dinheiro', totCol.dinheiro, '#e67e22', 'fica na gaveta (fundo de caixa)')}
-      ${card('Total do período', totCol.total, '#2c3e50', '')}
-    </div>`;
-  }
-}
-
-// ============ FECHAMENTO DE CAIXA (dinheiro físico da gaveta) ============
-let cxaDataSel = '';
-let cxaCtx = { data: '', entradas: 0, saidas: 0, semCaixa: false };
-function cxaBRL(v) { return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }); }
-function cxaHoje() { return new Date().toISOString().slice(0, 10); }
-function cxaNum(id) { const el = document.getElementById(id); return el ? (parseFloat(el.value) || 0) : 0; }
-function cxaCaixaBancoId() {
-  return (bancosCadastrados || []).find(b => { const n = (b.nome || '').toLowerCase(); return n.includes('caixa') || n.includes('dinheiro'); })?.id || null;
-}
-function cxaTrocarData(d) { cxaDataSel = d; cxaRenderPainel(); }
-
-async function renderFechamentoCaixa() {
-  if (!document.getElementById('cxa-painel')) return;
-  if (!cxaDataSel) cxaDataSel = cxaHoje();
-  await cxaRenderPainel();
-  await cxaRenderHistorico();
-}
-
-async function cxaRenderPainel() {
-  const painel = document.getElementById('cxa-painel');
-  if (!painel) return;
-  const data = cxaDataSel;
-  painel.innerHTML = `<div style="background:#fff;border:1px solid #eee;border-radius:10px;padding:16px 18px">Carregando ${data.split('-').reverse().join('/')}…</div>`;
-  const db = obterSupabase();
-
-  // Entradas = vendas em dinheiro do dia (local Manaus)
-  let entradas = 0;
-  try {
-    const vs = await ccFetchPaginado(() => db.from('pdv_vendas').select('valor_bruto')
-      .eq('forma_pagamento', 'dinheiro')
-      .gte('data_hora_utc', data + 'T00:00:00-04:00').lte('data_hora_utc', data + 'T23:59:59-04:00'));
-    entradas = vs.reduce((s, v) => s + (v.valor_bruto || 0), 0);
-  } catch (e) {}
-
-  // Saídas = pagamentos em dinheiro (lançamentos pagos no banco Caixa) do dia
-  const caixaId = cxaCaixaBancoId();
-  let saidas = 0;
-  if (caixaId) {
-    try {
-      const ls = await ccFetchPaginado(() => db.from('lancamentos').select('valor')
-        .eq('tipo', 'pagar').eq('status', 'pago').eq('banco_id', caixaId).eq('data_pagamento', data));
-      saidas = ls.reduce((s, l) => s + (Number(l.valor) || 0), 0);
-    } catch (e) {}
-  }
-
-  // Fechamento já salvo desse dia (se houver) + fundo herdado do último dia fechado
-  let ex = null, fundoDefault = 0;
-  try { const { data: a } = await db.from('caixa_fechamentos').select('*').eq('data', data).limit(1); ex = a && a[0]; } catch (e) {}
-  if (ex) { fundoDefault = Number(ex.fundo_inicial) || 0; }
-  else {
-    try { const { data: p } = await db.from('caixa_fechamentos').select('contagem_fisica').lt('data', data).order('data', { ascending: false }).limit(1); if (p && p[0]) fundoDefault = Number(p[0].contagem_fisica) || 0; } catch (e) {}
-  }
-  const contadoDefault = ex ? (Number(ex.contagem_fisica) || 0) : '';
-  const obsDefault = ex ? (ex.observacao || '') : '';
-
-  cxaCtx = { data, entradas, saidas, semCaixa: !caixaId };
-
-  const linha = (lbl, val, extra) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f2f2f2">
-      <span style="color:#555">${lbl}</span><span style="font-weight:600;font-variant-numeric:tabular-nums">${val}</span></div>` + (extra || '');
-  const inp = (id, v, ph) => `<input type="number" step="0.01" min="0" id="${id}" value="${v}" placeholder="${ph || '0,00'}" oninput="cxaRecalc()" style="width:140px;text-align:right;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-variant-numeric:tabular-nums">`;
-
-  painel.innerHTML = `
-    <div style="background:#fff;border:1px solid #eee;border-radius:10px;padding:16px 18px;max-width:520px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-weight:700;color:#2c3e50">Fechamento do dia</span>
-          <input type="date" id="cxa-data" value="${data}" onchange="cxaTrocarData(this.value)" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-        </div>
-        ${ex ? `<span style="font-size:12px;background:#e8f5e9;color:#2e7d32;border-radius:12px;padding:3px 10px;font-weight:600">✔️ fechado</span>` : ''}
-      </div>
-      ${cxaCtx.semCaixa ? `<div style="background:#fff3cd;color:#856404;font-size:12px;border-radius:6px;padding:7px 10px;margin-bottom:10px">⚠️ Banco "Caixa/Dinheiro" não encontrado — os pagamentos em dinheiro não foram somados.</div>` : ''}
-      ${linha('Fundo inicial (troco)', inp('cxa-fundo', fundoDefault, '0,00'))}
-      ${linha('+ Vendas em dinheiro (PDV)', `<span style="color:#2e7d32">${cxaBRL(entradas)}</span>`)}
-      ${linha('− Pagamentos em dinheiro (Caixa)', `<span style="color:#c0392b">${cxaBRL(saidas)}</span>`)}
-      ${linha('= Saldo esperado na gaveta', `<span id="cxa-esperado" style="font-weight:700">—</span>`)}
-      ${linha('Contagem física (gaveta)', inp('cxa-contado', contadoDefault, '0,00'))}
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;margin-top:4px;border-top:2px solid #eee">
-        <span style="font-weight:700;color:#2c3e50">Diferença</span>
-        <span id="cxa-diferenca" style="font-weight:800;font-size:17px;font-variant-numeric:tabular-nums">—</span>
-      </div>
-      <textarea id="cxa-obs" placeholder="Observação (opcional)" style="width:100%;margin-top:8px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;min-height:44px">${obsDefault}</textarea>
-      <button onclick="salvarFechamentoCaixa()" style="margin-top:10px;width:100%;background:#2c3e50;color:#fff;border:0;border-radius:8px;padding:10px;font-size:14px;font-weight:600;cursor:pointer">${ex ? 'Atualizar fechamento' : 'Fechar caixa'}</button>
-    </div>`;
-  cxaRecalc();
-}
-
-// Recalcula esperado e diferença ao digitar (fundo + entradas − saídas; contado − esperado)
-function cxaRecalc() {
-  const esperado = cxaNum('cxa-fundo') + cxaCtx.entradas - cxaCtx.saidas;
-  const esp = document.getElementById('cxa-esperado'); if (esp) esp.textContent = cxaBRL(esperado);
-  const contadoEl = document.getElementById('cxa-contado');
-  const dif = document.getElementById('cxa-diferenca'); if (!dif) return;
-  if (!contadoEl || contadoEl.value === '') { dif.textContent = '—'; dif.style.color = '#999'; return; }
-  const d = cxaNum('cxa-contado') - esperado;
-  dif.textContent = (d > 0 ? '+' : '') + cxaBRL(d) + (Math.abs(d) < 0.005 ? ' ✔️' : (d < 0 ? ' (falta)' : ' (sobra)'));
-  dif.style.color = Math.abs(d) < 0.005 ? '#2e7d32' : (d < 0 ? '#c0392b' : '#e67e22');
-}
-
-async function salvarFechamentoCaixa() {
-  if (!(await garantirSessao())) return;
-  const contadoEl = document.getElementById('cxa-contado');
-  if (!contadoEl || contadoEl.value === '') { mostrarToast('Informe a contagem física da gaveta.', 'erro'); return; }
-  const db = obterSupabase();
-  const fundo = cxaNum('cxa-fundo'), contado = cxaNum('cxa-contado');
-  const esperado = fundo + cxaCtx.entradas - cxaCtx.saidas;
-  const diff = contado - esperado;
-  let email = '';
-  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
-  const { error } = await db.from('caixa_fechamentos').upsert({
-    data: cxaCtx.data, fundo_inicial: fundo, entradas_dinheiro: cxaCtx.entradas, saidas_dinheiro: cxaCtx.saidas,
-    saldo_esperado: esperado, contagem_fisica: contado, diferenca: diff,
-    observacao: (document.getElementById('cxa-obs')?.value || '').trim(),
-    fechado_por: email, fechado_em: new Date().toISOString()
-  }, { onConflict: 'data' });
-  if (error) { mostrarToast('Erro ao salvar: ' + error.message, 'erro'); return; }
-  mostrarToast('Caixa fechado ✔️', 'sucesso');
-  cxaRenderPainel(); cxaRenderHistorico();
-}
-
-async function excluirFechamentoCaixa(data) {
-  if (!confirm('Reabrir/excluir o fechamento de ' + data.split('-').reverse().join('/') + '?')) return;
-  const db = obterSupabase();
-  const { error } = await db.from('caixa_fechamentos').delete().eq('data', data);
-  if (error) { mostrarToast('Erro ao excluir: ' + error.message, 'erro'); return; }
-  mostrarToast('Fechamento removido', 'sucesso');
-  cxaRenderPainel(); cxaRenderHistorico();
-}
-
-async function cxaRenderHistorico() {
-  const corpo = document.getElementById('cxa-historico');
-  if (!corpo) return;
-  const db = obterSupabase();
-  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
-  if (!de || !ate) return;
-  corpo.innerHTML = `<tr><td colspan="9" class="sem-dados">Carregando…</td></tr>`;
-  let rows = [];
-  try { const { data } = await db.from('caixa_fechamentos').select('*').gte('data', de).lte('data', ate).order('data', { ascending: false }); rows = data || []; } catch (e) {}
-  if (!rows.length) { corpo.innerHTML = `<tr><td colspan="9" class="sem-dados">Nenhum fechamento no período.</td></tr>`; return; }
-  const cor = d => Math.abs(d) < 0.005 ? '#2e7d32' : (d < 0 ? '#c0392b' : '#e67e22');
-  corpo.innerHTML = rows.map(r => {
-    const d = Number(r.diferenca) || 0;
-    const dtxt = (d > 0 ? '+' : '') + cxaBRL(d) + (Math.abs(d) < 0.005 ? ' ✔️' : (d < 0 ? ' ⚠️' : ''));
-    const td = v => `<td style="text-align:right;font-variant-numeric:tabular-nums">${cxaBRL(v)}</td>`;
-    return `<tr>
-      <td><strong>${r.data.split('-').reverse().join('/')}</strong></td>
-      ${td(r.fundo_inicial)}${td(r.entradas_dinheiro)}${td(r.saidas_dinheiro)}${td(r.saldo_esperado)}${td(r.contagem_fisica)}
-      <td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:${cor(d)}">${dtxt}</td>
-      <td style="font-size:12px;color:#888">${r.fechado_por || '—'}</td>
-      <td style="text-align:right;white-space:nowrap">
-        <button title="Reabrir" onclick="cxaTrocarData('${r.data}');window.scrollTo({top:0,behavior:'smooth'})" style="border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:12px">abrir</button>
-        <button title="Excluir" onclick="excluirFechamentoCaixa('${r.data}')" style="border:1px solid #f0d0d0;background:#fff;color:#c0392b;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:12px">excluir</button>
-      </td>
-    </tr>`;
-  }).join('');
-}
+// ============ CARTÃO & PIX — uma tela, um dia por linha (PDV → Getnet → Banco) ============
 
 async function carregarConciliacaoCartao() {
   if (!(await garantirSessao())) return;
@@ -3840,179 +3634,30 @@ async function carregarConciliacaoCartao() {
   ccRenderAtual();
 }
 
-async function renderConciliacaoCartao() {
-  const db = obterSupabase();
-  const corpo = document.getElementById('cc-corpo');
-  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
-  if (!de || !ate || !corpo) return;
-  corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Carregando…</td></tr>';
+const ccBRL = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+const ccDT = d => d.split('-').reverse().join('/');
 
-  // ESPERADO = líquido financeiro do extrato (Registro Tipo 6: CS=antecipação + PG=débito),
-  // por data de crédito. Esse valor JÁ inclui o custo de antecipação → bate EXATO com o banco.
-  let fin;
-  try {
-    fin = await ccFetchPaginado(() => db.from('card_lotes_pagamento')
-      .select('data_pagamento,modalidade,valor_liquido_esperado')
-      .gte('data_pagamento', de).lte('data_pagamento', ate));
-  } catch (e) {
-    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe arquivos da Getnet primeiro (Gestão → Importar Getnet).</td></tr>';
-    return;
-  }
-  const esperado = {}, debFin = {};
-  fin.forEach(x => {
-    const d = x.data_pagamento; if (!d) return;
-    const v = Number(x.valor_liquido_esperado) || 0;
-    esperado[d] = (esperado[d] || 0) + v;
-    if (x.modalidade === 'debito') debFin[d] = (debFin[d] || 0) + v;
-  });
-
-  // RECEBIDO = créditos GETNET no banco (OFX)
-  const { data: banco } = await db.from('lancamentos')
-    .select('data_pagamento,valor').eq('tipo', 'receber').eq('status', 'pago')
-    .ilike('descricao', '%GETNET%').gte('data_pagamento', de).lte('data_pagamento', ate);
-  const recebido = {};
-  (banco || []).forEach(b => { const d = (b.data_pagamento || '').slice(0, 10); recebido[d] = (recebido[d] || 0) + (Number(b.valor) || 0); });
-
-  // Vendas líquido (por dia de liquidação = próximo dia útil) — só para calcular o custo de antecipação
-  const deV = new Date(de + 'T12:00:00'); deV.setDate(deV.getDate() - 6);
-  let vendas = [];
-  try {
-    vendas = await ccFetchPaginado(() => db.from('card_transacoes')
-      .select('data_venda,valor_liquido').eq('tipo_registro', 'venda')
-      .gte('data_venda', deV.toISOString().slice(0, 10)).lte('data_venda', ate));
-  } catch (e) {}
-  // Mapeia cada venda para a PRÓXIMA data de crédito que EXISTE no extrato. Assim o
-  // acúmulo de fim de semana E de feriado segue o calendário real da Getnet (não um
-  // seg-sex fixo) — as datas de crédito do extrato já pulam finais de semana/feriados.
-  const creditDates = [...new Set(fin.map(x => x.data_pagamento).filter(Boolean))].sort();
-  const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
-  const vLiq = {}, vLiqDias = {};
-  vendas.forEach(v => {
-    if (!v.data_venda) return;
-    const s = proxCredito(v.data_venda);
-    if (!s) return;
-    vLiq[s] = (vLiq[s] || 0) + (Number(v.valor_liquido) || 0);
-    (vLiqDias[s] = vLiqDias[s] || new Set()).add(v.data_venda);
-  });
-
-  const hoje = new Date().toISOString().slice(0, 10);
-  const datas = [...new Set([...Object.keys(esperado), ...Object.keys(recebido)])]
-    .filter(d => d >= de && d <= ate).sort().reverse();
-  const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-  const dt = d => d.split('-').reverse().join('/');
-
-  // Até que data o extrato bancário (OFX) já foi importado — depois disso, dias sem
-  // crédito no banco significam "OFX ainda não importado", não "dinheiro faltando".
-  const bankDates = Object.keys(recebido);
-  const maxBankDate = bankDates.length ? bankDates.sort().slice(-1)[0] : null;
-
-  let totEsp = 0, totRec = 0, nDiv = 0, custoAntecip = 0, baseCredito = 0;
-  const faltaOFX = [];
-  const linhas = datas.map(d => {
-    const esp = esperado[d] || 0, rec = recebido[d] || 0, dif = esp - rec;
-    totEsp += esp; totRec += rec;
-    let cor, txt, aguardando = false, estimado = false, espMostrar = esp, difMostrar = dif;
-    if (rec > 0 && Math.abs(dif) <= 1) {
-      // Extrato financeiro final = banco, ao centavo.
-      cor = '#27ae60'; txt = '🟢 exato';
-      // Custo de antecipação = vendas líquido − financeiro. Só conta dias com vendas
-      // COMPLETAS (custo entre 0 e ~3%); dias de borda com vendas parciais dão negativo.
-      const c = (vLiq[d] || 0) - esp;
-      if (vLiq[d] && c >= 0 && c <= esp * 0.03) { custoAntecip += c; baseCredito += (vLiq[d] - (debFin[d] || 0)); }
-    } else if (dif > 1) {
-      // Extrato diz MAIS que o banco.
-      if (rec === 0 && (!maxBankDate || d > maxBankDate)) { cor = '#e67e22'; txt = '⏳ importe o OFX de ' + dt(d); faltaOFX.push(dt(d)); aguardando = true; }
-      else { cor = '#e74c3c'; txt = '🔴 recebeu menos'; nDiv++; }
-    } else {
-      // Extrato < banco: no arquivo SFTP a antecipação final desse dia fecha no arquivo do
-      // dia seguinte. Mostra uma ESTIMATIVA pelo líquido das vendas (pra ver que bateu).
-      const ep = vLiq[d] || 0;
-      if (ep > 0 && ep >= rec * 0.9) { espMostrar = ep; difMostrar = ep - rec; estimado = true; cor = '#c9930a'; txt = '🟠 fecha amanhã'; }
-      else if (esp === 0 && rec > 0) { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; aguardando = true; }
-      else                           { cor = '#e67e22'; txt = '🟠 fecha amanhã'; aguardando = true; }
-    }
-    const diasArr = [...(vLiqDias[d] || [])].sort();
-    const diasTxt = diasArr.length ? diasArr.map(dt).join(', ') : '—';
-    const difCel = aguardando ? '<span style="color:#999">—</span>'
-      : `<span style="color:${estimado ? '#c9930a' : (Math.abs(difMostrar) > 1 ? '#e74c3c' : '#555')}">${brl(difMostrar)}</span>`;
-    return `<tr${estimado ? ' title="Estimado pelo líquido das vendas — o valor exato fecha no arquivo Getnet de amanhã"' : ''}>
-      <td><strong>${dt(d)}</strong></td>
-      <td style="font-size:12px;color:#777">${diasTxt}</td>
-      <td style="text-align:right">${brl(espMostrar)}${estimado ? ' <span style="font-size:11px;color:#c9930a">(estimado)</span>' : ''}</td>
-      <td style="text-align:right">${brl(rec)}</td>
-      <td style="text-align:right">${difCel}</td>
-      <td style="color:${cor};font-weight:600">${txt}</td>
-    </tr>`;
-  }).join('');
-
-  corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
-  const aviso = document.getElementById('cc-aviso');
-  if (aviso) {
-    const dias = [...new Set(faltaOFX)];
-    aviso.innerHTML = dias.length
-      ? `<div style="background:#fff8e1;border:1px solid #f0c36d;border-radius:10px;padding:12px 16px;margin:4px 0 10px;color:#7a5c00">
-           <i class="fas fa-hourglass-half"></i> <strong>Falta importar o extrato bancário (OFX)</strong> de: ${dias.join(', ')}.
-           Esses dias só conciliam depois do time importar o extrato do banco (Gestão → Importar Extrato).
-         </div>`
-      : '';
-  }
-  const cards = document.getElementById('cc-cards');
-  if (cards) {
-    const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px">
-      <div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
-    const pctCusto = baseCredito > 0 ? (custoAntecip / baseCredito * 100) : 0;
-    cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
-      ${card('Esperado (extrato)', brl(totEsp), '#2c3e50')}
-      ${card('Recebido (banco)', brl(totRec), '#27ae60')}
-      ${card('Custo de antecipação', brl(custoAntecip > 0 ? custoAntecip : 0) + (baseCredito > 0 ? `  <span style="font-size:12px;color:#888">(${pctCusto.toFixed(2).replace('.', ',')}% do crédito)</span>` : ''), '#e67e22')}
-      ${card('Divergências', String(nDiv), nDiv ? '#e74c3c' : '#27ae60')}
-    </div>`;
-  }
-}
-
-// ── Etapa A: PDV × Getnet (venda por venda) ──────────────────────────────────
-let ccaDetalhe = {};
-function ccaToggle(dia) {
-  const el = document.getElementById('cca-det-' + dia.replace(/-/g, ''));
-  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
-}
-
-async function renderEtapaA() {
-  const db = obterSupabase();
-  const corpo = document.getElementById('cca-corpo');
-  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
-  if (!de || !ate || !corpo) return;
-  corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Cruzando vendas…</td></tr>';
-  document.getElementById('cca-cards').innerHTML = '';
-
-  // Vendas de cartão do PDV no período (filtra por dia LOCAL de Manaus via -04:00)
+// ---- Motor Etapa A: PDV × Getnet (venda por venda). Retorna { dias }. ----
+async function computeEtapaA(db, de, ate) {
   let pdv;
   try {
     pdv = await ccFetchPaginado(() => db.from('pdv_vendas')
       .select('id,data_hora_utc,valor_bruto,bandeira,raw').eq('forma_pagamento', 'cartao')
       .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
-  } catch (e) {
-    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; return;
-  }
-  if (!pdv.length) {
-    corpo.innerHTML = '<tr><td colspan="6" class="sem-dados">Nenhuma venda de cartão do PDV no período. Use "Importar Relatório do PDV".</td></tr>'; return;
-  }
-  // Getnet no período ±1 dia
+  } catch (e) { return { erro: 'pdv', dias: {} }; }
+  if (!pdv.length) return { vazio: true, dias: {} };
+
   const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
   const gnet = await ccFetchPaginado(() => db.from('card_transacoes')
     .select('id,data_venda,data_hora_utc,valor_bruto,bandeira,modalidade').eq('tipo_registro', 'venda')
     .gte('data_venda', dd(de, -1)).lte('data_venda', dd(ate, 1)));
 
-  // Data/hora local Manaus (o instante UTC − 4h) — deixa PDV e Getnet no mesmo relógio p/ comparar
   const manaus = iso => iso ? new Date(Date.parse(iso) - 4 * 3600000).toISOString() : '';
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
   pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.dtMs = Date.parse(p.data_hora_utc); p.mod = p.raw && p.raw.modalidade; p.ok = false; });
 
-  // Pool Getnet por valor (centavos)
   const pool = new Map();
   gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ id: g.id, band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), used: false }); });
-  // Casa por valor (com tolerância de centavos, p/ arredondamento/entrada manual do PDV) +
-  // bandeira, dentro de ±1 dia. Passes: exato primeiro, depois com tolerância.
   const TOL = 50; // R$ 0,50
   const casar = (p, tol, exigeBand) => {
     const C = Math.round(p.valor_bruto * 100); let best = null;
@@ -4033,14 +3678,10 @@ async function renderEtapaA() {
     pdv.filter(p => !p.ok).forEach(p => { p.ok = casar(p, tol, eb); });
   });
 
-  // Vendas do PDV sem par exato/tolerância. Getnet sem par (candidatas).
   const gUnmatched = [];
   pool.forEach((arr, k) => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gUnmatched.push({ id: g.id, valor: k / 100, band: g.band, mod: g.mod, hora: g.hora, data: g.data, dtMs: g.dtMs, noise: false }); }));
-  // SEPARADOR DE RUÍDO: para cada PDV sem par, procura um Getnet sem par no MESMO horário
-  // (±15 min). Se achar, é a mesma venda digitada diferente → ruído. Senão → investigar.
   const JANELA = 15 * 60 * 1000;
-  const semParPDV = pdv.filter(p => !p.ok);
-  semParPDV.forEach(p => {
+  pdv.filter(p => !p.ok).forEach(p => {
     let par = null;
     for (const g of gUnmatched) {
       if (g.noise) continue;
@@ -4051,7 +3692,6 @@ async function renderEtapaA() {
     if (par) { par.g.noise = true; p.ruido = par.g; } else { p.investigar = true; }
   });
 
-  // Casos já resolvidos manualmente (o caixa conferiu e justificou) — saem das pendências.
   const resPdv = new Map(), resGnet = new Map();
   try {
     const resol = await ccFetchPaginado(() => db.from('conc_conciliacoes')
@@ -4061,80 +3701,320 @@ async function renderEtapaA() {
   } catch (e) { /* tabela pode não ter linhas ainda */ }
 
   const dias = {};
+  const novoD = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [] });
   pdv.forEach(p => {
-    const D = (dias[p.dia] = dias[p.dia] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [] });
+    const D = (dias[p.dia] = dias[p.dia] || novoD());
     D.n++;
     if (p.ok) D.ok++;
     else if (p.investigar) { const r = resPdv.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else D.invest.push(p); }
     else D.ruido.push(p);
   });
-  gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || { n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [] }); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
+  gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || novoD()); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
+  return { dias };
+}
 
-  const datas = Object.keys(dias).filter(d => d >= de && d <= ate).sort().reverse();
-  const brl = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-  const dt = d => d.split('-').reverse().join('/');
+// ---- Motor Etapa B: Getnet × Banco (por dia de crédito). Retorna { dias, faltaOFX }. ----
+async function computeEtapaB(db, de, ate) {
+  let fin;
+  try {
+    fin = await ccFetchPaginado(() => db.from('card_lotes_pagamento')
+      .select('data_pagamento,modalidade,valor_liquido_esperado')
+      .gte('data_pagamento', de).lte('data_pagamento', ate));
+  } catch (e) { return { erro: 'getnet', dias: {}, faltaOFX: [] }; }
+  const esperado = {}, debFin = {};
+  fin.forEach(x => { const d = x.data_pagamento; if (!d) return; const v = Number(x.valor_liquido_esperado) || 0; esperado[d] = (esperado[d] || 0) + v; if (x.modalidade === 'debito') debFin[d] = (debFin[d] || 0) + v; });
+
+  const { data: banco } = await db.from('lancamentos')
+    .select('data_pagamento,valor').eq('tipo', 'receber').eq('status', 'pago')
+    .ilike('descricao', '%GETNET%').gte('data_pagamento', de).lte('data_pagamento', ate);
+  const recebido = {};
+  (banco || []).forEach(b => { const d = (b.data_pagamento || '').slice(0, 10); recebido[d] = (recebido[d] || 0) + (Number(b.valor) || 0); });
+
+  const deV = new Date(de + 'T12:00:00'); deV.setDate(deV.getDate() - 6);
+  let vendas = [];
+  try {
+    vendas = await ccFetchPaginado(() => db.from('card_transacoes')
+      .select('data_venda,valor_liquido').eq('tipo_registro', 'venda')
+      .gte('data_venda', deV.toISOString().slice(0, 10)).lte('data_venda', ate));
+  } catch (e) {}
+  const creditDates = [...new Set(fin.map(x => x.data_pagamento).filter(Boolean))].sort();
+  const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
+  const vLiq = {};
+  vendas.forEach(v => { if (!v.data_venda) return; const s = proxCredito(v.data_venda); if (!s) return; vLiq[s] = (vLiq[s] || 0) + (Number(v.valor_liquido) || 0); });
+
+  const bankDates = Object.keys(recebido);
+  const maxBankDate = bankDates.length ? bankDates.sort().slice(-1)[0] : null;
+
+  const dias = {}; const faltaOFX = [];
+  const chaves = [...new Set([...Object.keys(esperado), ...Object.keys(recebido)])].filter(d => d >= de && d <= ate);
+  chaves.forEach(d => {
+    const esp = esperado[d] || 0, rec = recebido[d] || 0, dif = esp - rec;
+    let cor, txt, espMostrar = esp, difMostrar = dif, estimado = false, aguardando = false;
+    if (rec > 0 && Math.abs(dif) <= 1) { cor = '#27ae60'; txt = '🟢 exato'; }
+    else if (dif > 1) {
+      if (rec === 0 && (!maxBankDate || d > maxBankDate)) { cor = '#e67e22'; txt = '⏳ importe o OFX'; aguardando = true; faltaOFX.push(ccDT(d)); }
+      else { cor = '#e74c3c'; txt = '🔴 recebeu menos'; }
+    } else {
+      const ep = vLiq[d] || 0;
+      if (ep > 0 && ep >= rec * 0.9) { espMostrar = ep; difMostrar = ep - rec; estimado = true; cor = '#c9930a'; txt = '🟠 fecha amanhã'; }
+      else if (esp === 0 && rec > 0) { cor = '#e67e22'; txt = '🟠 falta o arquivo Getnet'; aguardando = true; }
+      else { cor = '#e67e22'; txt = '🟠 fecha amanhã'; aguardando = true; }
+    }
+    dias[d] = { esp: espMostrar, rec, dif: difMostrar, cor, txt, estimado, aguardando };
+  });
+  return { dias, faltaOFX: [...new Set(faltaOFX)] };
+}
+
+let ccaDetalhe = {};
+function ccaToggle(dia) {
+  const el = document.getElementById('cca-det-' + dia.replace(/-/g, ''));
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+// ---- Render unificado: uma linha por dia (Vendas→Getnet | Getnet→Banco | Pix) ----
+async function renderCartao() {
+  const corpo = document.getElementById('car-corpo');
+  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
+  if (!de || !ate || !corpo) return;
+  corpo.innerHTML = '<tr><td colspan="4" class="sem-dados">Cruzando…</td></tr>';
+  const db = obterSupabase();
+
+  const A = await computeEtapaA(db, de, ate);
+  const cardsEl = document.getElementById('car-cards');
+  if (A.erro === 'pdv') { corpo.innerHTML = '<tr><td colspan="4" class="sem-dados">Importe o relatório do PDV primeiro (botão no topo).</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
+  const B = await computeEtapaB(db, de, ate);
+
+  // Pix do PDV por dia (informativo — cai direto no banco)
+  const pixDia = {};
+  try {
+    const px = await ccFetchPaginado(() => db.from('pdv_vendas').select('data_hora_utc,valor_bruto').eq('forma_pagamento', 'pix')
+      .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
+    px.forEach(v => { const d = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString().slice(0, 10); pixDia[d] = (pixDia[d] || 0) + (v.valor_bruto || 0); });
+  } catch (e) {}
+
+  const diasA = A.dias, diasB = B.dias;
+  const datas = [...new Set([...Object.keys(diasA), ...Object.keys(diasB), ...Object.keys(pixDia)])].filter(d => d >= de && d <= ate).sort().reverse();
+  if (!datas.length) { corpo.innerHTML = '<tr><td colspan="4" class="sem-dados">Sem dados no período.</td></tr>'; if (cardsEl) cardsEl.innerHTML = ''; return; }
+
+  // helpers de detalhe (Etapa A)
   const modLbl = m => m === 'debito' ? 'Déb' : m === 'credito_parcelado' ? 'Créd.parc' : m ? 'Créd' : '-';
   const modCor = m => m === 'debito' ? '#2980b9' : '#8e44ad';
   const cel = (a, m, b, c) => `<div style="display:flex;gap:10px;padding:1px 0;font-size:12px;color:#555"><span style="width:44px">${a}</span><span style="width:56px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:52px">${b}</span><span style="width:84px;text-align:right">${c}</span></div>`;
-  const vazio = '<div style="font-size:12px;color:#999">—</div>';
-
-  // Botão de resolução: grava a justificativa em conc_conciliacoes e some da pendência.
-  const rb = (kind, id, tipo, valor, label) =>
-    `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 7px;cursor:pointer;white-space:nowrap">${label}</button>`;
+  const rb = (kind, id, tipo, valor, label) => `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 7px;cursor:pointer;white-space:nowrap">${label}</button>`;
   const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:8px">${rb('pdv', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ Conferido')}</span>`;
   const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:8px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 Cartão 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ Conferido')}</span>`;
   const motivoLbl = m => ({ forma_errada: 'Pago em outra forma', venda_nao_processada: 'Venda perdida', conferido: 'Conferido', outra_comanda: 'Lançada em outra comanda', cartao_duplicado: 'Cartão passado 2x', recebimento_sem_venda: 'Conferido' }[m] || m || 'Resolvido');
   const linhaAcao = inner => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:2px 0">${inner}</div>`;
+  const vazio = '<div style="font-size:12px;color:#999">—</div>';
 
-  let totN = 0, totOk = 0, totInv = 0, totGA = 0, totRuido = 0, totResolv = 0;
+  let totInv = 0, totGA = 0, totDivB = 0, totRec = 0;
   const linhas = datas.map(d => {
-    const D = dias[d];
-    totN += D.n; totOk += D.ok; totInv += D.invest.length; totGA += D.gAlone.length; totRuido += D.ruido.length; totResolv += D.resolv.length;
-    let cor, txt;
-    if (D.invest.length)      { cor = '#e74c3c'; txt = `⚠️ ${D.invest.length} a investigar`; }
-    else if (D.gAlone.length) { cor = '#e67e22'; txt = `🟠 ${D.gAlone.length} cobrança sem venda`; }
-    else                      { cor = '#27ae60'; txt = '🟢 ok' + (D.ruido.length ? ` (${D.ruido.length} ruído)` : ''); }
-    if (D.resolv.length) txt += ` <span style="color:#16a085;font-weight:400">· ✔️ ${D.resolv.length} resolvido${D.resolv.length > 1 ? 's' : ''}</span>`;
-    const invList = D.invest.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p => linhaAcao(cel(p.hora, p.mod, p.bandeira || '-', brl(p.valor_bruto)) + btnsPdv(p))).join('') || vazio;
-    const gaList = D.gAlone.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => linhaAcao(cel(x.hora || '', x.mod, x.band || '-', brl(x.valor)) + btnsGnet(x))).join('') || vazio;
-    const ruList = D.ruido.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p =>
-      `<div style="font-size:11px;color:#999;padding:1px 0">${p.hora} · ${brl(p.valor_bruto)} (PDV) ↔ ${brl(p.ruido.valor)} (Getnet)</div>`).join('');
-    const resolvList = D.resolv.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => {
-      const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet';
-      const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor;
-      return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.8">${cel(x.hora || '', x.mod, band, brl(val))}<span style="font-size:11px;color:#16a085;margin-left:8px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:6px">desfazer</button></div>`;
-    }).join('');
-    const temDet = D.invest.length || D.gAlone.length || D.ruido.length || D.resolv.length;
-    return `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
-        <td><strong>${dt(d)}</strong>${temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : ''}</td>
-        <td style="text-align:right">${D.n}</td>
-        <td style="text-align:right;color:#27ae60">${D.ok}</td>
-        <td style="text-align:right;color:${D.invest.length ? '#e74c3c' : '#999'};font-weight:${D.invest.length ? 700 : 400}">${D.invest.length || '-'}</td>
-        <td style="text-align:right;color:${D.gAlone.length ? '#e67e22' : '#999'}">${D.gAlone.length || '-'}</td>
-        <td style="color:${cor};font-weight:600">${txt}</td>
-      </tr>` + (temDet ? `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="6" style="background:#fbfaf6;padding:10px 16px">
-        <div style="display:flex;gap:40px;flex-wrap:wrap">
-          ${D.invest.length ? `<div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${invList}</div>` : ''}
-          ${D.gAlone.length ? `<div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${gaList}</div>` : ''}
-        </div>
-        ${D.resolv.length ? `<div style="margin-top:8px"><div style="font-size:12px;color:#16a085;font-weight:700;margin-bottom:3px">✔️ Resolvidos (caixa conferido)</div>${resolvList}</div>` : ''}
-        ${D.ruido.length ? `<div style="margin-top:8px"><div style="font-size:11px;color:#999;font-weight:600">🔗 ${D.ruido.length} pares de ruído (mesma venda, valor/forma digitado diferente no PDV — não é problema):</div>${ruList}</div>` : ''}
-      </td></tr>` : '');
-  }).join('');
-  corpo.innerHTML = linhas || '<tr><td colspan="6" class="sem-dados">Sem dados no período.</td></tr>';
+    const DA = diasA[d], DB = diasB[d];
+    // Coluna Vendas → Getnet (Etapa A)
+    let aCor = '#27ae60', aTxt = '<span style="color:#bbb">—</span>', aTemDet = false;
+    if (DA) {
+      aTemDet = DA.invest.length || DA.gAlone.length || DA.ruido.length || DA.resolv.length;
+      if (DA.invest.length) { aCor = '#e74c3c'; aTxt = `⚠️ ${DA.invest.length} a investigar`; totInv += DA.invest.length; }
+      else if (DA.gAlone.length) { aCor = '#e67e22'; aTxt = `🟠 ${DA.gAlone.length} cobrança s/ venda`; totGA += DA.gAlone.length; }
+      else { aTxt = '🟢 ok' + (DA.ruido.length ? ` (${DA.ruido.length} ruído)` : ''); }
+      if (DA.resolv.length) aTxt += ` · ✔️${DA.resolv.length}`;
+      aTxt = `<span style="color:#999;font-size:11px">${DA.ok}/${DA.n}</span> ${aTxt}`;
+    }
+    // Coluna Getnet → Banco (Etapa B)
+    let bCor = '#999', bTxt = '<span style="color:#bbb">—</span>';
+    if (DB) { bCor = DB.cor; bTxt = `${DB.txt} <span style="color:#999;font-size:11px">(${ccBRL(DB.rec)})</span>`; totRec += DB.rec; if (DB.txt.indexOf('recebeu menos') >= 0) totDivB++; }
+    const pix = pixDia[d] || 0;
 
-  const cards = document.getElementById('cca-cards');
-  if (cards) {
+    const temDet = aTemDet;
+    const caret = temDet ? ' <i class="fas fa-caret-down" style="color:#999"></i>' : '';
+    let row = `<tr onclick="ccaToggle('${d}')" style="cursor:${temDet ? 'pointer' : 'default'}">
+      <td><strong>${ccDT(d)}</strong>${caret}</td>
+      <td style="color:${aCor};font-weight:600">${aTxt}</td>
+      <td style="color:${bCor};font-weight:600">${bTxt}</td>
+      <td style="text-align:right;color:#16a085;font-variant-numeric:tabular-nums">${pix ? ccBRL(pix) : '<span style="color:#ccc">—</span>'}</td>
+    </tr>`;
+
+    if (temDet && DA) {
+      const invList = DA.invest.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p => linhaAcao(cel(p.hora, p.mod, p.bandeira || '-', ccBRL(p.valor_bruto)) + btnsPdv(p))).join('') || vazio;
+      const gaList = DA.gAlone.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => linhaAcao(cel(x.hora || '', x.mod, x.band || '-', ccBRL(x.valor)) + btnsGnet(x))).join('') || vazio;
+      const ruList = DA.ruido.slice().sort((a, b) => a.hora.localeCompare(b.hora)).map(p => `<div style="font-size:11px;color:#999;padding:1px 0">${p.hora} · ${ccBRL(p.valor_bruto)} (PDV) ↔ ${ccBRL(p.ruido.valor)} (Getnet)</div>`).join('');
+      const resolvList = DA.resolv.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(x => {
+        const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet';
+        const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor;
+        return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.8">${cel(x.hora || '', x.mod, band, ccBRL(val))}<span style="font-size:11px;color:#16a085;margin-left:8px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:6px">desfazer</button></div>`;
+      }).join('');
+      row += `<tr id="cca-det-${d.replace(/-/g, '')}" style="display:none"><td colspan="4" style="background:#fbfaf6;padding:10px 16px">
+        <div style="display:flex;gap:40px;flex-wrap:wrap">
+          ${DA.invest.length ? `<div><div style="font-size:12px;color:#e74c3c;font-weight:700;margin-bottom:3px">⚠️ Investigar — venda no PDV sem NADA na Getnet &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${invList}</div>` : ''}
+          ${DA.gAlone.length ? `<div><div style="font-size:12px;color:#e67e22;font-weight:700;margin-bottom:3px">🟠 Cobrança na Getnet sem venda no PDV &nbsp;<span style="color:#999;font-weight:400">(hora · tipo · bandeira · valor · resolver)</span></div>${gaList}</div>` : ''}
+        </div>
+        ${DA.resolv.length ? `<div style="margin-top:8px"><div style="font-size:12px;color:#16a085;font-weight:700;margin-bottom:3px">✔️ Resolvidos (caixa conferido)</div>${resolvList}</div>` : ''}
+        ${DA.ruido.length ? `<div style="margin-top:8px"><div style="font-size:11px;color:#999;font-weight:600">🔗 ${DA.ruido.length} pares de ruído (mesma venda, valor/forma digitado diferente no PDV — não é problema):</div>${ruList}</div>` : ''}
+      </td></tr>`;
+    }
+    return row;
+  }).join('');
+  corpo.innerHTML = linhas;
+
+  const aviso = document.getElementById('car-aviso');
+  if (aviso) {
+    aviso.innerHTML = (B.faltaOFX && B.faltaOFX.length)
+      ? `<div style="background:#fff8e1;border:1px solid #f0c36d;border-radius:10px;padding:12px 16px;margin:4px 0 10px;color:#7a5c00"><i class="fas fa-hourglass-half"></i> <strong>Falta importar o extrato bancário (OFX)</strong> de: ${B.faltaOFX.join(', ')}. Esses dias só conciliam depois de importar o extrato (Gestão → Importar Extrato).</div>`
+      : '';
+  }
+  if (cardsEl) {
     const card = (r, v, c) => `<div style="flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
-    const pctOk = totN ? ((totOk + totRuido) / totN * 100).toFixed(1).replace('.', ',') : '0';
-    cards.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
-      ${card('Vendas de cartão (PDV)', String(totN), '#2c3e50')}
-      ${card('Casaram (inclui ruído)', (totOk + totRuido) + ' (' + pctOk + '%)', '#27ae60')}
-      ${card('⚠️ A investigar (PDV)', String(totInv), totInv ? '#e74c3c' : '#27ae60')}
+    cardsEl.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      ${card('⚠️ Vendas a investigar', String(totInv), totInv ? '#e74c3c' : '#27ae60')}
       ${card('🟠 Cobrança sem venda', String(totGA), totGA ? '#e67e22' : '#27ae60')}
-      ${totResolv ? card('✔️ Resolvidos', String(totResolv), '#16a085') : ''}
+      ${card('🏦 Recebido no banco', ccBRL(totRec), '#27ae60')}
+      ${card('🔴 Dias recebeu menos', String(totDivB), totDivB ? '#e74c3c' : '#27ae60')}
     </div>`;
   }
+}
+
+// ============ CAIXA EM ESPÉCIE — confere o dinheiro do dia → gera recebimento no Caixa ============
+let cxeDataSel = '';
+let cxeCtx = { data: '', vendas: 0, fechamento: null };
+function cxeHoje() { return new Date().toISOString().slice(0, 10); }
+function cxeNum(id) { const el = document.getElementById(id); return el ? (parseFloat(el.value) || 0) : 0; }
+function cxeCaixaBancoId() { return (bancosCadastrados || []).find(b => { const n = (b.nome || '').toLowerCase(); return n.includes('caixa') || n.includes('dinheiro'); })?.id || null; }
+function cxeTrocarData(d) { cxeDataSel = d; cxeRenderPainel(); }
+
+async function renderCaixaEspecie() {
+  if (!document.getElementById('cxe-painel')) return;
+  if (!cxeDataSel) cxeDataSel = cxeHoje();
+  await cxeRenderPainel();
+  await cxeRenderHistorico();
+}
+
+async function cxeRenderPainel() {
+  const painel = document.getElementById('cxe-painel');
+  if (!painel) return;
+  const data = cxeDataSel;
+  painel.innerHTML = `<div style="background:#fff;border:1px solid #eee;border-radius:10px;padding:16px 18px">Carregando ${ccDT(data)}…</div>`;
+  const db = obterSupabase();
+
+  let vendas = 0;
+  try {
+    const vs = await ccFetchPaginado(() => db.from('pdv_vendas').select('valor_bruto').eq('forma_pagamento', 'dinheiro')
+      .gte('data_hora_utc', data + 'T00:00:00-04:00').lte('data_hora_utc', data + 'T23:59:59-04:00'));
+    vendas = vs.reduce((s, v) => s + (v.valor_bruto || 0), 0);
+  } catch (e) {}
+
+  let ex = null;
+  try { const { data: a } = await db.from('caixa_fechamentos').select('*').eq('data', data).limit(1); ex = a && a[0]; } catch (e) {}
+  cxeCtx = { data, vendas, fechamento: ex };
+  const contadoDefault = ex ? (Number(ex.contagem_fisica) || 0) : (vendas ? vendas.toFixed(2) : '');
+  const obsDefault = ex ? (ex.observacao || '') : '';
+  const semCaixa = !cxeCaixaBancoId();
+
+  painel.innerHTML = `
+    <div style="background:#fff;border:1px solid #eee;border-radius:10px;padding:16px 18px;max-width:520px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-weight:700;color:#2c3e50">Conferir o dinheiro do dia</span>
+          <input type="date" id="cxe-data" value="${data}" onchange="cxeTrocarData(this.value)" style="padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+        </div>
+        ${ex ? `<span style="font-size:12px;background:#e8f5e9;color:#2e7d32;border-radius:12px;padding:3px 10px;font-weight:600">✔️ confirmado</span>` : ''}
+      </div>
+      ${semCaixa ? `<div style="background:#fff3cd;color:#856404;font-size:12px;border-radius:6px;padding:7px 10px;margin-bottom:10px">⚠️ Banco "Caixa/Dinheiro" não encontrado — o recebimento não poderá ser lançado.</div>` : ''}
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f2f2f2"><span style="color:#555">Vendas em dinheiro (PDV)</span><span style="font-weight:600;color:#2e7d32;font-variant-numeric:tabular-nums">${ccBRL(vendas)}</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0"><span style="color:#555">Valor conferido na gaveta</span><input type="number" step="0.01" min="0" id="cxe-contado" value="${contadoDefault}" placeholder="0,00" oninput="cxeRecalc()" style="width:150px;text-align:right;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-variant-numeric:tabular-nums"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:2px solid #eee"><span style="font-weight:700;color:#2c3e50">Diferença</span><span id="cxe-dif" style="font-weight:800;font-size:16px;font-variant-numeric:tabular-nums">—</span></div>
+      <textarea id="cxe-obs" placeholder="Observação (opcional)" style="width:100%;margin-top:8px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;min-height:44px">${obsDefault}</textarea>
+      <button onclick="confirmarCaixaEspecie()" ${semCaixa ? 'disabled' : ''} style="margin-top:10px;width:100%;background:${semCaixa ? '#bbb' : '#2c3e50'};color:#fff;border:0;border-radius:8px;padding:10px;font-size:14px;font-weight:600;cursor:${semCaixa ? 'not-allowed' : 'pointer'}">${ex ? 'Atualizar recebimento' : 'Confirmar → gerar recebimento'}</button>
+      <div style="font-size:11px;color:#999;margin-top:6px;text-align:center">Cria um recebimento no Caixa com o <strong>valor conferido</strong>. Os pagamentos em dinheiro continuam no Contas a Pagar.</div>
+    </div>`;
+  cxeRecalc();
+}
+
+function cxeRecalc() {
+  const dif = document.getElementById('cxe-dif'); if (!dif) return;
+  const el = document.getElementById('cxe-contado');
+  if (!el || el.value === '') { dif.textContent = '—'; dif.style.color = '#999'; return; }
+  const d = cxeNum('cxe-contado') - cxeCtx.vendas;
+  dif.textContent = (d > 0 ? '+' : '') + ccBRL(d) + (Math.abs(d) < 0.005 ? ' ✔️ bate' : (d < 0 ? ' (falta)' : ' (sobra)'));
+  dif.style.color = Math.abs(d) < 0.005 ? '#2e7d32' : (d < 0 ? '#c0392b' : '#e67e22');
+}
+
+async function confirmarCaixaEspecie() {
+  if (!(await garantirSessao())) return;
+  const el = document.getElementById('cxe-contado');
+  if (!el || el.value === '') { mostrarToast('Informe o valor conferido.', 'erro'); return; }
+  const db = obterSupabase();
+  const caixaId = cxeCaixaBancoId();
+  if (!caixaId) { mostrarToast('Banco Caixa/Dinheiro não encontrado.', 'erro'); return; }
+  const contado = cxeNum('cxe-contado');
+  const dif = contado - cxeCtx.vendas;
+  const obs = (document.getElementById('cxe-obs')?.value || '').trim();
+  let email = '';
+  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+
+  // 1) Cria/atualiza o recebimento no Caixa (valor = conferido)
+  let lancId = cxeCtx.fechamento && cxeCtx.fechamento.lancamento_id;
+  if (lancId) {
+    const { error } = await db.from('lancamentos').update({ valor: contado, observacoes: obs || null }).eq('id', lancId);
+    if (error) { mostrarToast('Erro ao atualizar recebimento: ' + error.message, 'erro'); return; }
+  } else {
+    const { data: lanc, error } = await db.from('lancamentos').insert({
+      descricao: 'Vendas em dinheiro ' + ccDT(cxeCtx.data), valor: contado, tipo: 'receber', status: 'pago',
+      data_pagamento: cxeCtx.data, vencimento: cxeCtx.data, banco_id: caixaId, observacoes: obs || null
+    }).select('id').single();
+    if (error) { mostrarToast('Erro ao lançar recebimento: ' + error.message, 'erro'); return; }
+    lancId = lanc.id;
+  }
+
+  // 2) Registra a conferência (auditoria)
+  const { error: e2 } = await db.from('caixa_fechamentos').upsert({
+    data: cxeCtx.data, entradas_dinheiro: cxeCtx.vendas, saldo_esperado: cxeCtx.vendas,
+    contagem_fisica: contado, diferenca: dif, observacao: obs, lancamento_id: lancId,
+    fechado_por: email, fechado_em: new Date().toISOString()
+  }, { onConflict: 'data' });
+  if (e2) mostrarToast('Recebimento lançado, mas erro ao registrar conferência: ' + e2.message, 'erro');
+  else mostrarToast('Dinheiro conferido e recebimento lançado ✔️', 'sucesso');
+  cxeRenderPainel(); cxeRenderHistorico();
+}
+
+async function excluirCaixaEspecie(data) {
+  if (!confirm('Reabrir a conferência de ' + ccDT(data) + '? O recebimento no Caixa desse dia será removido.')) return;
+  const db = obterSupabase();
+  let ex = null;
+  try { const { data: a } = await db.from('caixa_fechamentos').select('*').eq('data', data).limit(1); ex = a && a[0]; } catch (e) {}
+  if (ex && ex.lancamento_id) { await db.from('lancamentos').delete().eq('id', ex.lancamento_id); }
+  const { error } = await db.from('caixa_fechamentos').delete().eq('data', data);
+  if (error) { mostrarToast('Erro ao reabrir: ' + error.message, 'erro'); return; }
+  mostrarToast('Conferência reaberta', 'sucesso');
+  cxeRenderPainel(); cxeRenderHistorico();
+}
+
+async function cxeRenderHistorico() {
+  const corpo = document.getElementById('cxe-corpo');
+  if (!corpo) return;
+  const db = obterSupabase();
+  const de = document.getElementById('cc-de')?.value, ate = document.getElementById('cc-ate')?.value;
+  if (!de || !ate) return;
+  corpo.innerHTML = `<tr><td colspan="7" class="sem-dados">Carregando…</td></tr>`;
+  let rows = [];
+  try { const { data } = await db.from('caixa_fechamentos').select('*').gte('data', de).lte('data', ate).order('data', { ascending: false }); rows = data || []; } catch (e) {}
+  if (!rows.length) { corpo.innerHTML = `<tr><td colspan="7" class="sem-dados">Nenhuma conferência no período.</td></tr>`; return; }
+  const cor = d => Math.abs(d) < 0.005 ? '#2e7d32' : (d < 0 ? '#c0392b' : '#e67e22');
+  corpo.innerHTML = rows.map(r => {
+    const d = Number(r.diferenca) || 0;
+    const dtxt = (d > 0 ? '+' : '') + ccBRL(d) + (Math.abs(d) < 0.005 ? ' ✔️' : ' ⚠️');
+    const td = v => `<td style="text-align:right;font-variant-numeric:tabular-nums">${ccBRL(v)}</td>`;
+    return `<tr>
+      <td><strong>${ccDT(r.data)}</strong></td>
+      ${td(r.entradas_dinheiro)}${td(r.contagem_fisica)}
+      <td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:${cor(d)}">${dtxt}</td>
+      <td style="font-size:12px;color:${r.lancamento_id ? '#2e7d32' : '#999'}">${r.lancamento_id ? '✔️ lançado' : '—'}</td>
+      <td style="font-size:12px;color:#888">${r.fechado_por || '—'}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button title="Abrir" onclick="cxeTrocarData('${r.data}');window.scrollTo({top:0,behavior:'smooth'})" style="border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:12px">abrir</button>
+        <button title="Reabrir/excluir" onclick="excluirCaixaEspecie('${r.data}')" style="border:1px solid #f0d0d0;background:#fff;color:#c0392b;border-radius:5px;padding:2px 8px;cursor:pointer;font-size:12px">reabrir</button>
+      </td>
+    </tr>`;
+  }).join('');
 }
 
 // Marca um caso da Etapa A como resolvido (o caixa conferiu/corrigiu) → sai das pendências.
@@ -4150,7 +4030,7 @@ async function ccResolver(kind, id, tipo, valor) {
   const { error } = await db.from('conc_conciliacoes').insert(row);
   if (error) { mostrarToast('Erro ao resolver: ' + error.message, 'erro'); return; }
   mostrarToast('Caso resolvido ✔️', 'sucesso');
-  renderEtapaA();
+  renderCartao();
 }
 
 // Desfaz a resolução (remove a marca) → o caso volta a aparecer como pendência.
@@ -4162,7 +4042,7 @@ async function ccDesfazer(kind, id) {
     .eq('etapa', 'pdv_operadora').eq('status', 'resolvido_manual').eq(col, id);
   if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
   mostrarToast('Resolução desfeita', 'sucesso');
-  renderEtapaA();
+  renderCartao();
 }
 
 // =========================================================
