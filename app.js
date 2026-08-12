@@ -7833,7 +7833,7 @@ function atualizarLabelDre() {
 // seus itens de rateio_itens (cada um com seu plano_conta_id e valor), herdando
 // os demais campos do pai (id, tipo, banco_id, unidade_id, descricao, data).
 // Assim a categorização feita no rateio entra na DRE / relatórios.
-async function _expandirRateios(db, lancamentos) {
+async function _expandirRateios(db, lancamentos, inconsist) {
   const ids = lancamentos.filter(l => l.tem_rateio).map(l => l.id);
   if (ids.length === 0) return lancamentos;
   const mapa = {};
@@ -7851,9 +7851,17 @@ async function _expandirRateios(db, lancamentos) {
       // Ancora o total no valor REALMENTE pago: usa o rateio só para a proporção
       // entre categorias. Protege contra rateio digitado com total errado.
       const soma = itens.reduce((a, r) => a + Number(r.valor), 0);
+      if (inconsist && Math.abs(soma - Number(l.valor)) > 0.01) {
+        inconsist.push({ id: l.id, descricao: l.descricao || '(sem descrição)', valor: Number(l.valor),
+          somaRateio: soma, tipo: l.tipo, unidade_id: l.unidade_id || null, data: l.data_pagamento });
+      }
       const fator = (soma > 0.01 && Math.abs(soma - Number(l.valor)) > 0.01) ? Number(l.valor) / soma : 1;
       itens.forEach(r => out.push({ ...l, plano_conta_id: r.plano_conta_id, valor: Number(r.valor) * fator, _viaRateio: true }));
     } else {
+      if (l.tem_rateio && inconsist) {   // marcado como rateio mas sem itens → também é inconsistência
+        inconsist.push({ id: l.id, descricao: l.descricao || '(sem descrição)', valor: Number(l.valor),
+          somaRateio: 0, tipo: l.tipo, unidade_id: l.unidade_id || null, data: l.data_pagamento, semItens: true });
+      }
       out.push(l);   // sem rateio, ou rateio sem itens (fica como está → aparece como sem categoria)
     }
   });
@@ -7912,8 +7920,9 @@ async function _executarDre() {
   ]);
 
   // Expande rateio para que a categorização feita na divisão entre na DRE
+  const rateioInconsist = [];
   const [exMes, exAno, exHist] = await Promise.all([
-    _expandirRateios(db, dadosMes),
+    _expandirRateios(db, dadosMes, rateioInconsist),
     _expandirRateios(db, dadosAno),
     _expandirRateios(db, dadosHist),
   ]);
@@ -7923,7 +7932,7 @@ async function _executarDre() {
   const mesesPt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
   _renderizarDreKPIs(calMes, calAno);
-  _renderizarDreTabela(calMes, calAno, mesesPt[mes-1], ano);
+  _renderizarDreTabela(calMes, calAno, mesesPt[mes-1], ano, rateioInconsist);
 
   window._dreCalMes   = calMes;
   window._dreCalAno   = calAno;
@@ -8030,9 +8039,71 @@ function _renderizarDreKPIs(calMes, calAno) {
   </div>`;
 }
 
-function _renderizarDreTabela(calMes, calAno, nomeMes, ano) {
+function _renderizarDreTabela(calMes, calAno, nomeMes, ano, rateioInconsist) {
   const el = document.getElementById('dre-tabela');
   if (!el) return;
+
+  const uniNomeMap = {};
+  (typeof unidades !== 'undefined' ? unidades : []).forEach(u => { uniNomeMap[u.id] = u.nome; });
+  const fmtDataBR = d => d ? d.split('-').reverse().join('/') : '—';
+
+  // Aviso de rateio inconsistente (soma dos itens ≠ valor pago)
+  let rateioHtml = '';
+  const ri = rateioInconsist || [];
+  if (ri.length > 0) {
+    const totalDif = ri.reduce((a, x) => a + (x.somaRateio - x.valor), 0);
+    const linhas = [...ri].sort((a, b) => Math.abs(b.somaRateio - b.valor) - Math.abs(a.somaRateio - a.valor)).map(x => {
+      const dif = x.somaRateio - x.valor;
+      return `<tr style="border-bottom:1px solid #f3d6d3;">
+        <td style="padding:6px 8px;white-space:nowrap;color:#666;font-size:12px;">${fmtDataBR(x.data)}</td>
+        <td style="padding:6px 8px;font-size:13px;">${x.descricao}</td>
+        <td style="padding:6px 8px;font-size:12px;color:#666;">${uniNomeMap[x.unidade_id] || '<em style=\"color:#c0392b;\">sem unidade</em>'}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;">${formatarMoeda(x.valor)}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;">${x.semItens ? '<em style=\"color:#c0392b;\">sem itens</em>' : formatarMoeda(x.somaRateio)}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap;font-weight:600;font-variant-numeric:tabular-nums;color:#c0392b;">${dif >= 0 ? '+' : ''}${formatarMoeda(dif)}</td>
+        <td style="padding:6px 8px;text-align:right;">
+          <button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 10px;" onclick="editarLancamento('${x.id}','${x.tipo}')">
+            <i class="fas fa-wrench"></i> Corrigir
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
+    rateioHtml = `<div style="background:#fdecea;border:1px solid #e74c3c;border-radius:10px;padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:flex-start;gap:12px;">
+        <i class="fas fa-scale-unbalanced" style="color:#e74c3c;font-size:20px;flex-shrink:0;margin-top:2px;"></i>
+        <div style="flex:1;">
+          <strong style="color:#c0392b;font-size:13px;">Rateio inconsistente — soma das categorias ≠ valor pago</strong>
+          <p style="margin:4px 0 0;font-size:13px;color:#555;">
+            <strong>${ri.length}</strong> lançamento${ri.length > 1 ? 's' : ''} com rateio que não bate com o valor pago
+            (diferença total no rateio: <strong>${totalDif >= 0 ? '+' : ''}${formatarMoeda(totalDif)}</strong>).
+            A DRE ancora no valor pago e usa o rateio só para a proporção — mas o ideal é corrigir a divisão na origem.
+          </p>
+        </div>
+      </div>
+      <details style="margin-top:10px;" open>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:#c0392b;user-select:none;">
+          <i class="fas fa-list"></i> Ver e corrigir
+        </summary>
+        <div style="overflow-x:auto;margin-top:10px;background:#fff;border:1px solid #f3d6d3;border-radius:8px;">
+          <table style="width:100%;border-collapse:collapse;min-width:680px;">
+            <thead>
+              <tr style="background:#fbe4e2;text-align:left;">
+                <th style="padding:7px 8px;font-size:11px;color:#a5281c;text-transform:uppercase;letter-spacing:.03em;">Data</th>
+                <th style="padding:7px 8px;font-size:11px;color:#a5281c;text-transform:uppercase;letter-spacing:.03em;">Descrição</th>
+                <th style="padding:7px 8px;font-size:11px;color:#a5281c;text-transform:uppercase;letter-spacing:.03em;">Unidade</th>
+                <th style="padding:7px 8px;font-size:11px;color:#a5281c;text-transform:uppercase;letter-spacing:.03em;text-align:right;">Valor pago</th>
+                <th style="padding:7px 8px;font-size:11px;color:#a5281c;text-transform:uppercase;letter-spacing:.03em;text-align:right;">Soma rateio</th>
+                <th style="padding:7px 8px;font-size:11px;color:#a5281c;text-transform:uppercase;letter-spacing:.03em;text-align:right;">Diferença</th>
+                <th style="padding:7px 8px;"></th>
+              </tr>
+            </thead>
+            <tbody>${linhas}</tbody>
+          </table>
+        </div>
+        <p style="margin:8px 2px 0;font-size:12px;color:#888;">Clique em <strong>Corrigir</strong>, ajuste a divisão para somar o valor pago e salve. Depois clique em <strong>Gerar DRE</strong>.</p>
+      </details>
+    </div>`;
+  }
 
   // Aviso de lançamentos sem categoria
   const sc = calMes.semCategoria;
@@ -8158,7 +8229,7 @@ function _renderizarDreTabela(calMes, calAno, nomeMes, ano) {
     }).join('');
   }
 
-  let html = avisoHtml + `<div style="overflow-x:auto;">
+  let html = rateioHtml + avisoHtml + `<div style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;border-radius:12px;overflow:hidden;box-shadow:0 2px 14px rgba(0,0,0,0.09);">
   <thead><tr style="background:#2c3e50;color:#fff;">
     <th style="padding:12px 16px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;min-width:220px;">Descrição</th>
