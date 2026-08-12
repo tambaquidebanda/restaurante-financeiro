@@ -7614,7 +7614,7 @@ async function _executarDre() {
     let todos = [], pagina = 0;
     while (true) {
       let q2 = db.from('lancamentos')
-        .select('tipo, plano_conta_id, valor, data_pagamento')
+        .select('id, tipo, plano_conta_id, valor, data_pagamento, descricao, unidade_id')
         .eq('status', 'pago')
         .gte('data_pagamento', de)
         .lte('data_pagamento', ate)
@@ -7657,7 +7657,7 @@ function _isUsoLucro(g) {
 
 function _calcularDre(lancamentos) {
   const map = {};
-  const semCategoria = { qtd: 0, totalRec: 0, totalPag: 0 };
+  const semCategoria = { qtd: 0, totalRec: 0, totalPag: 0, itens: [] };
   const planoIds = new Set(planoContas.map(p => p.id));
 
   lancamentos.forEach(l => {
@@ -7665,6 +7665,10 @@ function _calcularDre(lancamentos) {
       semCategoria.qtd++;
       if (l.tipo === 'receber') semCategoria.totalRec += Number(l.valor);
       else                      semCategoria.totalPag += Number(l.valor);
+      semCategoria.itens.push({
+        id: l.id, descricao: l.descricao || '(sem descrição)', valor: Number(l.valor),
+        tipo: l.tipo, data: l.data_pagamento, unidade_id: l.unidade_id || null
+      });
     } else {
       map[l.plano_conta_id] = (map[l.plano_conta_id] || 0) + Number(l.valor);
     }
@@ -7752,17 +7756,60 @@ function _renderizarDreTabela(calMes, calAno, nomeMes, ano) {
   let avisoHtml = '';
   if (sc.qtd > 0) {
     const totalExcluido = sc.totalRec + sc.totalPag;
-    avisoHtml = `<div style="display:flex;align-items:flex-start;gap:12px;background:#fff8e1;border:1px solid #f39c12;border-radius:10px;padding:14px 16px;margin-bottom:16px;">
-      <i class="fas fa-exclamation-triangle" style="color:#f39c12;font-size:20px;flex-shrink:0;margin-top:2px;"></i>
-      <div>
-        <strong style="color:#b7770d;font-size:13px;">Lançamentos sem categoria excluídos da DRE</strong>
-        <p style="margin:4px 0 0;font-size:13px;color:#555;">
-          <strong>${sc.qtd}</strong> lançamento${sc.qtd > 1 ? 's' : ''} sem Plano de Contas definido
-          foram ignorados neste período — total de <strong>${formatarMoeda(totalExcluido)}</strong>
-          ${sc.totalRec > 0 ? ` (receitas: ${formatarMoeda(sc.totalRec)}` : ''}${sc.totalPag > 0 ? `${sc.totalRec > 0 ? ' | ' : ' ('}despesas: ${formatarMoeda(sc.totalPag)}` : ''}${sc.totalRec > 0 || sc.totalPag > 0 ? ')' : ''}.
-        </p>
-        <p style="margin:6px 0 0;font-size:12px;color:#888;">Para corrigir, abra as telas de <strong>Contas a Pagar</strong> ou <strong>Contas a Receber</strong>, filtre por status "Pago" e atribua uma categoria aos lançamentos sem classificação.</p>
+    const uniNome = {};
+    (typeof unidades !== 'undefined' ? unidades : []).forEach(u => { uniNome[u.id] = u.nome; });
+    const fmtData = d => d ? d.split('-').reverse().join('/') : '—';
+    const itens = [...(sc.itens || [])].sort((a, b) => b.valor - a.valor);
+    const linhas = itens.map(it => {
+      const chip = it.tipo === 'receber'
+        ? '<span style="font-size:11px;color:#1a7a3c;background:#e8f6ee;padding:1px 6px;border-radius:4px;">Receita</span>'
+        : '<span style="font-size:11px;color:#b7770d;background:#fdf3e0;padding:1px 6px;border-radius:4px;">Despesa</span>';
+      return `<tr style="border-bottom:1px solid #f0e6cc;">
+        <td style="padding:6px 8px;white-space:nowrap;color:#666;font-size:12px;">${fmtData(it.data)}</td>
+        <td style="padding:6px 8px;font-size:13px;">${it.descricao}</td>
+        <td style="padding:6px 8px;font-size:12px;color:#666;">${uniNome[it.unidade_id] || '<em style=\"color:#c0392b;\">sem unidade</em>'}</td>
+        <td style="padding:6px 8px;">${chip}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap;font-weight:600;font-variant-numeric:tabular-nums;color:${it.tipo === 'receber' ? '#1a7a3c' : '#b7770d'};">${formatarMoeda(it.valor)}</td>
+        <td style="padding:6px 8px;text-align:right;">
+          <button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 10px;" onclick="editarLancamento('${it.id}','${it.tipo}')">
+            <i class="fas fa-tag"></i> Categorizar
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
+    avisoHtml = `<div style="background:#fff8e1;border:1px solid #f39c12;border-radius:10px;padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:flex-start;gap:12px;">
+        <i class="fas fa-exclamation-triangle" style="color:#f39c12;font-size:20px;flex-shrink:0;margin-top:2px;"></i>
+        <div style="flex:1;">
+          <strong style="color:#b7770d;font-size:13px;">Lançamentos sem categoria excluídos da DRE</strong>
+          <p style="margin:4px 0 0;font-size:13px;color:#555;">
+            <strong>${sc.qtd}</strong> lançamento${sc.qtd > 1 ? 's' : ''} sem Plano de Contas definido
+            ${sc.qtd > 1 ? 'foram' : 'foi'} ignorado${sc.qtd > 1 ? 's' : ''} neste período — total de <strong>${formatarMoeda(totalExcluido)}</strong>
+            ${sc.totalRec > 0 ? ` (receitas: ${formatarMoeda(sc.totalRec)}` : ''}${sc.totalPag > 0 ? `${sc.totalRec > 0 ? ' | ' : ' ('}despesas: ${formatarMoeda(sc.totalPag)}` : ''}${sc.totalRec > 0 || sc.totalPag > 0 ? ')' : ''}.
+          </p>
+        </div>
       </div>
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:#b7770d;user-select:none;">
+          <i class="fas fa-list"></i> Ver e categorizar ${sc.qtd > 1 ? 'os lançamentos' : 'o lançamento'}
+        </summary>
+        <div style="overflow-x:auto;margin-top:10px;background:#fff;border:1px solid #f0e6cc;border-radius:8px;">
+          <table style="width:100%;border-collapse:collapse;min-width:640px;">
+            <thead>
+              <tr style="background:#fdf3e0;text-align:left;">
+                <th style="padding:7px 8px;font-size:11px;color:#8a6d00;text-transform:uppercase;letter-spacing:.03em;">Data</th>
+                <th style="padding:7px 8px;font-size:11px;color:#8a6d00;text-transform:uppercase;letter-spacing:.03em;">Descrição</th>
+                <th style="padding:7px 8px;font-size:11px;color:#8a6d00;text-transform:uppercase;letter-spacing:.03em;">Unidade</th>
+                <th style="padding:7px 8px;font-size:11px;color:#8a6d00;text-transform:uppercase;letter-spacing:.03em;">Tipo</th>
+                <th style="padding:7px 8px;font-size:11px;color:#8a6d00;text-transform:uppercase;letter-spacing:.03em;text-align:right;">Valor</th>
+                <th style="padding:7px 8px;"></th>
+              </tr>
+            </thead>
+            <tbody>${linhas}</tbody>
+          </table>
+        </div>
+        <p style="margin:8px 2px 0;font-size:12px;color:#888;">Após categorizar, clique em <strong>Gerar DRE</strong> novamente para atualizar os números.</p>
+      </details>
     </div>`;
   }
 
