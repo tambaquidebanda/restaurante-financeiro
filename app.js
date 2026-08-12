@@ -408,6 +408,7 @@ function irPara(pagina, elemento) {
   if (pagina === 'orcamento')        carregarOrcamentoModo();
   if (pagina === 'relatorios')       carregarRelatorio();
   if (pagina === 'dre')              carregarDre();
+  if (pagina === 'ponte-caixa')      carregarPonteCaixa();
   if (pagina === 'usuarios')         carregarUsuarios();
   if (pagina === 'importar')         { preencherSelectBancoImportar(); carregarLancamentosPendentes(); }
   if (pagina === 'importar-getnet')  carregarImportarGetnet();
@@ -422,7 +423,7 @@ function irPara(pagina, elemento) {
     'conciliacao': 'gestao', 'transferencias': 'gestao', 'orcamento': 'gestao', 'integracoes': 'gestao', 'importar-getnet': 'gestao', 'importar-pdv': 'gestao', 'conciliacao-cartao': 'gestao',
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
-    'dre': 'relatorios', 'relatorios': 'relatorios',
+    'dre': 'relatorios', 'ponte-caixa': 'relatorios', 'relatorios': 'relatorios',
     'usuarios': 'configuracoes', 'configuracoes': 'configuracoes'
   };
   if (grupoNavPorPagina[pagina]) expandirNavGrupo(grupoNavPorPagina[pagina]);
@@ -7537,6 +7538,249 @@ async function carregarConciliacao() {
 // =========================================================
 // RELATÓRIOS
 // =========================================================
+
+// ---------------------------------------------------------
+// RESULTADO × CAIXA — Ponte (concilia o resultado da DRE com
+// a variação real de saldo de todas as contas no mês).
+// Consolidado: todas as unidades e contas. Regime de caixa.
+// ---------------------------------------------------------
+function carregarPonteCaixa() {
+  const elMes = document.getElementById('pc-mes');
+  const elAno = document.getElementById('pc-ano');
+  if (elMes && !elMes.value) elMes.value = String(new Date().getMonth() + 1);
+  if (elAno && !elAno.value) elAno.value = String(new Date().getFullYear());
+  _executarPonteCaixa();
+}
+
+async function _executarPonteCaixa() {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const mes = parseInt(document.getElementById('pc-mes')?.value || (new Date().getMonth() + 1));
+  const ano = parseInt(document.getElementById('pc-ano')?.value || new Date().getFullYear());
+
+  const mesStr  = String(mes).padStart(2, '0');
+  const lastDay = new Date(ano, mes, 0).getDate();
+  const mesIni  = `${ano}-${mesStr}-01`;
+  const mesFim  = `${ano}-${mesStr}-${String(lastDay).padStart(2, '0')}`;
+  const diaAntes = new Date(ano, mes - 1, 0);   // último dia do mês anterior
+  const diaAntesStr = `${diaAntes.getFullYear()}-${String(diaAntes.getMonth() + 1).padStart(2, '0')}-${String(diaAntes.getDate()).padStart(2, '0')}`;
+
+  const el = document.getElementById('pc-conteudo');
+  if (el) el.innerHTML = '<p class="sem-dados"><i class="fas fa-spinner fa-spin"></i> Calculando a ponte Resultado × Caixa...</p>';
+
+  async function buscar(tabela, campos, filtros) {
+    const PAGE = 1000;
+    let todos = [], pagina = 0;
+    while (true) {
+      let qr = db.from(tabela).select(campos).range(pagina * PAGE, (pagina + 1) * PAGE - 1);
+      for (const [met, ...args] of filtros) qr = qr[met](...args);
+      const { data, error } = await qr;
+      if (error || !data || data.length === 0) break;
+      todos = todos.concat(data);
+      if (data.length < PAGE) break;
+      pagina++;
+    }
+    return todos;
+  }
+
+  const [saldoRows, mesRows, transfRows] = await Promise.all([
+    // saldos: tudo pago com banco, até o fim do mês
+    buscar('lancamentos', 'tipo, valor, data_pagamento, banco_id', [
+      ['eq', 'status', 'pago'], ['not', 'banco_id', 'is', null], ['lte', 'data_pagamento', mesFim]
+    ]),
+    // detalhe do mês (para reproduzir a DRE + itens de reconciliação)
+    buscar('lancamentos', 'id, tipo, valor, plano_conta_id, banco_id, descricao, unidade_id, data_pagamento', [
+      ['eq', 'status', 'pago'], ['gte', 'data_pagamento', mesIni], ['lte', 'data_pagamento', mesFim]
+    ]),
+    // transferências até o fim do mês (afetam saldo por conta; no consolidado se anulam)
+    buscar('transferencias', 'valor, data, banco_origem_id, banco_destino_id', [
+      ['lte', 'data', mesFim]
+    ]),
+  ]);
+
+  // ---- Saldos por conta (início e fim do mês) ----
+  const saldoIni = {}, saldoFim = {};
+  bancosCadastrados.forEach(b => { saldoIni[b.id] = Number(b.saldo_inicial) || 0; saldoFim[b.id] = Number(b.saldo_inicial) || 0; });
+  saldoRows.forEach(l => {
+    if (!l.banco_id) return;
+    const d = l.tipo === 'receber' ? Number(l.valor) : -Number(l.valor);
+    if (saldoFim[l.banco_id] === undefined) { saldoIni[l.banco_id] = 0; saldoFim[l.banco_id] = 0; }
+    saldoFim[l.banco_id] += d;
+    if (l.data_pagamento <= diaAntesStr) saldoIni[l.banco_id] += d;
+  });
+  transfRows.forEach(t => {
+    const apl = (obj) => {
+      if (t.banco_origem_id)  obj[t.banco_origem_id]  = (obj[t.banco_origem_id]  || 0) - Number(t.valor);
+      if (t.banco_destino_id) obj[t.banco_destino_id] = (obj[t.banco_destino_id] || 0) + Number(t.valor);
+    };
+    apl(saldoFim);
+    if (t.data <= diaAntesStr) apl(saldoIni);
+  });
+  const consIni = Object.values(saldoIni).reduce((a, v) => a + v, 0);
+  const consFim = Object.values(saldoFim).reduce((a, v) => a + v, 0);
+  const varReal = consFim - consIni;
+
+  // ---- DRE do mês (mesmo motor da tela DRE) ----
+  const cal = _calcularDre(mesRows);
+  const resultadoDRE = cal.resultadoFinal;
+
+  // ---- Itens de reconciliação (DRE -> Caixa) ----
+  const planoIds = new Set(planoContas.map(p => p.id));
+  const catValida = (l) => l.plano_conta_id && planoIds.has(l.plano_conta_id);
+  let recSemCatBanco = 0, despSemCatBanco = 0, despCatSemBanco = 0, recCatSemBanco = 0;
+  mesRows.forEach(l => {
+    const v = Number(l.valor), temBanco = !!l.banco_id, cat = catValida(l);
+    if (l.tipo === 'receber') {
+      if (!cat && temBanco) recSemCatBanco += v;
+      if (cat && !temBanco)  recCatSemBanco += v;
+    } else {
+      if (!cat && temBanco) despSemCatBanco += v;
+      if (cat && !temBanco)  despCatSemBanco += v;
+    }
+  });
+  const varEsperada = resultadoDRE + recSemCatBanco - despSemCatBanco + despCatSemBanco - recCatSemBanco;
+  const diff = varReal - varEsperada;
+
+  const mesesPt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  _renderizarPonteCaixa({
+    nomeMes: mesesPt[mes - 1], ano, cal, resultadoDRE,
+    recSemCatBanco, despSemCatBanco, despCatSemBanco, recCatSemBanco,
+    varEsperada, varReal, diff, consIni, consFim, saldoIni, saldoFim,
+  });
+}
+
+function _renderizarPonteCaixa(d) {
+  const el = document.getElementById('pc-conteudo');
+  if (!el) return;
+  const fm = v => formatarMoeda(v);
+  const cor = v => v >= 0 ? '#1a7a3c' : '#c0392b';
+
+  // KPIs
+  const kpi = (label, val, sub, corVal) => `
+    <div class="dre-kpi" style="border-left-color:${corVal};">
+      <div class="dre-kpi-info">
+        <span class="dre-kpi-label">${label}</span>
+        <span class="dre-kpi-valor" style="color:${corVal};">${fm(val)}</span>
+        ${sub ? `<span class="dre-kpi-sub">${sub}</span>` : ''}
+      </div>
+    </div>`;
+  const kpis = `<div class="dre-kpi-grid-inner" style="margin-bottom:16px;">
+    ${kpi('Saldo início do mês', d.consIni, 'todas as contas', '#1a3a7a')}
+    ${kpi('Variação no mês', d.varReal, d.varReal >= 0 ? 'entrou mais do que saiu' : 'saiu mais do que entrou', cor(d.varReal))}
+    ${kpi('Saldo fim do mês', d.consFim, 'todas as contas', '#1a3a7a')}
+    ${kpi('Resultado da DRE', d.resultadoDRE, 'lucro do período', cor(d.resultadoDRE))}
+  </div>`;
+
+  // Mini-DRE (de onde veio, pra onde foi)
+  const linhaMini = (lbl, val, tipo) => {
+    const isTotal = tipo === 'total';
+    return `<tr style="${isTotal ? 'font-weight:700;background:#f4f8f5;' : ''}">
+      <td style="padding:7px 12px;font-size:13px;${isTotal ? '' : 'color:#555;'}">${lbl}</td>
+      <td style="padding:7px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;color:${tipo === 'neg' ? '#c0392b' : (isTotal ? cor(val) : '#333')};">${tipo === 'neg' ? '(' + fm(val) + ')' : fm(val)}</td>
+    </tr>`;
+  };
+  const miniDre = `
+    <div style="flex:1 1 320px;min-width:300px;">
+      <h3 style="font-size:14px;color:#1a3a7a;margin:0 0 8px;"><i class="fas fa-file-invoice-dollar"></i> Como o resultado se formou</h3>
+      <div style="border:1px solid #e8e8e8;border-radius:10px;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;">
+          ${linhaMini('Receita Bruta', d.cal.receitaBruta, 'pos')}
+          ${linhaMini('(−) CMV', d.cal.totalCMV, 'neg')}
+          ${linhaMini('= Lucro Bruto', d.cal.lucroBruto, 'total')}
+          ${linhaMini('(−) Despesas Operacionais', d.cal.totalDesp, 'neg')}
+          ${linhaMini('= EBITDA (geração de caixa)', d.cal.ebitda, 'total')}
+          ${linhaMini('(−) Distribuições / Uso do Lucro', d.cal.totalUsoLucro, 'neg')}
+          ${linhaMini('= Resultado Final', d.cal.resultadoFinal, 'total')}
+        </table>
+      </div>
+      ${d.cal.totalUsoLucro > 0 ? `<p style="font-size:12px;color:#8a6d00;background:#fff8e1;border:1px solid #f5e0a3;border-radius:8px;padding:8px 10px;margin:8px 0 0;">
+        <i class="fas fa-hand-holding-dollar"></i> <strong>${fm(d.cal.totalUsoLucro)}</strong> foram distribuídos como lucro no mês — esse dinheiro <strong>saiu do caixa</strong> (por isso o EBITDA de ${fm(d.cal.ebitda)} não fica na conta).
+      </p>` : ''}
+    </div>`;
+
+  // A Ponte (walk)
+  const linhaPonte = (lbl, val, sinal, hint) => {
+    const sImg = sinal === '+' ? '+' : (sinal === '−' ? '−' : '');
+    return `<tr>
+      <td style="padding:8px 12px;font-size:13px;color:#555;">${sImg ? `<span style="color:${sinal === '+' ? '#1a7a3c' : '#c0392b'};font-weight:700;margin-right:6px;">${sImg}</span>` : ''}${lbl}${hint ? `<br><span style="font-size:11px;color:#999;">${hint}</span>` : ''}</td>
+      <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;">${fm(val)}</td>
+    </tr>`;
+  };
+  const temAjustes = d.recSemCatBanco || d.despSemCatBanco || d.despCatSemBanco || d.recCatSemBanco;
+  const ponte = `
+    <div style="flex:1 1 340px;min-width:300px;">
+      <h3 style="font-size:14px;color:#1a3a7a;margin:0 0 8px;"><i class="fas fa-scale-balanced"></i> Do resultado até o caixa</h3>
+      <div style="border:1px solid #e8e8e8;border-radius:10px;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr style="font-weight:700;background:#eef3fb;">
+            <td style="padding:8px 12px;font-size:13px;">Resultado da DRE (mês)</td>
+            <td style="padding:8px 12px;font-size:13px;text-align:right;color:${cor(d.resultadoDRE)};font-variant-numeric:tabular-nums;">${fm(d.resultadoDRE)}</td>
+          </tr>
+          ${d.recSemCatBanco  ? linhaPonte('Receitas sem categoria', d.recSemCatBanco, '+', 'entraram no caixa, fora da DRE') : ''}
+          ${d.despSemCatBanco ? linhaPonte('Despesas sem categoria', d.despSemCatBanco, '−', 'saíram do caixa, fora da DRE') : ''}
+          ${d.despCatSemBanco ? linhaPonte('Despesas sem conta bancária', d.despCatSemBanco, '+', 'estão na DRE, mas não baixaram conta') : ''}
+          ${d.recCatSemBanco  ? linhaPonte('Receitas sem conta bancária', d.recCatSemBanco, '−', 'estão na DRE, mas não entraram em conta') : ''}
+          ${!temAjustes ? `<tr><td colspan="2" style="padding:8px 12px;font-size:12px;color:#999;text-align:center;">Sem ajustes — DRE e caixa batem direto.</td></tr>` : ''}
+          <tr style="font-weight:700;background:#f4f8f5;border-top:2px solid #e0e0e0;">
+            <td style="padding:9px 12px;font-size:13px;">= Variação de caixa esperada</td>
+            <td style="padding:9px 12px;font-size:13px;text-align:right;color:${cor(d.varEsperada)};font-variant-numeric:tabular-nums;">${fm(d.varEsperada)}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-size:13px;color:#555;">Variação de caixa <strong>real</strong> (contas)</td>
+            <td style="padding:8px 12px;font-size:13px;text-align:right;color:${cor(d.varReal)};font-variant-numeric:tabular-nums;">${fm(d.varReal)}</td>
+          </tr>
+        </table>
+      </div>
+      <div style="margin-top:8px;padding:10px 12px;border-radius:8px;font-size:13px;${Math.abs(d.diff) < 0.5
+        ? 'background:#e8f6ee;border:1px solid #b7e0c5;color:#1a7a3c;'
+        : 'background:#fdecea;border:1px solid #f5b7b1;color:#c0392b;'}">
+        ${Math.abs(d.diff) < 0.5
+          ? '<i class="fas fa-circle-check"></i> <strong>Confere.</strong> O resultado da DRE explica a variação de caixa do mês.'
+          : `<i class="fas fa-triangle-exclamation"></i> <strong>Diferença de ${fm(Math.abs(d.diff))}</strong> não explicada — vale investigar lançamentos sem conta/categoria ou movimentos fora do padrão.`}
+      </div>
+    </div>`;
+
+  // Prova + por conta
+  const contasHtml = bancosCadastrados
+    .map(b => ({ nome: b.nome, ini: d.saldoIni[b.id] || 0, fim: d.saldoFim[b.id] || 0 }))
+    .sort((a, b) => b.fim - a.fim)
+    .map(c => `<tr style="border-bottom:1px solid #f0f0f0;">
+        <td style="padding:7px 12px;font-size:13px;">${c.nome}</td>
+        <td style="padding:7px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;color:#666;">${fm(c.ini)}</td>
+        <td style="padding:7px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;color:${cor(c.fim - c.ini)};">${(c.fim - c.ini) >= 0 ? '+' : ''}${fm(c.fim - c.ini)}</td>
+        <td style="padding:7px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${cor(c.fim)};">${fm(c.fim)}</td>
+      </tr>`).join('');
+  const porConta = `
+    <div style="margin-top:20px;">
+      <h3 style="font-size:14px;color:#1a3a7a;margin:0 0 8px;"><i class="fas fa-building-columns"></i> Saldo por conta</h3>
+      <div style="overflow-x:auto;border:1px solid #e8e8e8;border-radius:10px;">
+        <table style="width:100%;border-collapse:collapse;min-width:520px;">
+          <thead><tr style="background:#f4f6f8;text-align:right;">
+            <th style="padding:8px 12px;font-size:11px;color:#667;text-transform:uppercase;letter-spacing:.03em;text-align:left;">Conta</th>
+            <th style="padding:8px 12px;font-size:11px;color:#667;text-transform:uppercase;letter-spacing:.03em;">Início</th>
+            <th style="padding:8px 12px;font-size:11px;color:#667;text-transform:uppercase;letter-spacing:.03em;">Variação</th>
+            <th style="padding:8px 12px;font-size:11px;color:#667;text-transform:uppercase;letter-spacing:.03em;">Fim</th>
+          </tr></thead>
+          <tbody>${contasHtml}</tbody>
+          <tfoot><tr style="background:#eef3fb;font-weight:700;border-top:2px solid #dbe4f0;">
+            <td style="padding:8px 12px;font-size:13px;">CONSOLIDADO</td>
+            <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;">${fm(d.consIni)}</td>
+            <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;color:${cor(d.varReal)};">${d.varReal >= 0 ? '+' : ''}${fm(d.varReal)}</td>
+            <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;color:${cor(d.consFim)};">${fm(d.consFim)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <p style="font-size:12px;color:#999;margin:8px 2px 0;"><i class="fas fa-circle-info"></i> Transferências entre contas próprias se anulam no consolidado. Para conferir contra o extrato do banco, compare o "Fim" de cada conta com o saldo do OFX (próximo relatório).</p>
+    </div>`;
+
+  el.innerHTML = `
+    <h2 style="font-size:16px;color:#333;margin:0 0 4px;">${d.nomeMes} / ${d.ano}</h2>
+    <p style="font-size:13px;color:#777;margin:0 0 16px;">Consolidado — todas as unidades e contas · regime de caixa (data de pagamento)</p>
+    ${kpis}
+    <div style="display:flex;flex-wrap:wrap;gap:20px;">${miniDre}${ponte}</div>
+    ${porConta}`;
+}
+
 // =========================================================
 // DRE — DEMONSTRAÇÃO DO RESULTADO DO EXERCÍCIO
 // =========================================================
