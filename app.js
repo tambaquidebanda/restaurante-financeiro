@@ -106,6 +106,7 @@ document.addEventListener('click', e => {
   }
   if (!e.target.closest('.dropdown-multi')) {
     document.querySelectorAll('[id^="concil-drop-"]').forEach(d => d.classList.add('hidden'));
+    document.getElementById('dre-drop-unidades')?.classList.add('hidden');
   }
   if (!e.target.closest('#integ-forn-wrapper')) {
     const drop = document.getElementById('integ-forn-dropdown');
@@ -7547,16 +7548,40 @@ function carregarDre() {
   const elAno = document.getElementById('dre-ano');
   if (elMes && !elMes.value) elMes.value = String(new Date().getMonth() + 1);
   if (elAno && !elAno.value) elAno.value = String(new Date().getFullYear());
-  // Preencher unidades
-  const elUnid = document.getElementById('dre-unidade');
-  if (elUnid && elUnid.options.length <= 1) {
-    unidades.forEach(u => {
-      const o = document.createElement('option');
-      o.value = u.id; o.textContent = u.nome;
-      elUnid.appendChild(o);
-    });
+  // Preencher unidades (multi-seleção)
+  const listaUni = document.getElementById('dre-lista-unidades');
+  if (listaUni && listaUni.children.length === 0) {
+    listaUni.innerHTML = unidades.map(u =>
+      `<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:13px;">
+        <input type="checkbox" class="dre-uni-cb" value="${u.id}" checked onchange="atualizarLabelDre()"> ${u.nome}
+      </label>`
+    ).join('');
   }
   _executarDre();
+}
+
+function toggleDreDropdown() {
+  const drop = document.getElementById('dre-drop-unidades');
+  if (drop) drop.classList.toggle('hidden');
+}
+
+function toggleTodosDre() {
+  const todos = document.getElementById('dre-uni-todos');
+  document.querySelectorAll('.dre-uni-cb').forEach(cb => cb.checked = todos.checked);
+  atualizarLabelDre();
+}
+
+function atualizarLabelDre() {
+  const cbs = [...document.querySelectorAll('.dre-uni-cb')];
+  const sel = cbs.filter(cb => cb.checked);
+  const todos = document.getElementById('dre-uni-todos');
+  const label = document.getElementById('dre-label-unidades');
+  if (todos) todos.checked = sel.length === cbs.length && cbs.length > 0;
+  if (!label) return;
+  if (sel.length === 0)                 label.textContent = 'Nenhuma unidade';
+  else if (sel.length === cbs.length)   label.textContent = 'Consolidado';
+  else if (sel.length === 1)            label.textContent = sel[0].parentElement.textContent.trim();
+  else                                  label.textContent = `${sel.length} unidades`;
 }
 
 async function _executarDre() {
@@ -7564,7 +7589,14 @@ async function _executarDre() {
   const db = obterSupabase();
   const mes       = parseInt(document.getElementById('dre-mes')?.value  || (new Date().getMonth() + 1));
   const ano       = parseInt(document.getElementById('dre-ano')?.value  || new Date().getFullYear());
-  const unidadeId = document.getElementById('dre-unidade')?.value || '';
+  // Multi-seleção de unidades: se todas (ou nenhuma restrição) → Consolidado (sem filtro).
+  const cbsUni      = [...document.querySelectorAll('.dre-uni-cb')];
+  const unidadesSel = cbsUni.filter(cb => cb.checked).map(cb => cb.value);
+  const totalUni    = cbsUni.length;
+  // filtra só quando é um subconjunto real (nem tudo, nem vazio)
+  const filtrarUnid = unidadesSel.length > 0 && unidadesSel.length < totalUni;
+  // Fecha o dropdown ao gerar
+  document.getElementById('dre-drop-unidades')?.classList.add('hidden');
 
   const mesStr  = String(mes).padStart(2, '0');
   const lastDay = new Date(ano, mes, 0).getDate();
@@ -7587,7 +7619,7 @@ async function _executarDre() {
         .gte('data_pagamento', de)
         .lte('data_pagamento', ate)
         .range(pagina * PAGE, (pagina + 1) * PAGE - 1);
-      if (unidadeId) q2 = q2.eq('unidade_id', unidadeId);
+      if (filtrarUnid) q2 = q2.in('unidade_id', unidadesSel);
       const { data: lote, error } = await q2;
       if (error || !lote || lote.length === 0) break;
       todos = todos.concat(lote);

@@ -1346,9 +1346,17 @@
           </div>
           <div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:13px;color:#666;">Unidade:</span>
-            <select id="dre-unidade" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;min-width:180px;">
-              <option value="">Consolidado</option>
-            </select>
+            <div class="dropdown-multi" style="position:relative;">
+              <button type="button" onclick="toggleDreDropdown()" id="dre-btn-unidades" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;min-width:180px;background:#fff;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                <i class="fas fa-store" style="color:#888;"></i> <span id="dre-label-unidades">Consolidado</span> <i class="fas fa-chevron-down" style="margin-left:auto;font-size:10px;color:#888;"></i>
+              </button>
+              <div id="dre-drop-unidades" class="dropdown-multi-lista hidden" style="position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:#fff;border:1px solid #ddd;border-radius:8px;padding:8px;min-width:220px;box-shadow:0 4px 12px rgba(0,0,0,.12);">
+                <label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:13px;font-weight:600;border-bottom:1px solid #eee;margin-bottom:4px;">
+                  <input type="checkbox" id="dre-uni-todos" checked onchange="toggleTodosDre()"> Consolidado (todas)
+                </label>
+                <div id="dre-lista-unidades"></div>
+              </div>
+            </div>
           </div>
           <button class="btn btn-primary btn-sm" onclick="carregarDre()">
             <i class="fas fa-search"></i> Gerar DRE

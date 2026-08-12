@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guia — Sistema de Estoque e Compras</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 13px;
+      color: #222;
+      background: #fff;
+      padding: 40px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* CAPA */
+    .capa {
+      text-align: center;
+      padding: 50px 20px 40px;
+      border-bottom: 3px solid #d32f2f;
+      margin-bottom: 36px;
+    }
+    .capa h1 {
+      font-size: 26px;
+      color: #d32f2f;
+      margin-bottom: 8px;
+    }
+    .capa h2 {
+      font-size: 16px;
+      color: #555;
+      font-weight: 400;
+      margin-bottom: 20px;
+    }
+    .capa .data {
+      font-size: 12px;
+      color: #888;
+    }
+
+    /* SEÇÕES */
+    h2.secao {
+      font-size: 16px;
+      color: #fff;
+      background: #d32f2f;
+      padding: 8px 14px;
+      border-radius: 4px;
+      margin: 32px 0 16px;
+    }
+    h3 {
+      font-size: 13px;
+      color: #d32f2f;
+      margin: 20px 0 8px;
+      border-left: 3px solid #d32f2f;
+      padding-left: 8px;
+    }
+    h4 {
+      font-size: 12px;
+      color: #333;
+      margin: 14px 0 6px;
+      font-weight: 600;
+    }
+
+    p { margin-bottom: 8px; line-height: 1.6; }
+
+    /* DIAGRAMA */
+    .diagrama {
+      background: #f8f8f8;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      margin: 12px 0;
+      white-space: pre;
+    }
+
+    /* TABELAS */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 12px;
+    }
+    thead tr {
+      background: #d32f2f;
+      color: #fff;
+    }
+    thead th {
+      padding: 8px 10px;
+      text-align: left;
+    }
+    tbody tr:nth-child(even) { background: #fafafa; }
+    tbody td {
+      padding: 7px 10px;
+      border-bottom: 1px solid #eee;
+    }
+
+    /* CÓDIGO SQL */
+    pre {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      overflow-x: auto;
+      margin: 10px 0 16px;
+      white-space: pre-wrap;
+    }
+    .sql-comment { color: #6a9955; }
+    .sql-keyword { color: #569cd6; }
+    .sql-string  { color: #ce9178; }
+
+    /* CHECKLIST */
+    .checklist {
+      list-style: none;
+      margin: 10px 0 16px 0;
+    }
+    .checklist li {
+      padding: 5px 0 5px 28px;
+      position: relative;
+      border-bottom: 1px dashed #eee;
+      line-height: 1.5;
+    }
+    .checklist li::before {
+      content: '☐';
+      position: absolute;
+      left: 4px;
+      color: #d32f2f;
+      font-size: 14px;
+    }
+
+    /* BOXES */
+    .box-info {
+      background: #e3f2fd;
+      border-left: 4px solid #1976d2;
+      padding: 10px 14px;
+      border-radius: 0 4px 4px 0;
+      margin: 12px 0;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .box-aviso {
+      background: #fff8e1;
+      border-left: 4px solid #f57c00;
+      padding: 10px 14px;
+      border-radius: 0 4px 4px 0;
+      margin: 12px 0;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    /* PASSOS NUMERADOS */
+    .passos { list-style: none; margin: 10px 0; }
+    .passos li {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 8px;
+      align-items: flex-start;
+      line-height: 1.5;
+    }
+    .passo-num {
+      background: #d32f2f;
+      color: #fff;
+      font-weight: bold;
+      font-size: 11px;
+      min-width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+      flex-shrink: 0;
+    }
+
+    /* RESPONSÁVEIS */
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .tag-dev { background: #e8f5e9; color: #2e7d32; }
+    .tag-wagner { background: #e3f2fd; color: #1565c0; }
+
+    /* QUEBRA DE PÁGINA */
+    .page-break { page-break-before: always; }
+
+    @media print {
+      body { padding: 20px; font-size: 12px; }
+      .capa { padding: 30px 0 24px; }
+      pre { font-size: 10px; }
+      h2.secao { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      thead tr { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .box-info, .box-aviso { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- CAPA -->
+<div class="capa">
+  <h1>Guia Completo — Sistema de Estoque e Compras</h1>
+  <h2>Tambaqui de Banda</h2>
+  <div class="data">Gerado em 01/06/2026</div>
+</div>
+
+<!-- VISÃO GERAL -->
+<h2 class="secao">Visão Geral</h2>
+
+<p>Vamos criar um <strong>novo sistema</strong> (Estoque + Compras) que se comunica com o <strong>sistema financeiro</strong> que já existe.</p>
+
+<div class="diagrama">┌─────────────────────┐        ┌──────────────────────────┐
+│  FINANCEIRO         │        │  ESTOQUE &amp; COMPRAS       │
+│  (já existe)        │◄──────►│  (novo projeto)          │
+│                     │        │                          │
+│  Lançamentos        │        │  Inventário              │
+│  Bancos             │        │  Compras                 │
+│  Contas a Pagar     │        │  Ficha Técnica           │
+│  Relatórios         │        │  Baixa de Vendas         │
+└─────────────────────┘        └──────────────────────────┘
+         │                                  │
+         └──────────── SUPABASE ────────────┘
+                   (mesmo projeto)</div>
+
+<div class="box-info">
+  <strong>Por que usar o mesmo Supabase?</strong><br>
+  Para que os dois sistemas conversem automaticamente. Exemplo: uma compra confirmada no estoque gera uma Conta a Pagar no financeiro automaticamente.
+</div>
+
+<!-- PARTE 1: GITHUB -->
+<h2 class="secao">Parte 1 — GitHub (Novo Repositório)</h2>
+
+<h3>Passo 1 — Wagner cria o repositório</h3>
+<ul class="passos">
+  <li><span class="passo-num">1</span> Acesse <strong>github.com</strong> e faça login</li>
+  <li><span class="passo-num">2</span> Clique no botão verde <strong>"New"</strong> (canto superior esquerdo)</li>
+  <li><span class="passo-num">3</span> Preencha o nome: <strong>estoque-compras-restaurante</strong></li>
+  <li><span class="passo-num">4</span> Marque <strong>"Add a README file"</strong></li>
+  <li><span class="passo-num">5</span> Clique em <strong>"Create repository"</strong></li>
+</ul>
+
+<h3>Passo 2 — Adicionar o desenvolvedor como colaborador</h3>
+<ul class="passos">
+  <li><span class="passo-num">1</span> No repositório novo, clique em <strong>Settings</strong></li>
+  <li><span class="passo-num">2</span> No menu lateral, clique em <strong>Collaborators</strong></li>
+  <li><span class="passo-num">3</span> Clique em <strong>"Add people"</strong> e busque pelo nome do desenvolvedor</li>
+  <li><span class="passo-num">4</span> O desenvolvedor recebe um e-mail de convite e precisa <strong>aceitar</strong></li>
+</ul>
+
+<h3>Passo 3 — Cada um baixa o projeto</h3>
+
+<p><strong>Wagner:</strong> Na página do repositório → botão verde <strong>"Code"</strong> → <strong>"Download ZIP"</strong> → extraia no computador.</p>
+<p><strong>Desenvolvedor:</strong> Usa <code>git clone</code> no terminal com o link do repositório.</p>
+
+<h3>Como enviar alterações ao GitHub</h3>
+<ul class="passos">
+  <li><span class="passo-num">1</span> Termine sua parte</li>
+  <li><span class="passo-num">2</span> Abra o repositório no navegador</li>
+  <li><span class="passo-num">3</span> Arraste os arquivos alterados para a página</li>
+  <li><span class="passo-num">4</span> Escreva o que fez e clique em <strong>"Commit changes"</strong></li>
+</ul>
+
+<div class="box-aviso">
+  <strong>Regra importante:</strong> Antes de começar a trabalhar, avise o desenvolvedor. Antes de enviar, baixe a versão mais recente do GitHub. Nunca mexa no mesmo arquivo ao mesmo tempo.
+</div>
+
+<!-- PARTE 2: SUPABASE -->
+<div class="page-break"></div>
+<h2 class="secao">Parte 2 — Supabase (Mesmo Projeto)</h2>
+
+<div class="box-info">
+  <strong>Não criar um projeto Supabase novo.</strong> Use o mesmo projeto do sistema financeiro. A URL e a Chave são as mesmas.
+</div>
+
+<h3>Convenção de nomes das tabelas</h3>
+
+<table>
+  <thead><tr><th>Sistema</th><th>Prefixo</th><th>Exemplo</th></tr></thead>
+  <tbody>
+    <tr><td>Financeiro (existente)</td><td><em>sem prefixo</em></td><td>lancamentos, bancos</td></tr>
+    <tr><td>Estoque</td><td><strong>est_</strong></td><td>est_produtos, est_movimentacoes</td></tr>
+    <tr><td>Compras</td><td><strong>cmp_</strong></td><td>cmp_pedidos, cmp_itens</td></tr>
+  </tbody>
+</table>
+
+<h3>Tabelas compartilhadas (já existem)</h3>
+
+<table>
+  <thead><tr><th>Tabela</th><th>O que é</th></tr></thead>
+  <tbody>
+    <tr><td>fornecedores</td><td>Cadastro de fornecedores</td></tr>
+    <tr><td>unidades</td><td>Unidades do restaurante</td></tr>
+    <tr><td>perfis</td><td>Usuários do sistema</td></tr>
+    <tr><td>lancamentos</td><td>Lançamentos financeiros</td></tr>
+    <tr><td>bancos</td><td>Bancos cadastrados</td></tr>
+  </tbody>
+</table>
+
+<h3>SQL — Etapa 1 — Tabelas de Estoque <span class="tag tag-dev">Desenvolvedor</span></h3>
+<pre><span class="sql-comment">-- Produtos / Insumos</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> est_produtos (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  nome text <span class="sql-keyword">NOT NULL</span>,
+  unidade_medida text <span class="sql-keyword">NOT NULL</span>,
+  categoria text,
+  estoque_atual decimal(10,3) <span class="sql-keyword">DEFAULT</span> 0,
+  estoque_minimo decimal(10,3) <span class="sql-keyword">DEFAULT</span> 0,
+  custo_unitario decimal(10,2) <span class="sql-keyword">DEFAULT</span> 0,
+  ativo boolean <span class="sql-keyword">DEFAULT</span> true,
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Movimentações de estoque (entradas e saídas)</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> est_movimentacoes (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  produto_id uuid <span class="sql-keyword">REFERENCES</span> est_produtos(id),
+  tipo text <span class="sql-keyword">NOT NULL CHECK</span> (tipo <span class="sql-keyword">IN</span> (<span class="sql-string">'entrada'</span>,<span class="sql-string">'saida'</span>,<span class="sql-string">'ajuste'</span>)),
+  quantidade decimal(10,3) <span class="sql-keyword">NOT NULL</span>,
+  custo_unitario decimal(10,2),
+  motivo text,
+  lancamento_id uuid <span class="sql-keyword">REFERENCES</span> lancamentos(id),
+  data_movimentacao date <span class="sql-keyword">NOT NULL DEFAULT CURRENT_DATE</span>,
+  usuario_id uuid <span class="sql-keyword">REFERENCES</span> perfis(id),
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-keyword">ALTER TABLE</span> est_produtos <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">ALTER TABLE</span> est_movimentacoes <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> est_produtos <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> est_movimentacoes <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);</pre>
+
+<h3>SQL — Etapa 2 — Tabelas de Compras <span class="tag tag-dev">Desenvolvedor</span></h3>
+<pre><span class="sql-comment">-- Pedidos de compra</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> cmp_pedidos (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  fornecedor_id uuid <span class="sql-keyword">REFERENCES</span> fornecedores(id),
+  numero_pedido text,
+  data_pedido date <span class="sql-keyword">NOT NULL DEFAULT CURRENT_DATE</span>,
+  data_entrega_prevista date,
+  data_entrega_real date,
+  status text <span class="sql-keyword">DEFAULT</span> <span class="sql-string">'pendente'</span> <span class="sql-keyword">CHECK</span> (status <span class="sql-keyword">IN</span> (<span class="sql-string">'pendente'</span>,<span class="sql-string">'recebido'</span>,<span class="sql-string">'cancelado'</span>)),
+  total decimal(10,2) <span class="sql-keyword">DEFAULT</span> 0,
+  observacoes text,
+  lancamento_id uuid <span class="sql-keyword">REFERENCES</span> lancamentos(id),
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Itens dos pedidos</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> cmp_itens (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  pedido_id uuid <span class="sql-keyword">REFERENCES</span> cmp_pedidos(id) <span class="sql-keyword">ON DELETE CASCADE</span>,
+  produto_id uuid <span class="sql-keyword">REFERENCES</span> est_produtos(id),
+  quantidade decimal(10,3) <span class="sql-keyword">NOT NULL</span>,
+  custo_unitario decimal(10,2) <span class="sql-keyword">NOT NULL</span>,
+  total decimal(10,2) <span class="sql-keyword">GENERATED ALWAYS AS</span> (quantidade * custo_unitario) <span class="sql-keyword">STORED</span>,
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-keyword">ALTER TABLE</span> cmp_pedidos <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">ALTER TABLE</span> cmp_itens <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> cmp_pedidos <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> cmp_itens <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);</pre>
+
+<div class="page-break"></div>
+<h3>SQL — Etapa 3 — Ficha Técnica e Vendas <span class="tag tag-wagner">Wagner</span></h3>
+<pre><span class="sql-comment">-- Fichas técnicas (receitas dos pratos)</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> est_fichas_tecnicas (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  nome text <span class="sql-keyword">NOT NULL</span>,
+  categoria text,
+  rendimento decimal(10,3) <span class="sql-keyword">DEFAULT</span> 1,
+  unidade_rendimento text <span class="sql-keyword">DEFAULT</span> <span class="sql-string">'porção'</span>,
+  custo_total decimal(10,2) <span class="sql-keyword">DEFAULT</span> 0,
+  preco_venda decimal(10,2),
+  ativo boolean <span class="sql-keyword">DEFAULT</span> true,
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Ingredientes de cada ficha técnica</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> est_ficha_ingredientes (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  ficha_id uuid <span class="sql-keyword">REFERENCES</span> est_fichas_tecnicas(id) <span class="sql-keyword">ON DELETE CASCADE</span>,
+  produto_id uuid <span class="sql-keyword">REFERENCES</span> est_produtos(id),
+  quantidade decimal(10,4) <span class="sql-keyword">NOT NULL</span>,
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Registro de vendas (baixa automática do estoque)</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> est_vendas (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  data_venda date <span class="sql-keyword">NOT NULL DEFAULT CURRENT_DATE</span>,
+  origem text <span class="sql-keyword">DEFAULT</span> <span class="sql-string">'manual'</span> <span class="sql-keyword">CHECK</span> (origem <span class="sql-keyword">IN</span> (<span class="sql-string">'manual'</span>,<span class="sql-string">'importacao'</span>)),
+  total_vendas decimal(10,2) <span class="sql-keyword">DEFAULT</span> 0,
+  observacoes text,
+  lancamento_id uuid <span class="sql-keyword">REFERENCES</span> lancamentos(id),
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Itens vendidos por ficha técnica</span>
+<span class="sql-keyword">CREATE TABLE IF NOT EXISTS</span> est_venda_itens (
+  id uuid <span class="sql-keyword">DEFAULT</span> gen_random_uuid() <span class="sql-keyword">PRIMARY KEY</span>,
+  venda_id uuid <span class="sql-keyword">REFERENCES</span> est_vendas(id) <span class="sql-keyword">ON DELETE CASCADE</span>,
+  ficha_id uuid <span class="sql-keyword">REFERENCES</span> est_fichas_tecnicas(id),
+  quantidade decimal(10,3) <span class="sql-keyword">NOT NULL</span>,
+  total decimal(10,2),
+  created_at timestamptz <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-keyword">ALTER TABLE</span> est_fichas_tecnicas <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">ALTER TABLE</span> est_ficha_ingredientes <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">ALTER TABLE</span> est_vendas <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">ALTER TABLE</span> est_venda_itens <span class="sql-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> est_fichas_tecnicas <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> est_ficha_ingredientes <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> est_vendas <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);
+<span class="sql-keyword">CREATE POLICY</span> <span class="sql-string">"Acesso autenticado"</span> <span class="sql-keyword">ON</span> est_venda_itens <span class="sql-keyword">FOR ALL TO</span> authenticated <span class="sql-keyword">USING</span> (true);</pre>
+
+<!-- PARTE 3: DIVISÃO DO TRABALHO -->
+<h2 class="secao">Parte 3 — Divisão do Trabalho</h2>
+
+<table>
+  <thead><tr><th>Módulo</th><th>Responsável</th><th>Arquivos</th></tr></thead>
+  <tbody>
+    <tr><td>Cadastro de Produtos/Insumos</td><td><span class="tag tag-dev">Desenvolvedor</span></td><td>produtos.html, produtos.js</td></tr>
+    <tr><td>Inventário / Movimentações</td><td><span class="tag tag-dev">Desenvolvedor</span></td><td>inventario.html, inventario.js</td></tr>
+    <tr><td>Pedidos de Compra</td><td><span class="tag tag-dev">Desenvolvedor</span></td><td>compras.html, compras.js</td></tr>
+    <tr><td>Ficha Técnica</td><td><span class="tag tag-wagner">Wagner + Claude</span></td><td>ficha-tecnica.html, ficha-tecnica.js</td></tr>
+    <tr><td>Baixa de Vendas</td><td><span class="tag tag-wagner">Wagner + Claude</span></td><td>vendas.html, vendas.js</td></tr>
+    <tr><td>Tela principal / menu</td><td><span class="tag tag-dev">Desenvolvedor</span></td><td>index.html, style.css</td></tr>
+  </tbody>
+</table>
+
+<!-- PARTE 4: COMUNICAÇÃO -->
+<h2 class="secao">Parte 4 — Como os Sistemas se Comunicam</h2>
+
+<table>
+  <thead><tr><th>Ação no Estoque/Compras</th><th>O que acontece no Financeiro</th></tr></thead>
+  <tbody>
+    <tr><td>Pedido de compra recebido</td><td>Cria automaticamente uma Conta a Pagar</td></tr>
+    <tr><td>Venda registrada</td><td>Cria automaticamente uma Receita</td></tr>
+  </tbody>
+</table>
+
+<div class="box-info">
+  Os dois sistemas compartilham a mesma base de dados Supabase. Fornecedores, usuários e unidades cadastrados no financeiro já aparecem no estoque automaticamente — sem precisar cadastrar duas vezes.
+</div>
+
+<!-- PARTE 5: FLUXO EM EQUIPE -->
+<h2 class="secao">Parte 5 — Fluxo de Trabalho em Equipe</h2>
+
+<h3>Regras para trabalhar sem conflito</h3>
+<ul class="passos">
+  <li><span class="passo-num">1</span> <strong>Antes de começar:</strong> avise no WhatsApp em qual parte vai mexer</li>
+  <li><span class="passo-num">2</span> <strong>Ao terminar:</strong> envie para o GitHub e avise que terminou</li>
+  <li><span class="passo-num">3</span> <strong>Na próxima sessão:</strong> baixe a versão mais recente antes de começar</li>
+  <li><span class="passo-num">4</span> <strong>Nunca</strong> mexa no mesmo arquivo ao mesmo tempo</li>
+</ul>
+
+<!-- CHECKLIST FINAL -->
+<h2 class="secao">Checklist de Início</h2>
+
+<h3>Wagner faz:</h3>
+<ul class="checklist">
+  <li>Criar repositório no GitHub (estoque-compras-restaurante)</li>
+  <li>Adicionar desenvolvedor como colaborador</li>
+  <li>Rodar SQL Etapa 1 no Supabase (Estoque)</li>
+  <li>Rodar SQL Etapa 2 no Supabase (Compras)</li>
+  <li>Rodar SQL Etapa 3 no Supabase (Ficha Técnica e Vendas)</li>
+  <li>Compartilhar este guia com o desenvolvedor</li>
+</ul>
+
+<h3>Desenvolvedor faz:</h3>
+<ul class="checklist">
+  <li>Aceitar convite do GitHub</li>
+  <li>Clonar o repositório</li>
+  <li>Confirmar que o SQL foi rodado corretamente</li>
+  <li>Iniciar módulo de Produtos/Insumos</li>
+  <li>Iniciar módulo de Inventário e Compras</li>
+</ul>
+
+<h3>Wagner (com Claude):</h3>
+<ul class="checklist">
+  <li>Iniciar módulo de Ficha Técnica</li>
+  <li>Iniciar módulo de Baixa de Vendas</li>
+</ul>
+
+</body>
+</html>
