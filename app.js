@@ -7589,7 +7589,7 @@ async function _executarPonteCaixa() {
       ['eq', 'status', 'pago'], ['not', 'banco_id', 'is', null], ['lte', 'data_pagamento', mesFim]
     ]),
     // detalhe do mês (para reproduzir a DRE + itens de reconciliação)
-    buscar('lancamentos', 'id, tipo, valor, plano_conta_id, banco_id, descricao, unidade_id, data_pagamento', [
+    buscar('lancamentos', 'id, tipo, valor, plano_conta_id, banco_id, descricao, unidade_id, data_pagamento, tem_rateio', [
       ['eq', 'status', 'pago'], ['gte', 'data_pagamento', mesIni], ['lte', 'data_pagamento', mesFim]
     ]),
     // transferências até o fim do mês (afetam saldo por conta; no consolidado se anulam)
@@ -7620,15 +7620,16 @@ async function _executarPonteCaixa() {
   const consFim = Object.values(saldoFim).reduce((a, v) => a + v, 0);
   const varReal = consFim - consIni;
 
-  // ---- DRE do mês (mesmo motor da tela DRE) ----
-  const cal = _calcularDre(mesRows);
+  // ---- DRE do mês (mesmo motor da tela DRE, com rateio expandido) ----
+  const mesEx = await _expandirRateios(db, mesRows);
+  const cal = _calcularDre(mesEx);
   const resultadoDRE = cal.resultadoFinal;
 
   // ---- Itens de reconciliação (DRE -> Caixa) ----
   const planoIds = new Set(planoContas.map(p => p.id));
   const catValida = (l) => l.plano_conta_id && planoIds.has(l.plano_conta_id);
   let recSemCatBanco = 0, despSemCatBanco = 0, despCatSemBanco = 0, recCatSemBanco = 0;
-  mesRows.forEach(l => {
+  mesEx.forEach(l => {
     const v = Number(l.valor), temBanco = !!l.banco_id, cat = catValida(l);
     if (l.tipo === 'receber') {
       if (!cat && temBanco) recSemCatBanco += v;
@@ -7828,6 +7829,37 @@ function atualizarLabelDre() {
   else                                  label.textContent = `${sel.length} unidades`;
 }
 
+// Expande lançamentos com rateio: substitui cada lançamento tem_rateio pelos
+// seus itens de rateio_itens (cada um com seu plano_conta_id e valor), herdando
+// os demais campos do pai (id, tipo, banco_id, unidade_id, descricao, data).
+// Assim a categorização feita no rateio entra na DRE / relatórios.
+async function _expandirRateios(db, lancamentos) {
+  const ids = lancamentos.filter(l => l.tem_rateio).map(l => l.id);
+  if (ids.length === 0) return lancamentos;
+  const mapa = {};
+  const CH = 150;
+  for (let i = 0; i < ids.length; i += CH) {
+    const { data } = await db.from('rateio_itens')
+      .select('lancamento_id, plano_conta_id, valor')
+      .in('lancamento_id', ids.slice(i, i + CH));
+    (data || []).forEach(r => { (mapa[r.lancamento_id] = mapa[r.lancamento_id] || []).push(r); });
+  }
+  const out = [];
+  lancamentos.forEach(l => {
+    const itens = mapa[l.id];
+    if (l.tem_rateio && itens && itens.length) {
+      // Ancora o total no valor REALMENTE pago: usa o rateio só para a proporção
+      // entre categorias. Protege contra rateio digitado com total errado.
+      const soma = itens.reduce((a, r) => a + Number(r.valor), 0);
+      const fator = (soma > 0.01 && Math.abs(soma - Number(l.valor)) > 0.01) ? Number(l.valor) / soma : 1;
+      itens.forEach(r => out.push({ ...l, plano_conta_id: r.plano_conta_id, valor: Number(r.valor) * fator, _viaRateio: true }));
+    } else {
+      out.push(l);   // sem rateio, ou rateio sem itens (fica como está → aparece como sem categoria)
+    }
+  });
+  return out;
+}
+
 async function _executarDre() {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
@@ -7858,7 +7890,7 @@ async function _executarDre() {
     let todos = [], pagina = 0;
     while (true) {
       let q2 = db.from('lancamentos')
-        .select('id, tipo, plano_conta_id, valor, data_pagamento, descricao, unidade_id')
+        .select('id, tipo, plano_conta_id, valor, data_pagamento, descricao, unidade_id, tem_rateio')
         .eq('status', 'pago')
         .gte('data_pagamento', de)
         .lte('data_pagamento', ate)
@@ -7879,8 +7911,15 @@ async function _executarDre() {
     buscarPaginado(`${ano}-01-01`, `${ano}-12-31`),
   ]);
 
-  const calMes = _calcularDre(dadosMes);
-  const calAno = _calcularDre(dadosAno);
+  // Expande rateio para que a categorização feita na divisão entre na DRE
+  const [exMes, exAno, exHist] = await Promise.all([
+    _expandirRateios(db, dadosMes),
+    _expandirRateios(db, dadosAno),
+    _expandirRateios(db, dadosHist),
+  ]);
+
+  const calMes = _calcularDre(exMes);
+  const calAno = _calcularDre(exAno);
   const mesesPt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
   _renderizarDreKPIs(calMes, calAno);
@@ -7888,7 +7927,7 @@ async function _executarDre() {
 
   window._dreCalMes   = calMes;
   window._dreCalAno   = calAno;
-  window._dreHistData = dadosHist;
+  window._dreHistData = exHist;
   window._dreAno      = ano;
   // Se a aba BI já estiver ativa, renderiza imediatamente
   if (document.getElementById('dre-aba-bi')?.style.display !== 'none') _renderizarChartsBI();
