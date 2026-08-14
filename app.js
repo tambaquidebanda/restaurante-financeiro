@@ -3803,16 +3803,27 @@ async function computePix(db, de, ate) {
     return false;
   };
   const dias = {};
-  const novo = () => ({ n: 0, ok: 0, total: 0, semBanco: [], semExtrato: false });
+  const novo = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], semExtrato: false });
   // ordena por dia+hora → prioriza casar no mesmo dia (gap 0) na ordem cronológica
   pdv.sort((a, b) => (a.dia + a.hora).localeCompare(b.dia + b.hora)).forEach(p => {
     const D = dias[p.dia] = dias[p.dia] || novo();
     D.n++; D.total += (p.valor_bruto || 0);
     if (casar(p)) D.ok++; else D.semBanco.push(p);
   });
-  // Dia com muitas vendas e NENHUMA casada = o extrato do banco desse dia não foi
-  // importado (não é venda perdida). Marca como "sem extrato" e não acusa erro.
-  Object.values(dias).forEach(D => { if (D.n >= 5 && D.ok === 0) { D.semExtrato = true; D.semBanco = []; } });
+  // Resolvidos manualmente (Pix informado errado no fechamento) — saem das pendências.
+  const resMap = new Map();
+  try {
+    const resol = await ccFetchPaginado(() => db.from('conc_conciliacoes')
+      .select('venda_pdv_id,tipo_divergencia').eq('etapa', 'pdv_banco').eq('status', 'resolvido_manual'));
+    resol.forEach(r => { if (r.venda_pdv_id) resMap.set(r.venda_pdv_id, r); });
+  } catch (e) { /* tabela pode não ter linhas ainda */ }
+  Object.values(dias).forEach(D => {
+    // Dia com muitas vendas e NENHUMA casada = extrato do banco não importado (não é erro).
+    if (D.n >= 5 && D.ok === 0) { D.semExtrato = true; D.semBanco = []; return; }
+    const still = [];
+    D.semBanco.forEach(p => { const r = resMap.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else still.push(p); });
+    D.semBanco = still;
+  });
   return { dias };
 }
 
@@ -3927,7 +3938,7 @@ async function renderCartao() {
     ['invest', 'ruido', 'gAlone', 'resolv'].forEach(k => DA[k].forEach(x => { x._vd = sd; T[k].push(x); }));
     if (sd !== c) T.saleDays.add(sd);
   });
-  const novoP = () => ({ n: 0, ok: 0, total: 0, semBanco: [], gapN: 0 });
+  const novoP = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], gapN: 0 });
   Object.keys(P.dias).forEach(sd => {
     const c = proxCredito(sd) || sd;
     const T = pixG[c] = pixG[c] || novoP();
@@ -3935,6 +3946,7 @@ async function renderCartao() {
     T.n += PD.n; T.ok += PD.ok; T.total += PD.total;
     if (PD.semExtrato) T.gapN += PD.n;
     PD.semBanco.forEach(x => { x._vd = sd; T.semBanco.push(x); });
+    (PD.resolv || []).forEach(x => { x._vd = sd; T.resolv.push(x); });
   });
   const diasB = B.dias;
 
@@ -3945,6 +3957,7 @@ async function renderCartao() {
   const rb = (kind, id, tipo, valor, label) => `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 6px;cursor:pointer;white-space:nowrap">${label}</button>`;
   const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('pdv', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
   const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ OK')}</span>`;
+  const btnsPix = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('pix', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pix', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Não recebido')}${rb('pix', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
   const motivoLbl = m => ({ forma_errada: 'Pago em outra forma', venda_nao_processada: 'Venda perdida', conferido: 'Conferido', outra_comanda: 'Lançada em outra comanda', cartao_duplicado: 'Cartão passado 2x', recebimento_sem_venda: 'Conferido' }[m] || m || 'Resolvido');
   const linhaAcao = inner => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:2px 0">${inner}</div>`;
   const bloco = (tit, inner) => `<div style="border:1px solid #eee;border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">${tit}${inner}</div>`;
@@ -4005,7 +4018,14 @@ async function renderCartao() {
     if (PG && PG.n) {
       const stP = pixKO > 0 ? `<span style="color:#e67e22">⚠️ ${pixKO} de ${confN} não caíram</span>` : (PG.gapN ? `<span style="color:#c9930a">⏳ ${PG.gapN} sem extrato importado</span>` : `<span style="color:#16a085">🟢 ${confN} conferidos</span>`);
       b3 = linhaVal('Total Pix (PDV)', ccBRL(PG.total), true) + `<div style="font-size:12px;margin-top:4px">${stP}</div>`;
-      if (pixKO > 0) { const l = PG.semBanco.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => `<div style="font-size:12px;color:#555;padding:1px 0">${multiSale && p._vd ? `<span style="font-size:10px;color:#999;width:36px;display:inline-block">${p._vd.slice(8, 10)}/${p._vd.slice(5, 7)}</span> ` : ''}${p.hora || ''} · ${ccBRL(p.valor_bruto)}</div>`).join(''); b3 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Pix do PDV sem entrada no banco:</div>${l}`; }
+      if (pixKO > 0) {
+        const l = PG.semBanco.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => linhaAcao(dchip(p) + `<span style="font-size:12px;color:#555;width:46px">${p.hora || ''}</span><span style="font-size:12px;width:80px;text-align:right">${ccBRL(p.valor_bruto)}</span>` + btnsPix(p))).join('');
+        b3 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Pix do PDV sem entrada no banco:</div>${l}`;
+      }
+      if (PG.resolv && PG.resolv.length) {
+        const l = PG.resolv.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.85">${dchip(p)}<span style="font-size:12px;color:#555;width:46px">${p.hora || ''}</span><span style="font-size:12px;width:80px;text-align:right">${ccBRL(p.valor_bruto)}</span><span style="font-size:11px;color:#16a085;margin-left:6px">✔️ ${motivoLbl(p.resol && p.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('pix','${p.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:4px">desfazer</button></div>`).join('');
+        b3 += `<div style="margin-top:6px;font-size:11px;color:#16a085;font-weight:700">✔️ Resolvidos:</div>${l}`;
+      }
     } else { b3 = '<div style="font-size:12px;color:#999">Sem Pix nesse dia.</div>'; }
 
     const header = `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:10px">
@@ -4457,10 +4477,11 @@ async function ccResolver(kind, id, tipo, valor) {
   const db = obterSupabase();
   let email = '';
   try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
-  const row = { etapa: 'pdv_operadora', status: 'resolvido_manual', tipo_divergencia: tipo,
+  const etapa = kind === 'pix' ? 'pdv_banco' : 'pdv_operadora';
+  const row = { etapa, status: 'resolvido_manual', tipo_divergencia: tipo,
     resolvido_por: email, resolvido_em: new Date().toISOString() };
-  if (kind === 'pdv') { row.venda_pdv_id = id; row.valor_esperado = valor; row.tipo_divergencia = tipo; }
-  else { row.transacao_id = id; row.valor_real = valor; if (tipo === 'conferido') row.tipo_divergencia = 'recebimento_sem_venda'; }
+  if (kind === 'gnet') { row.transacao_id = id; row.valor_real = valor; if (tipo === 'conferido') row.tipo_divergencia = 'recebimento_sem_venda'; }
+  else { row.venda_pdv_id = id; row.valor_esperado = valor; }  // pdv e pix
   const { error } = await db.from('conc_conciliacoes').insert(row);
   if (error) { mostrarToast('Erro ao resolver: ' + error.message, 'erro'); return; }
   mostrarToast('Caso resolvido ✔️', 'sucesso');
@@ -4471,9 +4492,10 @@ async function ccResolver(kind, id, tipo, valor) {
 async function ccDesfazer(kind, id) {
   if (!id) return;
   const db = obterSupabase();
-  const col = kind === 'pdv' ? 'venda_pdv_id' : 'transacao_id';
+  const etapa = kind === 'pix' ? 'pdv_banco' : 'pdv_operadora';
+  const col = kind === 'gnet' ? 'transacao_id' : 'venda_pdv_id';
   const { error } = await db.from('conc_conciliacoes').delete()
-    .eq('etapa', 'pdv_operadora').eq('status', 'resolvido_manual').eq(col, id);
+    .eq('etapa', etapa).eq('status', 'resolvido_manual').eq(col, id);
   if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
   mostrarToast('Resolução desfeita', 'sucesso');
   renderCartao();
