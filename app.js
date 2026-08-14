@@ -4181,9 +4181,9 @@ function cxqPlanoOptions() {
 
 function cxqPagamentoHTML(m) {
   if (m.status === 'lancado') {
-    return `<div style="font-size:12px;color:#16a085;padding:3px 0 3px 10px;opacity:.9">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
+    return `<div style="font-size:12px;color:#16a085;padding:2px 0">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
   }
-  return `<div style="background:#fffdf8;border:1px solid #f0d9b8;border-radius:8px;padding:8px 10px;margin:0 0 6px 10px">
+  return `<div style="background:#fbf8f2;border:1px solid #efe0c8;border-radius:8px;padding:8px 10px;margin-bottom:6px">
     <div style="font-size:12px;color:#2c3e50"><strong>${ccBRL(m.valor)}</strong> · ${m.hora || ''} · <span style="color:#777">${m.descricao || ''}</span></div>
     <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
       <select id="cxq-plano-${m.id}" style="flex:1;min-width:150px;padding:5px;border:1px solid #ddd;border-radius:6px;font-size:12px">${cxqPlanoOptions()}</select>
@@ -4208,6 +4208,8 @@ function cxqDetalheHTML(d, confs, movs) {
     const caixas = Object.values(lojas[loja].caixas).sort((a, b) => a.ext - b.ext);
     caixas.forEach(({ ext, conf: c, movs: ms }) => {
       const despesas = (ms || []).reduce((s, m) => s + Number(m.valor || 0), 0);
+      const temPend = ms.some(m => m.status !== 'lancado');
+      let inner;
       if (c) {
         const contado = cxqContado(c);
         const esperado = Number(c.esperado || 0);
@@ -4217,8 +4219,7 @@ function cxqDetalheHTML(d, confs, movs) {
         const okc = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
         const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
         const btnLbl = c.confirmado ? 'Atualizar conferência' : (bruto > 0 ? `Confirmar → recebimento ${ccBRL(bruto)}` : 'Confirmar');
-        html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:9px 11px;margin-bottom:4px">
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="font-weight:600;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
+        inner = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="font-weight:700;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
           ${linha('Faturado em dinheiro', ccBRL(bruto))}
           ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
           <div style="border-top:1px solid #eee;margin:3px 0"></div>
@@ -4228,13 +4229,18 @@ function cxqDetalheHTML(d, confs, movs) {
             <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:96px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
             <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
           </div>
-          <button onclick="cxqConfirmar('${c.id}')" style="margin-top:6px;width:100%;font-size:12px;border:1px solid #2c3e50;background:${c.confirmado ? '#fff' : '#2c3e50'};color:${c.confirmado ? '#2c3e50' : '#fff'};border-radius:6px;padding:5px 8px;cursor:pointer">${btnLbl}</button>
-        </div>`;
+          <button onclick="cxqConfirmar('${c.id}')" style="margin-top:6px;width:100%;font-size:12px;border:1px solid #2c3e50;background:${c.confirmado ? '#fff' : '#2c3e50'};color:${c.confirmado ? '#2c3e50' : '#fff'};border-radius:6px;padding:5px 8px;cursor:pointer">${btnLbl}</button>`;
       } else {
-        html += `<div style="font-size:12px;color:#999;margin-bottom:4px">Caixa ${ext}</div>`;
+        inner = `<div style="font-size:13px;font-weight:700;color:#2c3e50">Caixa ${ext}</div><div style="font-size:11px;color:#999">(sem conferência de dinheiro)</div>`;
       }
-      // pagamentos DESTE caixa, logo abaixo da conferência
-      ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).forEach(m => { html += cxqPagamentoHTML(m); });
+      // pagamentos DESTE caixa ficam DENTRO do card do caixa
+      let pagHtml = '';
+      if (ms.length) {
+        pagHtml = `<div style="border-top:1px dashed #e0c9a6;margin:9px -12px 7px;padding-top:7px"></div>
+          <div style="font-size:11px;color:#e67e22;font-weight:700;margin:0 0 5px">💸 Pagamentos deste caixa</div>`
+          + ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(m => cxqPagamentoHTML(m)).join('');
+      }
+      html += `<div style="background:#fff;border:1px solid #e6e6e6;${temPend ? 'border-left:3px solid #e67e22;' : ''}border-radius:10px;padding:10px 12px;margin-bottom:8px">${inner}${pagHtml}</div>`;
     });
   });
   return html;
