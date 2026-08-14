@@ -4051,11 +4051,224 @@ function cxeNum(id) { const el = document.getElementById(id); return el ? (parse
 function cxeCaixaBancoId() { return (bancosCadastrados || []).find(b => { const n = (b.nome || '').toLowerCase(); return n.includes('caixa') || n.includes('dinheiro'); })?.id || null; }
 function cxeTrocarData(d) { cxeDataSel = d; cxeRenderPainel(); }
 
+// ===== CONCILIAÇÃO DO DINHEIRO — calendário (conferência por caixa + pagamentos → Contas a Pagar) =====
+let cxqMes = '', cxqDiaSel = '', cxqResumoDia = {}, cxqDetalhes = {};
+const CXQ_TOL = 1.00; // diferença de caixa aceitável (R$)
+
+function cxqContado(c) { return c.contado_ajuste != null ? Number(c.contado_ajuste) : Number(c.contado_api || 0); }
+
 async function renderCaixaEspecie() {
-  if (!document.getElementById('cxe-painel')) return;
-  if (!cxeDataSel) cxeDataSel = cxeHoje();
-  await cxeRenderPainel();
-  await cxeRenderHistorico();
+  if (!document.getElementById('cxq-cal')) return;
+  if (!cxqMes) cxqMes = ccMesAtual();
+  const cal = document.getElementById('cxq-cal');
+  cal.innerHTML = cxqCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Carregando…</div>';
+  const db = obterSupabase();
+  const [Y, M] = cxqMes.split('-').map(Number);
+  const mesIni = `${Y}-${ccPad(M)}-01`;
+  const mesFim = `${Y}-${ccPad(M)}-${ccPad(new Date(Y, M, 0).getDate())}`;
+
+  let confs = [], movs = [];
+  try {
+    confs = await ccFetchPaginado(() => db.from('caixa_dia_conf').select('*').gte('data', mesIni).lte('data', mesFim));
+    movs  = await ccFetchPaginado(() => db.from('caixa_movimentos').select('*').eq('tipo', 'pagamento').gte('data', mesIni).lte('data', mesFim));
+  } catch (e) {
+    cal.innerHTML = cxqCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Rode o SQL_CAIXA_CONCILIACAO.sql e espere o robô do caixa rodar.</div>';
+    return;
+  }
+
+  const dias = {};
+  confs.forEach(c => { (dias[c.data] = dias[c.data] || { confs: [], movs: [] }).confs.push(c); });
+  movs.forEach(m => { (dias[m.data] = dias[m.data] || { confs: [], movs: [] }).movs.push(m); });
+
+  cxqResumoDia = {}; cxqDetalhes = {};
+  let totPend = 0, totPendValor = 0, totDiv = 0, totContado = 0;
+  Object.keys(dias).forEach(d => {
+    const { confs: cs, movs: ms } = dias[d];
+    const contado = cs.reduce((s, c) => s + cxqContado(c), 0);
+    const maxDif = cs.reduce((mx, c) => Math.max(mx, Math.abs(cxqContado(c) - Number(c.esperado || 0))), 0);
+    const pend = ms.filter(m => m.status === 'pendente');
+    totContado += contado;
+    if (pend.length) { totPend += pend.length; totPendValor += pend.reduce((s, m) => s + Number(m.valor || 0), 0); }
+    let cor = '#27ae60', chip = '✓ conferido';
+    if (maxDif > CXQ_TOL) { cor = '#e74c3c'; chip = '⚠️ dif ' + ccBRL(maxDif); totDiv++; }
+    else if (pend.length) { cor = '#e67e22'; chip = '🟠 ' + pend.length + ' pagto'; }
+    cxqResumoDia[d] = { cor, valTxt: ccBRL(contado), chip };
+    cxqDetalhes[d] = cxqDetalheHTML(d, cs, ms);
+  });
+
+  const cardsEl = document.getElementById('cxq-cards');
+  if (cardsEl) {
+    const card = (r, v, c) => `<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
+    cardsEl.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      ${card('🟠 Pagamentos a categorizar', String(totPend), totPend ? '#e67e22' : '#27ae60')}
+      ${card('💰 Total a categorizar', ccBRL(totPendValor), '#e67e22')}
+      ${card('⚠️ Dias com diferença', String(totDiv), totDiv ? '#e74c3c' : '#27ae60')}
+      ${card('💵 Dinheiro conferido (mês)', ccBRL(totContado), '#27ae60')}
+    </div>`;
+  }
+
+  if (!cxqDiaSel || !cxqResumoDia[cxqDiaSel]) {
+    const comDado = Object.keys(cxqResumoDia).sort();
+    cxqDiaSel = comDado.length ? comDado[comDado.length - 1] : '';
+  }
+  cal.innerHTML = cxqCalNav() + cxqCalGridHTML();
+  cxqRenderDetalhe();
+}
+
+function cxqMudarMes(delta) {
+  const [Y, M] = (cxqMes || ccMesAtual()).split('-').map(Number);
+  const d = new Date(Y, M - 1 + delta, 1);
+  cxqMes = d.getFullYear() + '-' + ccPad(d.getMonth() + 1);
+  cxqDiaSel = '';
+  renderCaixaEspecie();
+}
+function cxqCalNav() {
+  const [Y, M] = (cxqMes || ccMesAtual()).split('-').map(Number);
+  const nm = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  const btn = 'style="border:1px solid #ddd;background:#fff;border-radius:8px;width:34px;height:34px;font-size:18px;cursor:pointer;color:#2c3e50;line-height:1"';
+  return `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <button ${btn} onclick="cxqMudarMes(-1)">‹</button>
+    <strong style="font-size:16px;color:#2c3e50">${nm[M - 1]} / ${Y}</strong>
+    <button ${btn} onclick="cxqMudarMes(1)">›</button></div>`;
+}
+function cxqCalGridHTML() {
+  const [Y, M] = (cxqMes || ccMesAtual()).split('-').map(Number);
+  const lastDay = new Date(Y, M, 0).getDate();
+  const firstDow = new Date(Y, M - 1, 1).getDay();
+  const dows = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const head = dows.map(w => `<div style="text-align:center;font-size:11px;font-weight:700;color:#999;padding:2px 0">${w}</div>`).join('');
+  const vazio = () => '<div style="min-height:66px"></div>';
+  let cells = '';
+  for (let i = 0; i < firstDow; i++) cells += vazio();
+  for (let day = 1; day <= lastDay; day++) cells += cxqCalCellHTML(`${Y}-${ccPad(M)}-${ccPad(day)}`, day);
+  const trail = (7 - ((firstDow + lastDay) % 7)) % 7;
+  for (let i = 0; i < trail; i++) cells += vazio();
+  return `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${head}${cells}</div>`;
+}
+function cxqCalCellHTML(d, day) {
+  const R = cxqResumoDia[d];
+  const sel = d === cxqDiaSel ? 'box-shadow:0 0 0 2px #2c3e50;' : '';
+  if (!R) return `<div style="min-height:66px;border:1px solid #f2f2f2;border-radius:8px;padding:4px 6px;background:#fafafa"><div style="font-size:12px;color:#ccc">${day}</div></div>`;
+  return `<div onclick="cxqAbrirDia('${d}')" style="min-height:66px;border:1px solid #eee;border-left:4px solid ${R.cor};border-radius:8px;padding:4px 6px;background:#fff;cursor:pointer;${sel}">
+    <div style="font-size:12px;color:#999">${day}</div>
+    <div style="font-size:13px;font-weight:700;color:#2c3e50;font-variant-numeric:tabular-nums;line-height:1.15">${R.valTxt}</div>
+    <div style="font-size:10px;color:${R.cor};line-height:1.2;margin-top:1px">${R.chip}</div></div>`;
+}
+function cxqAbrirDia(d) {
+  cxqDiaSel = d;
+  const cal = document.getElementById('cxq-cal');
+  if (cal) cal.innerHTML = cxqCalNav() + cxqCalGridHTML();
+  cxqRenderDetalhe();
+}
+function cxqRenderDetalhe() {
+  const el = document.getElementById('cxq-detalhe');
+  if (!el) return;
+  el.innerHTML = (cxqDiaSel && cxqDetalhes[cxqDiaSel]) ? cxqDetalhes[cxqDiaSel]
+    : '<div class="sem-dados" style="padding:20px;color:#999">👈 Clique num dia pra ver os caixas e pagamentos.</div>';
+}
+
+function cxqPlanoOptions() {
+  const grupos = (planoContas || []).filter(p => p.tipo === 'pagar' && !p.grupo_id);
+  const subs = (planoContas || []).filter(p => p.tipo === 'pagar' && p.grupo_id);
+  let html = '<option value="">Plano de contas…</option>';
+  grupos.forEach(g => {
+    const ss = subs.filter(s => s.grupo_id === g.id);
+    if (!ss.length) return;
+    html += `<optgroup label="${g.nome}">` + ss.map(s => `<option value="${s.id}">${s.nome}</option>`).join('') + '</optgroup>';
+  });
+  return html;
+}
+
+function cxqDetalheHTML(d, confs, movs) {
+  const lojas = {};
+  confs.forEach(c => { (lojas[c.unidade_nome || '—'] = lojas[c.unidade_nome || '—'] || { confs: [], movs: [] }).confs.push(c); });
+  movs.forEach(m => { (lojas[m.unidade_nome || '—'] = lojas[m.unidade_nome || '—'] || { confs: [], movs: [] }).movs.push(m); });
+
+  let html = `<div style="font-size:15px;font-weight:800;color:#2c3e50;margin-bottom:12px">${ccDiaSemana(d)}, ${ccDT(d)}</div>`;
+  Object.keys(lojas).sort().forEach(loja => {
+    const { confs: cs, movs: ms } = lojas[loja];
+    html += `<div style="font-size:13px;font-weight:700;color:#2c3e50;margin:10px 0 6px;border-bottom:1px solid #eee;padding-bottom:3px">🏬 ${loja}</div>`;
+    cs.slice().sort((a, b) => a.caixa_ext - b.caixa_ext).forEach(c => {
+      const contado = cxqContado(c);
+      const dif = contado - Number(c.esperado || 0);
+      const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
+      const conf = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
+      html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#777"><span>Caixa ${c.caixa_ext}</span>${conf}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+          <span style="font-size:12px;color:#777">esperado ${ccBRL(c.esperado)}</span>
+          <span style="font-size:12px;color:#777">contado</span>
+          <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:96px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
+          <button onclick="cxqConfirmar('${c.id}')" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
+        </div></div>`;
+    });
+    if (ms.length) {
+      html += `<div style="font-size:11px;color:#e67e22;font-weight:700;margin:8px 0 4px">💸 Pagamentos em dinheiro:</div>`;
+      ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).forEach(m => {
+        if (m.status === 'lancado') {
+          html += `<div style="font-size:12px;color:#16a085;padding:3px 0;opacity:.9">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
+        } else {
+          html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:6px">
+            <div style="font-size:12px;color:#2c3e50"><strong>${ccBRL(m.valor)}</strong> · ${m.hora || ''} · <span style="color:#777">${m.descricao || ''}</span></div>
+            <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+              <select id="cxq-plano-${m.id}" style="flex:1;min-width:150px;padding:5px;border:1px solid #ddd;border-radius:6px;font-size:12px">${cxqPlanoOptions()}</select>
+              <button onclick="cxqCategorizar('${m.id}')" style="font-size:12px;background:#2c3e50;color:#fff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap">→ Contas a Pagar</button>
+            </div></div>`;
+        }
+      });
+    }
+  });
+  return html;
+}
+
+async function cxqConfirmar(confId) {
+  if (!(await garantirSessao())) return;
+  const inp = document.getElementById(`cxq-cont-${confId}`);
+  if (!inp) return;
+  const contado = parseFloat(inp.value) || 0;
+  const db = obterSupabase();
+  let email = ''; try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const { error } = await db.from('caixa_dia_conf').update({ contado_ajuste: contado, confirmado: true, confirmado_por: email, confirmado_em: new Date().toISOString() }).eq('id', confId);
+  if (error) { mostrarToast('Erro ao confirmar: ' + error.message, 'erro'); return; }
+  mostrarToast('Conferência confirmada ✔️', 'sucesso');
+  renderCaixaEspecie();
+}
+
+async function cxqCategorizar(movId) {
+  if (!(await garantirSessao())) return;
+  const sel = document.getElementById(`cxq-plano-${movId}`);
+  const planoId = sel && sel.value;
+  if (!planoId) { mostrarToast('Escolha o plano de contas.', 'erro'); return; }
+  const db = obterSupabase();
+  const { data: m, error: e0 } = await db.from('caixa_movimentos').select('*').eq('id', movId).single();
+  if (e0 || !m) { mostrarToast('Movimento não encontrado.', 'erro'); return; }
+  const caixaBanco = cxeCaixaBancoId();
+  if (!caixaBanco) { mostrarToast('Banco Caixa/Dinheiro não encontrado.', 'erro'); return; }
+  let email = ''; try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const { data: lanc, error: e1 } = await db.from('lancamentos').insert({
+    descricao: m.descricao || ('Pagamento em dinheiro ' + ccDT(m.data)),
+    valor: m.valor, tipo: 'pagar', status: 'pago',
+    data_pagamento: m.data, vencimento: m.data,
+    banco_id: caixaBanco, plano_conta_id: planoId, unidade_id: m.unidade_id || null,
+    observacoes: 'Caixa iComanda' + (m.usuario ? ' · ' + m.usuario : '')
+  }).select('id').single();
+  if (e1) { mostrarToast('Erro ao lançar: ' + e1.message, 'erro'); return; }
+  const { error: e2 } = await db.from('caixa_movimentos').update({ status: 'lancado', plano_conta_id: planoId, lancamento_id: lanc.id, processado_por: email, processado_em: new Date().toISOString() }).eq('id', movId);
+  if (e2) mostrarToast('Lançado, mas erro ao marcar o movimento: ' + e2.message, 'erro');
+  else mostrarToast('Pagamento enviado ao Contas a Pagar (pago) ✔️', 'sucesso');
+  renderCaixaEspecie();
+}
+
+async function cxqDesfazer(movId) {
+  if (!confirm('Desfazer este lançamento? A despesa some do Contas a Pagar.')) return;
+  const db = obterSupabase();
+  const { data: m } = await db.from('caixa_movimentos').select('lancamento_id').eq('id', movId).single();
+  if (m && m.lancamento_id) await db.from('lancamentos').delete().eq('id', m.lancamento_id);
+  const { error } = await db.from('caixa_movimentos').update({ status: 'pendente', lancamento_id: null, plano_conta_id: null, processado_por: null, processado_em: null }).eq('id', movId);
+  if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
+  mostrarToast('Lançamento desfeito', 'sucesso');
+  renderCaixaEspecie();
 }
 
 async function cxeRenderPainel() {

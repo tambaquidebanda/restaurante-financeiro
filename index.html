@@ -824,7 +824,7 @@
         <!-- Abas -->
         <div style="display:flex;gap:4px;border-bottom:2px solid #eee;margin:4px 0 12px;">
           <button id="cc-tab-cartao" onclick="ccMudarTab('cartao')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">💳 Cartão &amp; Pix</button>
-          <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Caixa (espécie)</button>
+          <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Dinheiro</button>
         </div>
         <!-- seletor de período legado (oculto — a aba Cartão navega por mês no calendário) -->
         <div class="filtros" style="display:none">
@@ -854,22 +854,17 @@
         <div id="cc-view-caixa" style="display:none">
           <div class="info-box">
             <i class="fas fa-lightbulb"></i>
-            <strong>Caixa em espécie.</strong> A pessoa confere o <strong>dinheiro do dia</strong> e confirma — o valor vira um <strong>recebimento no Caixa</strong> (entra no financeiro).
-            <br><span style="font-size:12px;color:#888">Os pagamentos em dinheiro já são lançados no Contas a Pagar, então não entram aqui.</span>
+            <strong>Conciliação do dinheiro.</strong> Cada dia mostra o dinheiro conferido nos caixas. <strong>Clique num dia</strong> para ver cada loja/caixa (esperado × contado) e os <strong>pagamentos em dinheiro</strong> — escolha o plano de contas e envie pro Contas a Pagar.
+            <br><span style="font-size:12px;color:#888">🟢 conferido · 🟠 pagamentos a categorizar · 🔴 diferença a investigar. Dados automáticos do PDV (iComanda).</span>
           </div>
-          <div id="cxe-painel" style="margin:14px 0"></div>
-          <h4 style="margin:22px 0 8px;color:#2c3e50">Dias conferidos</h4>
-          <div class="tabela-box" style="overflow-x:auto">
-            <table class="tabela">
-              <thead>
-                <tr>
-                  <th>Dia</th>
-                  <th style="text-align:right">Vendas dinheiro (PDV)</th><th style="text-align:right">Conferido</th><th style="text-align:right">Diferença</th>
-                  <th>Recebimento</th><th>Confirmado por</th><th></th>
-                </tr>
-              </thead>
-              <tbody id="cxe-corpo"><tr><td colspan="7" class="sem-dados">Selecione o período.</td></tr></tbody>
-            </table>
+          <div id="cxq-cards"></div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-top:6px">
+            <div style="flex:2 1 480px;min-width:300px">
+              <div id="cxq-cal"><div class="sem-dados" style="padding:30px;color:#999">Carregando…</div></div>
+            </div>
+            <div style="flex:1 1 320px;min-width:280px">
+              <div id="cxq-detalhe" style="border:1px solid #eee;border-radius:12px;padding:14px;background:#fdfdfd;min-height:200px"><div class="sem-dados" style="padding:20px;color:#999">Selecione um dia no calendário.</div></div>
+            </div>
           </div>
         </div>
       </section>
