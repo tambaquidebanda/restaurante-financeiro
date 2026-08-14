@@ -4218,18 +4218,17 @@ function cxqDetalheHTML(d, confs, movs) {
         const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
         const okc = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
         const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
-        const btnLbl = c.confirmado ? 'Atualizar conferência' : (bruto > 0 ? `Confirmar → recebimento ${ccBRL(bruto)}` : 'Confirmar');
         inner = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="font-weight:700;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
           ${linha('Faturado em dinheiro', ccBRL(bruto))}
           ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
           <div style="border-top:1px solid #eee;margin:3px 0"></div>
           ${linha('Esperado no caixa', ccBRL(esperado), { forte: true })}
-          <div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
             <span style="font-size:12px;color:#777">contado</span>
-            <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:96px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:90px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
             <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
-          </div>
-          <button onclick="cxqConfirmar('${c.id}')" style="margin-top:6px;width:100%;font-size:12px;border:1px solid #2c3e50;background:${c.confirmado ? '#fff' : '#2c3e50'};color:${c.confirmado ? '#2c3e50' : '#fff'};border-radius:6px;padding:5px 8px;cursor:pointer">${btnLbl}</button>`;
+            <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
+          </div>`;
       } else {
         inner = `<div style="font-size:13px;font-weight:700;color:#2c3e50">Caixa ${ext}</div><div style="font-size:11px;color:#999">(sem conferência de dinheiro)</div>`;
       }
