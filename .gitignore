@@ -8,6 +8,7 @@
 *.py
 !scripts/pull_getnet.py
 !scripts/pull_pdv.py
+!scripts/pull_caixa.py
 *.sql
 github-backup/
 .claude/
