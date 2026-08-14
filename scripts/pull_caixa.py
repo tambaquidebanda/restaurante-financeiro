@@ -74,11 +74,19 @@ def dados_caixa(data, caixa_ext):
     unidade_id = UNIDADES.get(unidade_nome)
     fc = d.get('fechamento_caixa', {})
     din = _dinheiro(fc)
+    # Faturado em dinheiro (bruto) = vendas em dinheiro; vira o recebimento no Caixa.
+    vendas_din = 0.0
+    for x in d.get('resumo_financeiro', []) or []:
+        nome = x.get('nome') or ''
+        if 'Faturado' in nome and 'inheiro' in nome:
+            vendas_din = round(float(x.get('valor') or 0), 2)
+            break
     conf = {
         'data': data, 'caixa_ext': caixa_ext,
         'unidade_nome': unidade_nome, 'unidade_id': unidade_id,
         'esperado': round(float(din.get('computado') or 0), 2),
         'contado_api': round(float(din.get('conferido') or 0), 2),
+        'vendas_dinheiro': vendas_din,
     }
     mv = d.get('movimentacoes')
     arr = mv if isinstance(mv, list) else ((mv or {}).get('movimentacoes') if isinstance(mv, dict) else [])
@@ -105,13 +113,16 @@ def dados_caixa(data, caixa_ext):
 
 
 # ---------- Supabase ----------
-def _post(path, rows, conflict):
+def _post(path, rows, conflict, merge=False):
+    # merge=True atualiza as colunas enviadas (mantém contado_ajuste/confirmado/recebimento,
+    # que não vão no payload); ignore = não mexe em linha já existente.
+    resol = 'merge-duplicates' if merge else 'ignore-duplicates'
     for i in range(0, len(rows), 500):
         data = json.dumps(rows[i:i + 500]).encode()
         req = urllib.request.Request(
             f'{BASE}/{path}?on_conflict={conflict}', data=data, method='POST',
             headers={**HDR, 'Content-Type': 'application/json',
-                     'Prefer': 'return=minimal,resolution=ignore-duplicates'})
+                     'Prefer': 'return=minimal,resolution=' + resol})
         urllib.request.urlopen(req, timeout=90)
 
 
@@ -165,7 +176,7 @@ def main():
             confs.append(conf)
             movs.extend(ms)
         if confs:
-            _post('caixa_dia_conf', confs, 'data,caixa_ext')
+            _post('caixa_dia_conf', confs, 'data,caixa_ext', merge=True)
         movs = [m for m in movs if m.get('movimentacao_ext') is not None]
         if movs:
             _post('caixa_movimentos', movs, 'movimentacao_ext')

@@ -4207,20 +4207,29 @@ function cxqDetalheHTML(d, confs, movs) {
     html += `<div style="font-size:13px;font-weight:700;color:#2c3e50;margin:10px 0 6px;border-bottom:1px solid #eee;padding-bottom:3px">🏬 ${loja}</div>`;
     const caixas = Object.values(lojas[loja].caixas).sort((a, b) => a.ext - b.ext);
     caixas.forEach(({ ext, conf: c, movs: ms }) => {
+      const despesas = (ms || []).reduce((s, m) => s + Number(m.valor || 0), 0);
       if (c) {
         const contado = cxqContado(c);
-        const dif = contado - Number(c.esperado || 0);
+        const esperado = Number(c.esperado || 0);
+        const bruto = Number(c.vendas_dinheiro || 0);
+        const dif = contado - esperado;
         const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
         const okc = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
-        html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:4px">
-          <div style="display:flex;justify-content:space-between;font-size:12px;color:#777"><span>Caixa ${ext}</span>${okc}</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
-            <span style="font-size:12px;color:#777">esperado ${ccBRL(c.esperado)}</span>
+        const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
+        const btnLbl = c.confirmado ? 'Atualizar conferência' : (bruto > 0 ? `Confirmar → recebimento ${ccBRL(bruto)}` : 'Confirmar');
+        html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:9px 11px;margin-bottom:4px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="font-weight:600;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
+          ${linha('Faturado em dinheiro', ccBRL(bruto))}
+          ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
+          <div style="border-top:1px solid #eee;margin:3px 0"></div>
+          ${linha('Esperado no caixa', ccBRL(esperado), { forte: true })}
+          <div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">
             <span style="font-size:12px;color:#777">contado</span>
             <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:96px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
             <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
-            <button onclick="cxqConfirmar('${c.id}')" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
-          </div></div>`;
+          </div>
+          <button onclick="cxqConfirmar('${c.id}')" style="margin-top:6px;width:100%;font-size:12px;border:1px solid #2c3e50;background:${c.confirmado ? '#fff' : '#2c3e50'};color:${c.confirmado ? '#2c3e50' : '#fff'};border-radius:6px;padding:5px 8px;cursor:pointer">${btnLbl}</button>
+        </div>`;
       } else {
         html += `<div style="font-size:12px;color:#999;margin-bottom:4px">Caixa ${ext}</div>`;
       }
@@ -4237,10 +4246,39 @@ async function cxqConfirmar(confId) {
   if (!inp) return;
   const contado = parseFloat(inp.value) || 0;
   const db = obterSupabase();
+  const { data: c, error: e0 } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
+  if (e0 || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
   let email = ''; try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
-  const { error } = await db.from('caixa_dia_conf').update({ contado_ajuste: contado, confirmado: true, confirmado_por: email, confirmado_em: new Date().toISOString() }).eq('id', confId);
-  if (error) { mostrarToast('Erro ao confirmar: ' + error.message, 'erro'); return; }
-  mostrarToast('Conferência confirmada ✔️', 'sucesso');
+  const caixaBanco = cxeCaixaBancoId();
+  const bruto = Number(c.vendas_dinheiro || 0);
+
+  // 1) recebimento das vendas em dinheiro (BRUTO) no Caixa — cria ou atualiza
+  let recId = c.recebimento_lancamento_id || null;
+  if (bruto > 0 && caixaBanco) {
+    if (recId) {
+      const { error } = await db.from('lancamentos').update({ valor: bruto, unidade_id: c.unidade_id || null }).eq('id', recId);
+      if (error) { mostrarToast('Erro ao atualizar recebimento: ' + error.message, 'erro'); return; }
+    } else {
+      const { data: lanc, error } = await db.from('lancamentos').insert({
+        descricao: `Vendas em dinheiro ${ccDT(c.data)} · Caixa ${c.caixa_ext}`,
+        valor: bruto, tipo: 'receber', status: 'pago',
+        data_pagamento: c.data, vencimento: c.data,
+        banco_id: caixaBanco, unidade_id: c.unidade_id || null
+      }).select('id').single();
+      if (error) { mostrarToast('Erro ao lançar recebimento: ' + error.message, 'erro'); return; }
+      recId = lanc.id;
+    }
+  } else if (bruto > 0 && !caixaBanco) {
+    mostrarToast('Confirmado, mas o banco "Caixa/Dinheiro" não foi encontrado — recebimento não lançado.', 'erro');
+  }
+
+  // 2) grava a conferência (contado + confirmado + link do recebimento)
+  const { error: e2 } = await db.from('caixa_dia_conf').update({
+    contado_ajuste: contado, confirmado: true, confirmado_por: email,
+    confirmado_em: new Date().toISOString(), recebimento_lancamento_id: recId
+  }).eq('id', confId);
+  if (e2) { mostrarToast('Erro ao confirmar: ' + e2.message, 'erro'); return; }
+  mostrarToast(bruto > 0 && caixaBanco ? `Conferido ✔️ · recebimento ${ccBRL(bruto)} no Caixa` : 'Conferência confirmada ✔️', 'sucesso');
   renderCaixaEspecie();
 }
 
