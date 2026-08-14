@@ -4209,7 +4209,13 @@ function cxqDetalheHTML(d, confs, movs) {
     caixas.forEach(({ ext, conf: c, movs: ms }) => {
       const despesas = (ms || []).reduce((s, m) => s + Number(m.valor || 0), 0);
       const temPend = ms.some(m => m.status !== 'lancado');
-      let inner;
+      const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
+      // lista de pagamentos (categorize) — entra logo abaixo do (−) Pagamentos
+      const pagList = ms.length
+        ? `<div style="font-size:11px;color:#e67e22;font-weight:700;margin:7px 0 5px">💸 Pagamentos deste caixa — categorize:</div>`
+          + ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(m => cxqPagamentoHTML(m)).join('')
+        : '';
+      let card;
       if (c) {
         const contado = cxqContado(c);
         const esperado = Number(c.esperado || 0);
@@ -4217,11 +4223,11 @@ function cxqDetalheHTML(d, confs, movs) {
         const dif = contado - esperado;
         const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
         const okc = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
-        const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
-        inner = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="font-weight:700;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
+        card = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="font-weight:700;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
           ${linha('Faturado em dinheiro', ccBRL(bruto))}
           ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
-          <div style="border-top:1px solid #eee;margin:3px 0"></div>
+          ${pagList}
+          <div style="border-top:1px solid #eee;margin:7px 0 3px"></div>
           ${linha('Esperado no caixa', ccBRL(esperado), { forte: true })}
           <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
             <span style="font-size:12px;color:#777">contado</span>
@@ -4230,16 +4236,9 @@ function cxqDetalheHTML(d, confs, movs) {
             <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
           </div>`;
       } else {
-        inner = `<div style="font-size:13px;font-weight:700;color:#2c3e50">Caixa ${ext}</div><div style="font-size:11px;color:#999">(sem conferência de dinheiro)</div>`;
+        card = `<div style="font-size:13px;font-weight:700;color:#2c3e50">Caixa ${ext}</div><div style="font-size:11px;color:#999;margin-bottom:4px">(sem conferência de dinheiro)</div>${pagList}`;
       }
-      // pagamentos DESTE caixa ficam DENTRO do card do caixa
-      let pagHtml = '';
-      if (ms.length) {
-        pagHtml = `<div style="border-top:1px dashed #e0c9a6;margin:9px -12px 7px;padding-top:7px"></div>
-          <div style="font-size:11px;color:#e67e22;font-weight:700;margin:0 0 5px">💸 Pagamentos deste caixa</div>`
-          + ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(m => cxqPagamentoHTML(m)).join('');
-      }
-      html += `<div style="background:#fff;border:1px solid #e6e6e6;${temPend ? 'border-left:3px solid #e67e22;' : ''}border-radius:10px;padding:10px 12px;margin-bottom:8px">${inner}${pagHtml}</div>`;
+      html += `<div style="background:#fff;border:1px solid #e6e6e6;${temPend ? 'border-left:3px solid #e67e22;' : ''}border-radius:10px;padding:10px 12px;margin-bottom:8px">${card}</div>`;
     });
   });
   return html;
