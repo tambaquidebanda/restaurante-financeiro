@@ -24,12 +24,21 @@ Nunca coloque a service_key neste arquivo.
 import os, re, sys, json, urllib.request, urllib.parse
 from datetime import datetime, timezone, timedelta
 
-API_URL   = os.environ.get('ICOMANDA_API_URL', 'https://cloud.icomanda.com/tdb/apidashboard').rstrip('/')
-API_KEY   = os.environ.get('ICOMANDA_API_KEY', 'apidash_249_aB3xY7zQ9Wm2KpV5')
-START_DAT = os.environ.get('ICOMANDA_START_DATE', '2026-08-14')
-DAYS_BACK = int(os.environ.get('ICOMANDA_DAYS_BACK', '4'))
-SB_URL    = os.environ['SUPABASE_URL'].rstrip('/')
-SB_KEY    = os.environ['SUPABASE_SERVICE_KEY']
+def env(nome, default=None, obrigatorio=False):
+    # No GitHub Actions, um secret inexistente vira "" (não ausente) — trate vazio como default.
+    v = (os.environ.get(nome) or '').strip()
+    if not v:
+        if obrigatorio:
+            sys.exit(f'ERRO: variável {nome} não definida (configure o secret no GitHub).')
+        return default
+    return v
+
+API_URL   = env('ICOMANDA_API_URL', 'https://cloud.icomanda.com/tdb/apidashboard').rstrip('/')
+API_KEY   = env('ICOMANDA_API_KEY', 'apidash_249_aB3xY7zQ9Wm2KpV5')
+START_DAT = env('ICOMANDA_START_DATE', '2026-08-14')
+DAYS_BACK = int(env('ICOMANDA_DAYS_BACK', '4'))
+SB_URL    = env('SUPABASE_URL', obrigatorio=True).rstrip('/')
+SB_KEY    = env('SUPABASE_SERVICE_KEY', obrigatorio=True)
 BASE      = f'{SB_URL}/rest/v1'
 HDR       = {'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY}
 MANAUS    = timezone(timedelta(hours=-4))
