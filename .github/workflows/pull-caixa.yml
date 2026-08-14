@@ -25,7 +25,7 @@ jobs:
         env:
           ICOMANDA_API_URL: ${{ secrets.ICOMANDA_API_URL }}
           ICOMANDA_API_KEY: ${{ secrets.ICOMANDA_API_KEY }}
-          ICOMANDA_START_DATE: ${{ secrets.ICOMANDA_START_DATE }}
+          ICOMANDA_CAIXA_START_DATE: ${{ secrets.ICOMANDA_CAIXA_START_DATE }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_caixa.py

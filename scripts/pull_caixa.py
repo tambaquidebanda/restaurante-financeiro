@@ -28,7 +28,7 @@ def env(nome, default=None, obrigatorio=False):
 
 API_URL   = env('ICOMANDA_API_URL', 'https://cloud.icomanda.com/tdb/apidashboard').rstrip('/')
 API_KEY   = env('ICOMANDA_API_KEY', 'apidash_249_aB3xY7zQ9Wm2KpV5')
-START_DAT = env('ICOMANDA_START_DATE', '2026-08-14')
+START_DAT = env('ICOMANDA_CAIXA_START_DATE', '2026-08-06')  # manual do caixa foi feito até 05/08
 DAYS_BACK = int(env('ICOMANDA_DAYS_BACK', '4'))
 SB_URL    = env('SUPABASE_URL', obrigatorio=True).rstrip('/')
 SB_KEY    = env('SUPABASE_SERVICE_KEY', obrigatorio=True)
@@ -115,12 +115,26 @@ def _post(path, rows, conflict):
         urllib.request.urlopen(req, timeout=90)
 
 
+def _conf_vazia():
+    # Primeira carga (tabela vazia) → backfill completo desde START_DAT.
+    try:
+        req = urllib.request.Request(f'{BASE}/caixa_dia_conf?select=data&limit=1', headers={**HDR, 'Range': '0-0'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return len(json.load(r)) == 0
+    except Exception:
+        return True
+
+
 def datas_janela():
     hoje = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-4))).date()
-    ini = hoje - timedelta(days=DAYS_BACK)
     piso = datetime.fromisoformat(START_DAT).date()
-    if ini < piso:
+    if _conf_vazia():
         ini = piso
+        print(f'Primeira carga: backfill desde {piso}.', flush=True)
+    else:
+        ini = hoje - timedelta(days=DAYS_BACK)
+        if ini < piso:
+            ini = piso
     out, d = [], ini
     while d <= hoje:
         out.append(d.isoformat())
