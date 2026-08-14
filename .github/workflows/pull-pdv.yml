@@ -1,0 +1,32 @@
+name: Robô PDV (iComanda → Supabase)
+
+on:
+  schedule:
+    - cron: '30 12 * * *'   # 08:30 Manaus — dia anterior já fechado
+    - cron: '30 15 * * *'   # 11:30 Manaus — segunda tentativa (pega caixas fechados tarde)
+  workflow_dispatch: {}      # botão "Run workflow" para rodar na hora
+
+# Evita duas execuções simultâneas
+concurrency:
+  group: pull-pdv
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Puxar pagamentos do PDV (iComanda) e gravar no Supabase
+        env:
+          ICOMANDA_API_URL: ${{ secrets.ICOMANDA_API_URL }}
+          ICOMANDA_API_KEY: ${{ secrets.ICOMANDA_API_KEY }}
+          ICOMANDA_START_DATE: ${{ secrets.ICOMANDA_START_DATE }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/pull_pdv.py
