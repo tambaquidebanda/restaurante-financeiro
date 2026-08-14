@@ -26,7 +26,7 @@ from datetime import datetime, timezone, timedelta
 
 API_URL   = os.environ.get('ICOMANDA_API_URL', 'https://cloud.icomanda.com/tdb/apidashboard').rstrip('/')
 API_KEY   = os.environ.get('ICOMANDA_API_KEY', 'apidash_249_aB3xY7zQ9Wm2KpV5')
-START_DAT = os.environ.get('ICOMANDA_START_DATE', '2026-08-15')
+START_DAT = os.environ.get('ICOMANDA_START_DATE', '2026-08-14')
 DAYS_BACK = int(os.environ.get('ICOMANDA_DAYS_BACK', '4'))
 SB_URL    = os.environ['SUPABASE_URL'].rstrip('/')
 SB_KEY    = os.environ['SUPABASE_SERVICE_KEY']
