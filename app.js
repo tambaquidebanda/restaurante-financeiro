@@ -4179,45 +4179,54 @@ function cxqPlanoOptions() {
   return html;
 }
 
+function cxqPagamentoHTML(m) {
+  if (m.status === 'lancado') {
+    return `<div style="font-size:12px;color:#16a085;padding:3px 0 3px 10px;opacity:.9">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
+  }
+  return `<div style="background:#fffdf8;border:1px solid #f0d9b8;border-radius:8px;padding:8px 10px;margin:0 0 6px 10px">
+    <div style="font-size:12px;color:#2c3e50"><strong>${ccBRL(m.valor)}</strong> · ${m.hora || ''} · <span style="color:#777">${m.descricao || ''}</span></div>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <select id="cxq-plano-${m.id}" style="flex:1;min-width:150px;padding:5px;border:1px solid #ddd;border-radius:6px;font-size:12px">${cxqPlanoOptions()}</select>
+      <button onclick="cxqCategorizar('${m.id}')" style="font-size:12px;background:#2c3e50;color:#fff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap">→ Contas a Pagar</button>
+    </div></div>`;
+}
+
 function cxqDetalheHTML(d, confs, movs) {
+  // agrupa por loja → caixa (pagamentos ficam sob o caixa a que pertencem)
   const lojas = {};
-  confs.forEach(c => { (lojas[c.unidade_nome || '—'] = lojas[c.unidade_nome || '—'] || { confs: [], movs: [] }).confs.push(c); });
-  movs.forEach(m => { (lojas[m.unidade_nome || '—'] = lojas[m.unidade_nome || '—'] || { confs: [], movs: [] }).movs.push(m); });
+  const getCx = (loja, ext) => {
+    const L = lojas[loja || '—'] = lojas[loja || '—'] || { caixas: {}, ordem: [] };
+    if (!L.caixas[ext]) { L.caixas[ext] = { ext, conf: null, movs: [] }; L.ordem.push(ext); }
+    return L.caixas[ext];
+  };
+  confs.forEach(c => { getCx(c.unidade_nome, c.caixa_ext).conf = c; });
+  movs.forEach(m => { getCx(m.unidade_nome, m.caixa_ext).movs.push(m); });
 
   let html = `<div style="font-size:15px;font-weight:800;color:#2c3e50;margin-bottom:12px">${ccDiaSemana(d)}, ${ccDT(d)}</div>`;
   Object.keys(lojas).sort().forEach(loja => {
-    const { confs: cs, movs: ms } = lojas[loja];
     html += `<div style="font-size:13px;font-weight:700;color:#2c3e50;margin:10px 0 6px;border-bottom:1px solid #eee;padding-bottom:3px">🏬 ${loja}</div>`;
-    cs.slice().sort((a, b) => a.caixa_ext - b.caixa_ext).forEach(c => {
-      const contado = cxqContado(c);
-      const dif = contado - Number(c.esperado || 0);
-      const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
-      const conf = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
-      html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:6px">
-        <div style="display:flex;justify-content:space-between;font-size:12px;color:#777"><span>Caixa ${c.caixa_ext}</span>${conf}</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
-          <span style="font-size:12px;color:#777">esperado ${ccBRL(c.esperado)}</span>
-          <span style="font-size:12px;color:#777">contado</span>
-          <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:96px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
-          <button onclick="cxqConfirmar('${c.id}')" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
-        </div></div>`;
+    const caixas = Object.values(lojas[loja].caixas).sort((a, b) => a.ext - b.ext);
+    caixas.forEach(({ ext, conf: c, movs: ms }) => {
+      if (c) {
+        const contado = cxqContado(c);
+        const dif = contado - Number(c.esperado || 0);
+        const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
+        const okc = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
+        html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:4px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:#777"><span>Caixa ${ext}</span>${okc}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+            <span style="font-size:12px;color:#777">esperado ${ccBRL(c.esperado)}</span>
+            <span style="font-size:12px;color:#777">contado</span>
+            <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:96px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
+            <button onclick="cxqConfirmar('${c.id}')" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
+          </div></div>`;
+      } else {
+        html += `<div style="font-size:12px;color:#999;margin-bottom:4px">Caixa ${ext}</div>`;
+      }
+      // pagamentos DESTE caixa, logo abaixo da conferência
+      ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).forEach(m => { html += cxqPagamentoHTML(m); });
     });
-    if (ms.length) {
-      html += `<div style="font-size:11px;color:#e67e22;font-weight:700;margin:8px 0 4px">💸 Pagamentos em dinheiro:</div>`;
-      ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).forEach(m => {
-        if (m.status === 'lancado') {
-          html += `<div style="font-size:12px;color:#16a085;padding:3px 0;opacity:.9">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
-        } else {
-          html += `<div style="background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:6px">
-            <div style="font-size:12px;color:#2c3e50"><strong>${ccBRL(m.valor)}</strong> · ${m.hora || ''} · <span style="color:#777">${m.descricao || ''}</span></div>
-            <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-              <select id="cxq-plano-${m.id}" style="flex:1;min-width:150px;padding:5px;border:1px solid #ddd;border-radius:6px;font-size:12px">${cxqPlanoOptions()}</select>
-              <button onclick="cxqCategorizar('${m.id}')" style="font-size:12px;background:#2c3e50;color:#fff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap">→ Contas a Pagar</button>
-            </div></div>`;
-        }
-      });
-    }
   });
   return html;
 }
