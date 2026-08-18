@@ -9646,7 +9646,7 @@ function renderIntegracoes(rascunhos) {
             style="padding:.4rem;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
             <i class="fas fa-eye"></i> Visualizar
           </button>
-          <button onclick="aprovarComoTransferencia('${r.id}','${r.conta_id||''}',${total},'${r.vencimento||''}')"
+          <button id="btnTransf-${r.id}" onclick="aprovarComoTransferencia('${r.id}','${r.conta_id||''}',${total},'${r.vencimento||''}')"
             style="padding:.4rem;background:#1d4ed8;color:#fff;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
             <i class="fas fa-exchange-alt"></i> Registrar Transferência
           </button>
@@ -9838,7 +9838,13 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   carregarIntegracoes();
 }
 
+// Pedidos cuja transferência está sendo gravada agora (trava contra clique duplo).
+const _transfEmAndamento = new Set();
+
 async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) {
+  // Trava 1: clique duplo / dois cliques rápidos no mesmo card.
+  if (_transfEmAndamento.has(rascunhoId)) return;
+
   const origemId  = document.getElementById(`transfOrigem-${rascunhoId}`)?.value;
   const destinoId = document.getElementById(`transfDestino-${rascunhoId}`)?.value;
   if (!origemId)                    { mostrarToast('Selecione o banco de origem.', 'erro'); return; }
@@ -9850,49 +9856,98 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
   const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
   if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
 
-  const dataTransf = vencimento || new Date().toISOString().split('T')[0];
-
-  // 1. Cria transferência interna Santander → Nubank
-  const { error: errTransf } = await q(db.from('transferencias').insert([{
-    banco_origem_id:  origemId,
-    banco_destino_id: destinoId,
-    valor,
-    data:             dataTransf,
-    descricao:        r.descricao || `Adiantamento ${r.pedido_num}`,
-  }]));
-  if (errTransf) { mostrarToast('Erro ao criar transferência: ' + errTransf.message, 'erro'); return; }
-
-  // 2. Cria lançamento pendente para manter o vínculo em cmp_contas_pagar.adiantamento_lancamento_id
-  //    Fica pendente até a conciliação OFX confirmar a saída no Santander
-  const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
-    descricao:      r.descricao,
-    valor:          (Number(r.valor) || 0) + (Number(r.acrescimo) || 0) - (Number(r.desconto) || 0), // total = nota + acréscimo − desconto
-    acrescimo:      r.acrescimo || 0,
-    desconto:       r.desconto  || 0,
-    vencimento:     r.vencimento,
-    tipo:           'pagar',
-    status:         'pendente',
-    data_pagamento: null,
-    banco_id:       null,
-    fornecedor_id:  r.fornecedor_id  || null,
-    plano_conta_id: r.plano_conta_id || null,
-    numero_pedido:  r.numero_pedido,
-    observacoes:    r.observacoes,
-    tem_rateio:     false,
-    unidade_id:     r.unidade_id || null,
-  }]).select('id').single());
-  if (errLanc) { mostrarToast('Erro ao registrar lançamento: ' + errLanc.message, 'erro'); return; }
-
-  // 3. Atualiza cmp_contas_pagar com adiantamento_lancamento_id
-  if (contaId && lanc?.id) {
-    await q(db.from('cmp_contas_pagar').update({ adiantamento_lancamento_id: lanc.id }).eq('id', contaId));
+  // Trava 2: já existe transferência para este pedido?
+  // Acontecia quando a 1ª tentativa gravava a transferência e falhava no lançamento:
+  // o rascunho continuava na lista e o 2º clique criava uma transferência duplicada
+  // (caso real: Pedido #00945, R$ 462,00 órfã em 14/08/2026).
+  if (r.pedido_num) {
+    const { data: jaExiste } = await q(db.from('transferencias')
+      .select('id, valor, data')
+      .ilike('descricao', `%${r.pedido_num}%`));
+    if (jaExiste?.length) {
+      const lista = jaExiste.map(t => `• ${formatarData(t.data)} — ${formatarMoeda(t.valor)}`).join('\n');
+      const ok = confirm(
+        `Atenção: já existe ${jaExiste.length} transferência registrada para o pedido ${r.pedido_num}:\n\n` +
+        `${lista}\n\n` +
+        `Só continue se o PIX foi mesmo enviado mais de uma vez para este pedido.\n\n` +
+        `Registrar outra transferência mesmo assim?`
+      );
+      if (!ok) { mostrarToast('Operação cancelada. Nada foi gravado.'); return; }
+    }
   }
 
-  // 4. Remove rascunho
-  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+  // Trava 3: desabilita o botão enquanto grava.
+  _transfEmAndamento.add(rascunhoId);
+  const btn       = document.getElementById(`btnTransf-${rascunhoId}`);
+  const btnHtml   = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.style.opacity = '.6'; btn.style.cursor = 'wait'; btn.innerHTML = 'Registrando…'; }
+  const destravar = () => {
+    _transfEmAndamento.delete(rascunhoId);
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = 'pointer'; btn.innerHTML = btnHtml; }
+  };
 
-  mostrarToast('✅ Transferência registrada!', 'sucesso');
-  carregarIntegracoes();
+  try {
+    const dataTransf = vencimento || new Date().toISOString().split('T')[0];
+
+    // 1. Cria transferência interna Santander → Nubank
+    const { data: transf, error: errTransf } = await q(db.from('transferencias').insert([{
+      banco_origem_id:  origemId,
+      banco_destino_id: destinoId,
+      valor,
+      data:             dataTransf,
+      descricao:        r.descricao || `Adiantamento ${r.pedido_num}`,
+    }]).select('id').single());
+    if (errTransf) { mostrarToast('Erro ao criar transferência: ' + errTransf.message, 'erro'); return; }
+
+    // 2. Cria lançamento pendente para manter o vínculo em cmp_contas_pagar.adiantamento_lancamento_id
+    //    Fica pendente até a conciliação OFX confirmar a saída no Santander
+    const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
+      descricao:      r.descricao,
+      valor:          (Number(r.valor) || 0) + (Number(r.acrescimo) || 0) - (Number(r.desconto) || 0), // total = nota + acréscimo − desconto
+      acrescimo:      r.acrescimo || 0,
+      desconto:       r.desconto  || 0,
+      vencimento:     r.vencimento,
+      tipo:           'pagar',
+      status:         'pendente',
+      data_pagamento: null,
+      banco_id:       null,
+      fornecedor_id:  r.fornecedor_id  || null,
+      plano_conta_id: r.plano_conta_id || null,
+      numero_pedido:  r.numero_pedido,
+      observacoes:    r.observacoes,
+      tem_rateio:     false,
+      unidade_id:     r.unidade_id || null,
+    }]).select('id').single());
+
+    // Desfaz a transferência se o lançamento falhar — nunca deixa transferência órfã.
+    if (errLanc) {
+      let desfeita = false;
+      if (transf?.id) {
+        const { error: errUndo } = await q(db.from('transferencias').delete().eq('id', transf.id));
+        desfeita = !errUndo;
+      }
+      mostrarToast(
+        'Erro ao registrar lançamento: ' + errLanc.message +
+        (desfeita ? ' — a transferência foi desfeita, nada ficou gravado. Pode tentar de novo.'
+                  : ' — ATENÇÃO: não consegui desfazer a transferência. Confira a tela de Transferências antes de tentar de novo.'),
+        'erro'
+      );
+      return;
+    }
+
+    // 3. Atualiza cmp_contas_pagar com adiantamento_lancamento_id
+    if (contaId && lanc?.id) {
+      await q(db.from('cmp_contas_pagar').update({ adiantamento_lancamento_id: lanc.id }).eq('id', contaId));
+    }
+
+    // 4. Remove rascunho
+    await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+
+    mostrarToast('✅ Transferência registrada!', 'sucesso');
+    carregarIntegracoes();
+  } finally {
+    destravar();
+  }
 }
 
 async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixaBancoId) {
