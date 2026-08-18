@@ -9856,6 +9856,38 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
   const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
   if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
 
+  // Aviso A: destino diferente do padrão (Nubank, o cartão do comprador externo).
+  // Compra feita no cartão da EMPRESA não gera transferência — o dinheiro só sai no
+  // pagamento da fatura. Foi assim que o Pedido #00616 virou uma transferência
+  // Santander → Cora de R$ 1.059,24 que nunca aconteceu (22/07/2026).
+  const _bancoNome = id => bancosCadastrados.find(b => b.id === id)?.nome || 'conta selecionada';
+  const _destPadrao = bancosCadastrados.find(b => b.nome.toLowerCase().includes('nubank'));
+  if (_destPadrao && destinoId !== _destPadrao.id) {
+    const ok = confirm(
+      `Você mudou o destino de ${_destPadrao.nome} para ${_bancoNome(destinoId)}.\n\n` +
+      `As transferências de comprador externo vão para o ${_destPadrao.nome}.\n\n` +
+      `Se esta compra foi feita no CARTÃO DA EMPRESA, ela NÃO gera transferência — ` +
+      `o dinheiro sai no pagamento da fatura. Nesse caso cancele e registre como ` +
+      `conta a pagar naquele cartão.\n\n` +
+      `Registrar a transferência mesmo assim?`
+    );
+    if (!ok) { mostrarToast('Operação cancelada. Nada foi gravado.'); return; }
+  }
+
+  // Aviso B: data distante de hoje. A transferência herda o vencimento do pedido,
+  // mas o PIX sai no dia da aprovação. No #00616 isso gravou 15/08 numa saída de 22/07.
+  const _hoje = new Date().toISOString().split('T')[0];
+  let dataTransf = vencimento || _hoje;
+  const _diasFora = Math.abs(new Date(dataTransf + 'T00:00:00') - new Date(_hoje + 'T00:00:00')) / 86400000;
+  if (_diasFora > 7) {
+    const usarHoje = confirm(
+      `Esta transferência será registrada em ${formatarData(dataTransf)}, mas hoje é ${formatarData(_hoje)}.\n\n` +
+      `A data veio do vencimento do pedido. Se o PIX está saindo agora, use a data de hoje.\n\n` +
+      `OK = usar ${formatarData(_hoje)}   ·   Cancelar = manter ${formatarData(dataTransf)}`
+    );
+    if (usarHoje) dataTransf = _hoje;
+  }
+
   // Trava 2: já existe transferência para este pedido?
   // Acontecia quando a 1ª tentativa gravava a transferência e falhava no lançamento:
   // o rascunho continuava na lista e o 2º clique criava uma transferência duplicada
@@ -9887,8 +9919,6 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
   };
 
   try {
-    const dataTransf = vencimento || new Date().toISOString().split('T')[0];
-
     // 1. Cria transferência interna Santander → Nubank
     const { data: transf, error: errTransf } = await q(db.from('transferencias').insert([{
       banco_origem_id:  origemId,
