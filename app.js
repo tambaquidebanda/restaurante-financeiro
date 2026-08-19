@@ -1869,64 +1869,64 @@ function aplicarFiltrosLancamentos(query, f) {
   return query;
 }
 
+// Traz TODOS os lançamentos que passam pelo filtro, em blocos de 1.000
+// (o Supabase devolve no máximo 1.000 linhas por resposta). Um mês fechado de
+// Contas a Pagar tem ~1.700 contas, então sem isso a tela mostrava só parte.
+// A ordenação inclui o id como desempate: com muitas contas de mesmo
+// vencimento, sem um critério estável o banco pode devolver a mesma linha em
+// dois blocos — ou pular uma.
+async function buscarLancamentosFiltrados(db, filtros, select) {
+  const PAGE = 1000;
+  let todos = [], pagina = 0;
+  while (true) {
+    const qr = aplicarFiltrosLancamentos(
+      db.from('lancamentos')
+        .select(select)
+        .order('vencimento', { ascending: true })
+        .order('id', { ascending: true })
+        .range(pagina * PAGE, (pagina + 1) * PAGE - 1),
+      filtros
+    );
+    const { data: lote, error } = await qr;
+    if (error) throw new Error(error.message);
+    if (!lote || !lote.length) break;
+    todos = todos.concat(lote);
+    if (lote.length < PAGE) break;
+    if (++pagina > 50) break;   // trava de segurança: 50.000 linhas
+  }
+  return todos;
+}
+
+const SELECT_LANCAMENTOS = '*, plano_contas(nome, grupo_id), bancos(nome), fornecedores(nome), unidades(nome)';
+
 async function carregarLancamentos(tipo) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
-  const filtros   = lerFiltrosLancamentos(tipo);
-  const campoData = filtros.campoData;
-
-  let query = aplicarFiltrosLancamentos(
-    db.from('lancamentos')
-      .select('*, plano_contas(nome, grupo_id), bancos(nome), fornecedores(nome), unidades(nome)')
-      .order('vencimento', { ascending: true }),
-    filtros
-  );
-
-  // Busca paginada para totais (contorna o limite de 1000 linhas do Supabase)
-  async function buscarTodosPaginado() {
-    const PAGE = 1000;
-    let todos = [], pagina = 0;
-    while (true) {
-      const q2 = aplicarFiltrosLancamentos(
-        db.from('lancamentos')
-          .select('valor, status, vencimento')
-          .range(pagina * PAGE, (pagina + 1) * PAGE - 1),
-        filtros
-      );
-      const { data: lote } = await q2;
-      if (!lote || lote.length === 0) break;
-      todos = todos.concat(lote);
-      if (lote.length < PAGE) break;
-      pagina++;
-    }
-    return todos;
-  }
+  const filtros = lerFiltrosLancamentos(tipo);
 
   const tbody   = document.getElementById(`tbody-${tipo}`);
   const colspan = tipo === 'pagar' ? '9' : '8';
   if (tbody) tbody.innerHTML = `<tr><td colspan="${colspan}" class="sem-dados"><i class="fas fa-spinner fa-spin" style="margin-right:6px;color:#c0392b;"></i>Carregando...</td></tr>`;
 
-  let data, error, todosParaTotais;
+  // Uma única busca serve a tabela E os cards de total — antes eram duas
+  // consultas, e só a dos cards trazia o mês inteiro.
+  let todos;
   try {
-    const [resultado, todosTotais] = await Promise.all([
-      Promise.race([query, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))]),
-      buscarTodosPaginado()
+    todos = await Promise.race([
+      buscarLancamentosFiltrados(db, filtros, SELECT_LANCAMENTOS),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 60000))
     ]);
-    data  = resultado.data;
-    error = resultado.error;
-    todosParaTotais = todosTotais;
   } catch (e) {
     if (tbody) tbody.innerHTML = `<tr><td colspan="${colspan}" class="sem-dados" style="color:#e74c3c;"><i class="fas fa-wifi" style="margin-right:6px;"></i>Conexão lenta. <a href="javascript:void(0)" onclick="carregarLancamentos('${tipo}')" style="color:#c0392b;font-weight:600;">Tentar novamente</a></td></tr>`;
     return;
   }
-  if (tratarErro(error, 'Erro ao carregar lançamentos')) return;
 
   const hoje  = new Date().toISOString().split('T')[0];
-  const labelPagar  = tipo === 'pagar' ? 'Pago' : 'Recebido';
 
   // Armazena dados para re-ordenação
-  dadosLancamentos[tipo] = data || [];
-  const lancamentos = dadosLancamentos[tipo];
+  dadosLancamentos[tipo] = todos;
+  const lancamentos     = dadosLancamentos[tipo];
+  const todosParaTotais = todos;
 
   // ── Totais ────────────────────────────────────────────────────────────────
   const resumoEl = document.getElementById(`resumo-${tipo}`);
@@ -2044,25 +2044,8 @@ async function exportarLancamentosExcel(tipo) {
   _btnExportando(btnId, true);
 
   try {
-    // Busca paginada: a listagem da tela para em 1.000 linhas, mas o arquivo
-    // precisa trazer TUDO que o filtro alcança, senão a planilha sai incompleta.
-    const PAGE = 1000;
-    let linhas = [], pagina = 0;
-    while (true) {
-      const qr = aplicarFiltrosLancamentos(
-        db.from('lancamentos')
-          .select('*, plano_contas(nome), bancos(nome), fornecedores(nome), unidades(nome)')
-          .order('vencimento', { ascending: true })
-          .range(pagina * PAGE, (pagina + 1) * PAGE - 1),
-        filtros
-      );
-      const { data: lote, error } = await qr;
-      if (error) { mostrarToast('Erro ao buscar os dados: ' + error.message, 'erro'); return; }
-      if (!lote || !lote.length) break;
-      linhas = linhas.concat(lote);
-      if (lote.length < PAGE) break;
-      pagina++;
-    }
+    // Mesma busca paginada da tela, para o arquivo nunca divergir dela.
+    const linhas = await buscarLancamentosFiltrados(db, filtros, SELECT_LANCAMENTOS);
 
     if (!linhas.length) { mostrarToast('Nenhuma conta no filtro atual — nada a exportar.', 'erro'); return; }
 
