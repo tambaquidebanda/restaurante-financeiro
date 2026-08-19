@@ -450,10 +450,6 @@
             <button class="btn btn-success btn-sm" id="btn-pagar-lote" onclick="abrirModalPagarLote()" style="display:none">
               <i class="fas fa-check-double"></i> Pagar Selecionadas (<span id="qtd-selecionadas">0</span>)
             </button>
-            <button class="btn btn-outline btn-sm" onclick="abrirImportarExcelPagar()" style="color:#217346;border-color:#217346;">
-              <i class="fas fa-file-excel"></i> Importar Planilha
-            </button>
-            <input type="file" id="arquivo-excel-pagar" accept=".xlsx,.xls" style="display:none" onchange="lerArquivoExcelPagar(this)">
             <button class="btn btn-outline btn-sm" id="btn-exportar-pagar" onclick="exportarLancamentosExcel('pagar')" style="color:#217346;border-color:#217346;">
               <i class="fas fa-file-excel"></i> Exportar Excel
             </button>
@@ -2281,57 +2277,6 @@
         <button class="btn btn-outline" onclick="fecharModal('modal-registrar-pagamento')">Cancelar</button>
         <button id="btn-confirmar-rp" class="btn btn-primary" style="background:#2980b9;border-color:#2980b9;" onclick="confirmarRegistroPagamento()">
           <i class="fas fa-check"></i> Confirmar Pagamento
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ========== MODAL: IMPORTAR EXCEL - CONTAS A PAGAR ========== -->
-  <div id="modal-importar-excel-pagar" class="modal-fundo hidden">
-    <div class="modal" style="max-width:900px;">
-      <div class="modal-header">
-        <h3><i class="fas fa-file-excel" style="color:#217346;"></i> Importar Planilha — Contas a Pagar</h3>
-        <button class="btn-fechar" onclick="fecharModal('modal-importar-excel-pagar')">&times;</button>
-      </div>
-      <div class="modal-corpo">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
-          <span style="font-size:13px;color:#555;">Filtrar por vencimento:</span>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <span style="font-size:12px;color:#888;">De:</span>
-            <input type="date" id="excel-filtro-de" value="2026-05-27" oninput="filtrarPreviewExcel()" style="padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <span style="font-size:12px;color:#888;">Até:</span>
-            <input type="date" id="excel-filtro-ate" value="2026-05-30" oninput="filtrarPreviewExcel()" style="padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
-          </div>
-          <button onclick="document.getElementById('excel-filtro-de').value='';document.getElementById('excel-filtro-ate').value='';filtrarPreviewExcel()" style="background:none;border:none;color:#999;cursor:pointer;font-size:13px;padding:2px 4px;">✕ Limpar</button>
-        </div>
-        <div id="excel-import-info" style="font-size:13px;margin-bottom:10px;padding:8px 12px;background:#f8f9fa;border-radius:6px;"></div>
-        <div style="overflow-x:auto;max-height:400px;overflow-y:auto;">
-          <table style="width:100%;border-collapse:collapse;font-size:12px;">
-            <thead style="position:sticky;top:0;background:#fff;z-index:1;">
-              <tr style="background:#f0f0f0;text-align:left;">
-                <th style="padding:8px 10px;white-space:nowrap;">Vencimento</th>
-                <th style="padding:8px 10px;">Descrição</th>
-                <th style="padding:8px 10px;">Fornecedor</th>
-                <th style="padding:8px 10px;">Categoria</th>
-                <th style="padding:8px 10px;text-align:right;">Valor</th>
-                <th style="padding:8px 10px;">Centro Custo</th>
-                <th style="padding:8px 10px;">Observação</th>
-              </tr>
-            </thead>
-            <tbody id="excel-preview-tbody"></tbody>
-          </table>
-        </div>
-        <div style="font-size:11px;color:#aaa;margin-top:8px;">
-          <i class="fas fa-circle" style="color:#e74c3c;"></i> Categoria não encontrada — será importado sem categoria &nbsp;
-          <i class="fas fa-circle" style="color:#e67e22;"></i> Fornecedor/Centro Custo não encontrado — será importado sem vínculo
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-outline" onclick="fecharModal('modal-importar-excel-pagar')">Cancelar</button>
-        <button id="btn-confirmar-excel" class="btn btn-primary" style="background:#217346;border-color:#217346;" onclick="confirmarImportacaoExcelPagar()">
-          <i class="fas fa-file-excel"></i> Importar Agora
         </button>
       </div>
     </div>
