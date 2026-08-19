@@ -1836,60 +1836,63 @@ function limparFiltros(tipo) {
   carregarLancamentos(tipo);
 }
 
+// Lê os filtros da tela de Pagar/Receber. Usado pela listagem e pela exportação
+// para Excel, para que as duas leiam exatamente os mesmos critérios.
+function lerFiltrosLancamentos(tipo) {
+  return {
+    tipo,
+    status:       obterSelecionadosMulti(tipo, 'status'),
+    de:           document.getElementById(`filtro-de-${tipo}`)?.value || '',
+    ate:          document.getElementById(`filtro-ate-${tipo}`)?.value || '',
+    campoData:    document.getElementById(`filtro-tipo-data-${tipo}`)?.value || 'vencimento',
+    fornecedores: obterSelecionadosMulti(tipo, 'fornecedor'),
+    grupos:       obterSelecionadosMulti(tipo, 'grupo'),
+    bancos:       obterBancosSelecionados(tipo),
+    pedido:       document.getElementById(`filtro-pedido-${tipo}`)?.value?.trim() || '',
+  };
+}
+
+// Aplica esses filtros numa query do Supabase.
+function aplicarFiltrosLancamentos(query, f) {
+  query = query.eq('tipo', f.tipo);
+  if (f.status.length)       query = query.in('status', f.status);
+  if (f.de)                  query = query.gte(f.campoData, f.de);
+  if (f.ate)                 query = query.lte(f.campoData, f.ate);
+  if (f.fornecedores.length) query = query.in('fornecedor_id', f.fornecedores);
+  if (f.pedido)              query = query.ilike('descricao', `%Pedido%${f.pedido}%`);
+  if (f.grupos.length) {
+    const subcatIds = planoContas.filter(p => f.grupos.includes(p.grupo_id)).map(p => p.id);
+    query = subcatIds.length ? query.in('plano_conta_id', subcatIds)
+                             : query.eq('plano_conta_id', 'nenhum');
+  }
+  if (f.bancos.length)       query = query.in('banco_id', f.bancos);
+  return query;
+}
+
 async function carregarLancamentos(tipo) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
-  const statusFiltros  = obterSelecionadosMulti(tipo, 'status');
-  const deFiltro       = document.getElementById(`filtro-de-${tipo}`)?.value;
-  const ateFiltro      = document.getElementById(`filtro-ate-${tipo}`)?.value;
-  const campoData      = document.getElementById(`filtro-tipo-data-${tipo}`)?.value || 'vencimento';
-  const fornFiltros    = obterSelecionadosMulti(tipo, 'fornecedor');
-  const grupoFiltros   = obterSelecionadosMulti(tipo, 'grupo');
-  const bancosFiltro   = obterBancosSelecionados(tipo);
-  const pedidoFiltro   = document.getElementById(`filtro-pedido-${tipo}`)?.value?.trim() || '';
+  const filtros   = lerFiltrosLancamentos(tipo);
+  const campoData = filtros.campoData;
 
-  let query = db.from('lancamentos')
-    .select('*, plano_contas(nome, grupo_id), bancos(nome), fornecedores(nome), unidades(nome)')
-    .eq('tipo', tipo)
-    .order('vencimento', { ascending: true });
-
-  if (statusFiltros.length) query = query.in('status', statusFiltros);
-
-  if (deFiltro)  query = query.gte(campoData, deFiltro);
-  if (ateFiltro) query = query.lte(campoData, ateFiltro);
-
-  if (fornFiltros.length) query = query.in('fornecedor_id', fornFiltros);
-
-  if (pedidoFiltro) query = query.ilike('descricao', `%Pedido%${pedidoFiltro}%`);
-
-  if (grupoFiltros.length) {
-    const subcatIds = planoContas.filter(p => grupoFiltros.includes(p.grupo_id)).map(p => p.id);
-    if (subcatIds.length) query = query.in('plano_conta_id', subcatIds);
-    else query = query.eq('plano_conta_id', 'nenhum');
-  }
-
-  if (bancosFiltro.length) query = query.in('banco_id', bancosFiltro);
+  let query = aplicarFiltrosLancamentos(
+    db.from('lancamentos')
+      .select('*, plano_contas(nome, grupo_id), bancos(nome), fornecedores(nome), unidades(nome)')
+      .order('vencimento', { ascending: true }),
+    filtros
+  );
 
   // Busca paginada para totais (contorna o limite de 1000 linhas do Supabase)
   async function buscarTodosPaginado() {
     const PAGE = 1000;
     let todos = [], pagina = 0;
     while (true) {
-      let q2 = db.from('lancamentos')
-        .select('valor, status, vencimento')
-        .eq('tipo', tipo)
-        .range(pagina * PAGE, (pagina + 1) * PAGE - 1);
-      if (statusFiltros.length) q2 = q2.in('status', statusFiltros);
-      if (deFiltro)             q2 = q2.gte(campoData, deFiltro);
-      if (ateFiltro)            q2 = q2.lte(campoData, ateFiltro);
-      if (fornFiltros.length)   q2 = q2.in('fornecedor_id', fornFiltros);
-      if (grupoFiltros.length) {
-        const sc = planoContas.filter(p => grupoFiltros.includes(p.grupo_id)).map(p => p.id);
-        if (sc.length) q2 = q2.in('plano_conta_id', sc);
-        else q2 = q2.eq('plano_conta_id', 'nenhum');
-      }
-      if (bancosFiltro.length) q2 = q2.in('banco_id', bancosFiltro);
-      if (pedidoFiltro)        q2 = q2.ilike('descricao', `%Pedido%${pedidoFiltro}%`);
+      const q2 = aplicarFiltrosLancamentos(
+        db.from('lancamentos')
+          .select('valor, status, vencimento')
+          .range(pagina * PAGE, (pagina + 1) * PAGE - 1),
+        filtros
+      );
       const { data: lote } = await q2;
       if (!lote || lote.length === 0) break;
       todos = todos.concat(lote);
@@ -1962,6 +1965,222 @@ async function carregarLancamentos(tipo) {
 
   renderizarLinhasLancamentos(tipo, lancamentos);
   if (tipo === 'pagar') atualizarBotaoPagarLote();
+}
+
+// =========================================================
+// EXPORTAÇÃO PARA EXCEL
+// Botão no topo de Contas a Pagar, Contas a Receber e Conciliação.
+// Sempre exporta obedecendo os filtros aplicados na tela.
+// =========================================================
+
+let _concilExport = null;   // preenchido por carregarConciliacao()
+
+// Converte 'AAAA-MM-DD' num Date local (evita o fuso jogar para o dia anterior).
+function _dataExcel(str) {
+  if (!str) return '';
+  const [a, m, d] = String(str).split('-').map(Number);
+  if (!a || !m || !d) return '';
+  return new Date(a, m - 1, d);
+}
+
+// Monta a planilha, aplica formatos e baixa o arquivo.
+function _baixarExcel(abas, nomeArquivo) {
+  const wb = XLSX.utils.book_new();
+  for (const aba of abas) {
+    const ws = XLSX.utils.aoa_to_sheet(aba.linhas, { cellDates: true });
+    if (aba.larguras) ws['!cols'] = aba.larguras.map(w => ({ wch: w }));
+    if (aba.linhas.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({
+      s: { r: 0, c: 0 }, e: { r: aba.linhas.length - 1, c: aba.linhas[0].length - 1 } }) };
+    // Formata as colunas de data e de dinheiro
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let R = 1; R <= range.e.r; R++) {
+      for (let C = 0; C <= range.e.c; C++) {
+        const cel = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (!cel) continue;
+        if (aba.colsData?.includes(C)  && cel.t === 'd') cel.z = 'dd/mm/yyyy';
+        if (aba.colsMoeda?.includes(C) && cel.t === 'n') cel.z = '#,##0.00';
+      }
+    }
+    XLSX.utils.book_append_sheet(wb, ws, aba.nome);
+  }
+  XLSX.writeFile(wb, nomeArquivo);
+}
+
+function _hojeArquivo() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function _rotuloFiltro(id, padrao) {
+  const t = document.getElementById(id)?.textContent?.trim();
+  return t || padrao;
+}
+
+// Trava o botão enquanto gera (arquivo grande demora alguns segundos).
+function _btnExportando(id, ligado) {
+  const btn = document.getElementById(id);
+  if (!btn) return null;
+  if (ligado) {
+    btn.dataset.htmlOriginal = btn.innerHTML;
+    btn.disabled = true;
+    btn.style.opacity = '.6';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Gerando...';
+  } else {
+    btn.disabled = false;
+    btn.style.opacity = '';
+    if (btn.dataset.htmlOriginal) btn.innerHTML = btn.dataset.htmlOriginal;
+  }
+}
+
+// ---------------------------------------------------------
+// CONTAS A PAGAR / CONTAS A RECEBER
+// ---------------------------------------------------------
+async function exportarLancamentosExcel(tipo) {
+  const btnId = `btn-exportar-${tipo}`;
+  if (document.getElementById(btnId)?.disabled) return;
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const filtros = lerFiltrosLancamentos(tipo);
+  _btnExportando(btnId, true);
+
+  try {
+    // Busca paginada: a listagem da tela para em 1.000 linhas, mas o arquivo
+    // precisa trazer TUDO que o filtro alcança, senão a planilha sai incompleta.
+    const PAGE = 1000;
+    let linhas = [], pagina = 0;
+    while (true) {
+      const qr = aplicarFiltrosLancamentos(
+        db.from('lancamentos')
+          .select('*, plano_contas(nome), bancos(nome), fornecedores(nome), unidades(nome)')
+          .order('vencimento', { ascending: true })
+          .range(pagina * PAGE, (pagina + 1) * PAGE - 1),
+        filtros
+      );
+      const { data: lote, error } = await qr;
+      if (error) { mostrarToast('Erro ao buscar os dados: ' + error.message, 'erro'); return; }
+      if (!lote || !lote.length) break;
+      linhas = linhas.concat(lote);
+      if (lote.length < PAGE) break;
+      pagina++;
+    }
+
+    if (!linhas.length) { mostrarToast('Nenhuma conta no filtro atual — nada a exportar.', 'erro'); return; }
+
+    const hoje     = new Date().toISOString().split('T')[0];
+    const ehPagar  = tipo === 'pagar';
+    const rotuloOk = ehPagar ? 'Pago' : 'Recebido';
+
+    const cabecalho = ['Pedido', ehPagar ? 'Fornecedor' : 'Cliente / Fornecedor', 'Descrição',
+      'Categoria', 'Unidade', 'Banco', 'Vencimento', 'Data de Pagamento', 'Valor',
+      'Valor Pago', 'Status', 'Rateio', 'Conciliado no extrato', 'Observações'];
+
+    const corpo = linhas.map(l => {
+      const atrasado = l.status === 'pendente' && l.vencimento < hoje;
+      const status   = l.status === 'pago' ? rotuloOk : (atrasado ? 'Vencido' : 'Pendente');
+      return [
+        l.numero_pedido || extrairNumeroPedido(l.descricao) || '',
+        l.fornecedores?.nome || '',
+        l.descricao || '',
+        l.plano_contas?.nome || (l.tem_rateio ? 'Rateio' : ''),
+        l.unidades?.nome || '',
+        l.bancos?.nome || '',
+        _dataExcel(l.vencimento),
+        _dataExcel(l.data_pagamento),
+        Number(l.valor) || 0,
+        Number(l.valor_pago) || 0,
+        status,
+        l.tem_rateio ? 'Sim' : '',
+        l.ofx_id ? 'Sim' : '',
+        l.observacoes || '',
+      ];
+    });
+
+    const total    = corpo.reduce((soma, r) => soma + r[8], 0);
+    const periodo  = filtros.campoData === 'data_pagamento' ? 'Data de pagamento' : 'Vencimento';
+    const de       = filtros.de  ? formatarData(filtros.de)  : 'sem início';
+    const ate      = filtros.ate ? formatarData(filtros.ate) : 'sem fim';
+    const titulo   = ehPagar ? 'Contas a Pagar' : 'Contas a Receber';
+
+    _baixarExcel([
+      { nome: titulo.slice(0, 31),
+        linhas: [cabecalho, ...corpo],
+        colsData: [6, 7], colsMoeda: [8, 9],
+        larguras: [10, 28, 42, 24, 16, 18, 13, 15, 14, 13, 11, 8, 12, 30] },
+      { nome: 'Filtros', larguras: [26, 60], linhas: [
+        ['Filtro', 'Aplicado'],
+        ['Tela', titulo],
+        ['Gerado em', new Date().toLocaleString('pt-BR')],
+        ['Status', _rotuloFiltro(`filtro-status-label-${tipo}`, 'Todos os status')],
+        ['Período por', periodo],
+        ['De', de],
+        ['Até', ate],
+        ['Fornecedor', _rotuloFiltro(`filtro-fornecedor-label-${tipo}`, 'Todos os fornecedores')],
+        ['Grupo', _rotuloFiltro(`filtro-grupo-label-${tipo}`, 'Todos os grupos')],
+        ['Banco', _rotuloFiltro(`filtro-banco-label-${tipo}`, 'Todos os bancos')],
+        ['Nº do pedido', filtros.pedido || '—'],
+        ['Linhas exportadas', corpo.length],
+        ['Soma dos valores', formatarMoeda(total)],
+      ]},
+    ], `${ehPagar ? 'contas-a-pagar' : 'contas-a-receber'}-${_hojeArquivo()}.xlsx`);
+
+    mostrarToast(`✅ ${corpo.length} linha(s) exportada(s).`, 'sucesso');
+  } catch (e) {
+    mostrarToast('Erro ao gerar a planilha: ' + (e?.message || e), 'erro');
+  } finally {
+    _btnExportando(btnId, false);
+  }
+}
+
+// ---------------------------------------------------------
+// CONCILIAÇÃO DIÁRIA
+// ---------------------------------------------------------
+function exportarConciliacaoExcel() {
+  if (!_concilExport) {
+    mostrarToast('Clique em "Buscar" primeiro para carregar o período.', 'erro');
+    return;
+  }
+  const btnId = 'btn-exportar-conciliacao';
+  _btnExportando(btnId, true);
+  try {
+    const { mes, ano, lastDay, porDia, unidades, bancos } = _concilExport;
+    const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto',
+                   'Setembro','Outubro','Novembro','Dezembro'];
+    const diasSemana = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];
+
+    const corpo = [];
+    let totalRec = 0, totalDesp = 0;
+    for (let d = 1; d <= lastDay; d++) {
+      const { rec, desp } = porDia[d];
+      totalRec += rec; totalDesp += desp;
+      corpo.push([_dataExcel(`${ano}-${String(mes).padStart(2,'0')}-${String(d).padStart(2,'0')}`),
+                  diasSemana[new Date(ano, mes - 1, d).getDay()], rec, desp, rec - desp]);
+    }
+    corpo.push(['TOTAL', '', totalRec, totalDesp, totalRec - totalDesp]);
+
+    _baixarExcel([
+      { nome: `${meses[mes-1]} ${ano}`.slice(0, 31),
+        linhas: [['Dia', 'Dia da semana', 'Receitas', 'Despesas', 'Resultado'], ...corpo],
+        colsData: [0], colsMoeda: [2, 3, 4],
+        larguras: [13, 16, 16, 16, 16] },
+      { nome: 'Filtros', larguras: [26, 60], linhas: [
+        ['Filtro', 'Aplicado'],
+        ['Tela', 'Conciliação Diária'],
+        ['Gerado em', new Date().toLocaleString('pt-BR')],
+        ['Mês', `${meses[mes-1]} de ${ano}`],
+        ['Unidades', unidades],
+        ['Bancos', bancos],
+        ['Total de receitas', formatarMoeda(totalRec)],
+        ['Total de despesas', formatarMoeda(totalDesp)],
+        ['Resultado', formatarMoeda(totalRec - totalDesp)],
+      ]},
+    ], `conciliacao-${ano}-${String(mes).padStart(2,'0')}.xlsx`);
+
+    mostrarToast('✅ Planilha gerada.', 'sucesso');
+  } catch (e) {
+    mostrarToast('Erro ao gerar a planilha: ' + (e?.message || e), 'erro');
+  } finally {
+    _btnExportando(btnId, false);
+  }
 }
 
 // Extrai o número do pedido da descrição (padrão da integração: "Pedido #00093 — Fornecedor")
@@ -7801,6 +8020,13 @@ async function carregarConciliacao() {
   }
 
   tbody.innerHTML = html || `<tr><td colspan="4" class="sem-dados">Nenhum lançamento encontrado.</td></tr>`;
+
+  // Guarda o resultado para o botão "Exportar Excel" desta tela
+  _concilExport = {
+    mes, ano, lastDay, porDia,
+    unidades: document.getElementById('concil-label-unidades')?.textContent?.trim() || 'Todas as unidades',
+    bancos:   document.getElementById('concil-label-bancos')?.textContent?.trim()   || 'Todos os bancos',
+  };
 
   // Rodapé total
   const totalRes = totalRec - totalDesp;

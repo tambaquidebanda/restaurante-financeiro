@@ -454,6 +454,9 @@
               <i class="fas fa-file-excel"></i> Importar Planilha
             </button>
             <input type="file" id="arquivo-excel-pagar" accept=".xlsx,.xls" style="display:none" onchange="lerArquivoExcelPagar(this)">
+            <button class="btn btn-outline btn-sm" id="btn-exportar-pagar" onclick="exportarLancamentosExcel('pagar')" style="color:#217346;border-color:#217346;">
+              <i class="fas fa-file-excel"></i> Exportar Excel
+            </button>
             <button class="btn btn-danger" onclick="abrirModal('modal-pagar')">
               <i class="fas fa-plus"></i> Nova Conta
             </button>
@@ -563,9 +566,14 @@
       <section id="pagina-receber" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-arrow-circle-down"></i> Contas a Receber</h2>
-          <button class="btn btn-success" onclick="abrirModal('modal-receber')">
-            <i class="fas fa-plus"></i> Nova Entrada
-          </button>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-outline btn-sm" id="btn-exportar-receber" onclick="exportarLancamentosExcel('receber')" style="color:#217346;border-color:#217346;">
+              <i class="fas fa-file-excel"></i> Exportar Excel
+            </button>
+            <button class="btn btn-success" onclick="abrirModal('modal-receber')">
+              <i class="fas fa-plus"></i> Nova Entrada
+            </button>
+          </div>
         </div>
         <div class="filtros" style="flex-wrap:wrap; gap:8px;">
           <div class="filtro-banco-wrapper">
@@ -1069,6 +1077,11 @@
       <section id="pagina-conciliacao" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-balance-scale"></i> Conciliação Diária</h2>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-outline btn-sm" id="btn-exportar-conciliacao" onclick="exportarConciliacaoExcel()" style="color:#217346;border-color:#217346;">
+              <i class="fas fa-file-excel"></i> Exportar Excel
+            </button>
+          </div>
         </div>
 
         <!-- Filtros -->
