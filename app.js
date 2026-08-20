@@ -3846,10 +3846,15 @@ const ccDT = d => d.split('-').reverse().join('/');
 // ---- Motor Etapa A: PDV × Getnet (venda por venda). Retorna { dias }. ----
 async function computeEtapaA(db, de, ate) {
   let pdv;
+  const buscaPdv = cols => ccFetchPaginado(() => db.from('pdv_vendas')
+    .select(cols).eq('forma_pagamento', 'cartao')
+    .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
+  const COLS_BASE  = 'id,data_hora_utc,valor_bruto,bandeira,raw';
   try {
-    pdv = await ccFetchPaginado(() => db.from('pdv_vendas')
-      .select('id,data_hora_utc,valor_bruto,bandeira,raw').eq('forma_pagamento', 'cartao')
-      .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
+    // As colunas de caixa vieram depois; se o SQL ainda não foi rodado, a tela
+    // continua funcionando (só não mostra a quebra por caixa).
+    try { pdv = await buscaPdv(COLS_BASE + ',caixa_ext,caixa_usuario,unidade_nome'); }
+    catch (semCaixa) { pdv = await buscaPdv(COLS_BASE); }
   } catch (e) { return { erro: 'pdv', dias: {} }; }
   if (!pdv.length) return { vazio: true, dias: {} };
 
@@ -3907,19 +3912,52 @@ async function computeEtapaA(db, de, ate) {
   } catch (e) { /* tabela pode não ter linhas ainda */ }
 
   const dias = {};
-  const novoD = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], pdvBruto: 0, gnetBruto: 0 });
+  const novoD = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], pdvBruto: 0, gnetBruto: 0, caixas: {} });
   pdv.forEach(p => {
     const D = (dias[p.dia] = dias[p.dia] || novoD());
     D.n++;
     D.pdvBruto += (Number(p.valor_bruto) || 0);
+    // Quebra por caixa: só o lado do PDV sabe o caixa. A Getnet traz terminal
+    // (10 a 17 por dia contra ~4 caixas), então o bruto dela continua do dia.
+    const ck = ccCaixaChave(p);
+    const C  = (D.caixas[ck] = D.caixas[ck] || { chave: ck, ext: p.caixa_ext || null,
+      usuario: p.caixa_usuario || null, loja: p.unidade_nome || null, bruto: 0, n: 0, inv: 0 });
+    C.bruto += (Number(p.valor_bruto) || 0); C.n++;
     if (p.ok) D.ok++;
-    else if (p.investigar) { const r = resPdv.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else D.invest.push(p); }
+    else if (p.investigar) { const r = resPdv.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else { D.invest.push(p); C.inv++; } }
     else D.ruido.push(p);
   });
   gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || novoD()); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
   // Soma o bruto de TODAS as vendas Getnet por dia (não só as sem par) para a coluna de valor.
   gnet.forEach(g => { if (!g.data_venda) return; const D = (dias[g.data_venda] = dias[g.data_venda] || novoD()); D.gnetBruto += (Number(g.valor_bruto) || 0); });
   return { dias };
+}
+
+// ---- Caixa (quem registrou a venda no PDV) --------------------------------
+// Vendas anteriores a 10/08/2026 vieram da planilha antiga do PDV, que não tem
+// caixa nenhum — essas caem em "sem caixa" e é esperado, não é erro.
+function ccCaixaChave(p) { return p.caixa_ext ? String(p.caixa_ext) : 'sem'; }
+
+function ccLojaCurta(nome) {
+  const n = (nome || '').toLowerCase();
+  if (n.includes('parque')) return 'Parque 10';
+  if (n.includes('centro'))  return 'Centro';
+  return nome || '';
+}
+
+// "Centro · Gisele" — o número do caixa muda todo dia, então quem identifica
+// de verdade é a loja + quem operou. O número fica como referência miúda.
+function ccCaixaLabel(c) {
+  if (!c.ext) return '<span style="color:#999">sem caixa</span>';
+  const loja = ccLojaCurta(c.loja);
+  const quem = c.usuario ? ` · ${c.usuario}` : '';
+  return `${loja}${quem} <span style="color:#bbb;font-weight:400">#${c.ext}</span>`;
+}
+
+function ccCaixasOrdenados(mapa) {
+  return Object.values(mapa || {}).sort((a, b) =>
+    (ccLojaCurta(a.loja) || 'zz').localeCompare(ccLojaCurta(b.loja) || 'zz') ||
+    (a.ext || 0) - (b.ext || 0));
 }
 
 // ---- Motor Etapa B: Getnet × Banco (por dia de crédito). Retorna { dias, faltaOFX }. ----
@@ -4130,13 +4168,17 @@ async function renderCartao() {
   // Regroup por dia de liquidação (proxCredito), igual à versão em tabela.
   const creditDates = B.creditDates || [];
   const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
-  const novoT = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set(), pdvBruto: 0, gnetBruto: 0 });
+  const novoT = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set(), pdvBruto: 0, gnetBruto: 0, caixas: {} });
   const diasA = {}, pixG = {};
   Object.keys(A.dias).forEach(sd => {
     const c = proxCredito(sd) || sd;
     const T = diasA[c] = diasA[c] || novoT();
     const DA = A.dias[sd];
     T.n += DA.n; T.ok += DA.ok; T.pdvBruto += DA.pdvBruto || 0; T.gnetBruto += DA.gnetBruto || 0;
+    Object.values(DA.caixas || {}).forEach(c => {
+      const t = (T.caixas[c.chave] = T.caixas[c.chave] || { ...c, bruto: 0, n: 0, inv: 0 });
+      t.bruto += c.bruto; t.n += c.n; t.inv += c.inv;
+    });
     ['invest', 'ruido', 'gAlone', 'resolv'].forEach(k => DA[k].forEach(x => { x._vd = sd; T[k].push(x); }));
     if (sd !== c) T.saleDays.add(sd);
   });
@@ -4203,10 +4245,30 @@ async function renderCartao() {
     const dchip = x => multiSale && x._vd ? `<span style="font-size:10px;color:#999;width:36px;display:inline-block;flex:none">${x._vd.slice(8, 10)}/${x._vd.slice(5, 7)}</span>` : '';
 
     // Bloco 1 — PDV → Getnet
-    let b1 = linhaVal('Vendido (PDV)', ccBRL(DA ? DA.pdvBruto : 0), true) + linhaVal('Getnet (bruto)', ccBRL(DA ? DA.gnetBruto : 0));
+    let b1 = linhaVal('Vendido (PDV)', ccBRL(DA ? DA.pdvBruto : 0), true);
+    // Quebra por caixa — só do lado do PDV (a Getnet não sabe o caixa).
+    const cxs = DA ? ccCaixasOrdenados(DA.caixas) : [];
+    if (cxs.length > 1) {
+      b1 += cxs.map(c => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:0 0 0 10px;color:#888">
+        <span>${ccCaixaLabel(c)}${c.inv ? ` <span style="color:#e74c3c;font-weight:700">⚠️ ${c.inv}</span>` : ''}</span>
+        <span style="font-variant-numeric:tabular-nums">${ccBRL(c.bruto)}</span></div>`).join('');
+    }
+    b1 += linhaVal('Getnet (bruto)', ccBRL(DA ? DA.gnetBruto : 0));
     const stA = invN ? `<span style="color:#e74c3c">⚠️ ${invN} venda(s) a investigar</span>` : (gaN ? `<span style="color:#e67e22">🟠 ${gaN} cobrança sem venda</span>` : '<span style="color:#27ae60">✓ bate</span>');
     b1 += `<div style="font-size:12px;margin-top:4px">${stA}</div>`;
-    if (DA && invN) { const l = DA.invest.slice().sort((a, b) => (a._vd + a.hora).localeCompare(b._vd + b.hora)).map(p => linhaAcao(dchip(p) + cel(p.hora, p.mod, p.bandeira || '-', ccBRL(p.valor_bruto)) + btnsPdv(p))).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#e74c3c;font-weight:700">Venda no PDV sem nada na Getnet:</div>${l}`; }
+    if (DA && invN) {
+      // Agrupado por caixa: é o que permite ir direto conferir com quem operou.
+      const porCx = {};
+      DA.invest.forEach(p => { const k = ccCaixaChave(p); (porCx[k] = porCx[k] || []).push(p); });
+      const l = ccCaixasOrdenados(DA.caixas).filter(c => porCx[c.chave]).map(c => {
+        const itens = porCx[c.chave].sort((a, b) => (a._vd + a.hora).localeCompare(b._vd + b.hora))
+          .map(p => linhaAcao(dchip(p) + cel(p.hora, p.mod, p.bandeira || '-', ccBRL(p.valor_bruto)) + btnsPdv(p))).join('');
+        const cab = cxs.length > 1
+          ? `<div style="font-size:11px;color:#555;font-weight:600;margin:4px 0 1px">${ccCaixaLabel(c)}</div>` : '';
+        return cab + itens;
+      }).join('');
+      b1 += `<div style="margin-top:6px;font-size:11px;color:#e74c3c;font-weight:700">Venda no PDV sem nada na Getnet:</div>${l}`;
+    }
     if (DA && gaN) { const l = DA.gAlone.slice().sort((a, b) => (a._vd + (a.hora || '')).localeCompare(b._vd + (b.hora || ''))).map(x => linhaAcao(dchip(x) + cel(x.hora || '', x.mod, x.band || '-', ccBRL(x.valor)) + btnsGnet(x))).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Cobrança na Getnet sem venda no PDV:</div>${l}`; }
     if (DA && DA.resolv.length) { const l = DA.resolv.slice().map(x => { const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet'; const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor; return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.85">${dchip(x)}${cel(x.hora || '', x.mod, band, ccBRL(val))}<span style="font-size:11px;color:#16a085;margin-left:6px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:4px">desfazer</button></div>`; }).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#16a085;font-weight:700">✔️ Resolvidos:</div>${l}`; }
     if (DA && DA.ruido.length) b1 += `<div style="margin-top:6px;font-size:11px;color:#999">🔗 ${DA.ruido.length} par(es) de ruído (mesma venda digitada torto — não é problema).</div>`;

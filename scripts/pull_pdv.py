@@ -7,6 +7,11 @@ Substitui o import manual do "Relatório do PDV" — roda sozinho, sem clicar.
 Idempotente: cada pagamento vira uma linha com id estável
 (apipdv|<data>|c<comanda>|p<idx>); rodar de novo não duplica.
 
+Cada pagamento sai marcado com o CAIXA que o registrou (caixa_ext, quem operou
+e a loja). A comanda não traz isso; descobrimos filtrando por caixa_ids, uma
+chamada por caixa (~4/dia), como o pull_caixa.py já fazia. É o que permite a
+tela de Conciliação PDV mostrar as divergências separadas por caixa.
+
 Fonte por transação validada = mesma granularidade da planilha manual
 (forma + valor + hora por pagamento). A API não traz a bandeira por
 transação (só "Crédito POS"/"Débito POS"); o motor de match cruza por
@@ -43,6 +48,12 @@ BASE      = f'{SB_URL}/rest/v1'
 HDR       = {'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY}
 MANAUS    = timezone(timedelta(hours=-4))
 
+# Mesma tabela do pull_caixa.py — "filial" da API → unidade do financeiro.
+UNIDADES = {
+    'Tambaqui de Banda Loja Centro': 'e031eced-0652-4af0-ad2a-13b65a29f814',  # Tambaqui de Banda Teatro
+    'Tdb - Parque 10':               '6696a0dc-71f9-4a98-bdb4-42d9dd989cb1',  # Delivery P10
+}
+
 
 # ---------- classificação de forma (mesma lógica do app: classificarFormaPDV) ----------
 def classificar(forma):
@@ -68,9 +79,8 @@ def classificar(forma):
 
 
 # ---------- iComanda API ----------
-def buscar_dia(data):
-    qs = urllib.parse.urlencode({'api_key': API_KEY, 'blocos': 'comandas',
-                                 'data_inicial': data, 'data_final': data})
+def _api(**extra):
+    qs = urllib.parse.urlencode({'api_key': API_KEY, 'blocos': 'comandas', **extra})
     url = f'{API_URL}/detalhamento.php?{qs}'
     req = urllib.request.Request(url, headers={'Accept': 'application/json',
                                                'User-Agent': 'tdb-robo-pdv/1.0'})
@@ -78,16 +88,49 @@ def buscar_dia(data):
         d = json.load(r)
     if d.get('status') != 'ok':
         raise RuntimeError(f'API retornou status {d.get("status")}: {d.get("mensagem")}')
-    bloco = d.get('comandas') or {}
-    return bloco.get('comandas') or []
+    return d
 
 
-def montar_linhas(data, comandas):
+def buscar_dia(data):
+    """Comandas do dia inteiro + a lista de caixas abertos nesse dia."""
+    d = _api(data_inicial=data, data_final=data)
+    comandas = (d.get('comandas') or {}).get('comandas') or []
+    caixas = d.get('caixas') or []
+    if not caixas:   # fallback: o cabeçalho traz ao menos os ids
+        caixas = [{'caixa_id': c} for c in (d.get('cabecalho') or {}).get('caixas_selecionados') or []]
+    return comandas, caixas
+
+
+def mapa_caixa(data, caixas):
+    """comanda_id → (caixa_id, usuário, filial). Uma chamada por caixa.
+
+    A comanda não traz o caixa; o jeito de saber é filtrar por caixa_ids, como
+    o pull_caixa.py já faz. Conferido em 20/08/2026: os caixas particionam o dia
+    exatamente (272 comandas, união 272, nenhuma repetida em dois caixas).
+    """
+    mapa = {}
+    for cx in caixas:
+        cid = cx.get('caixa_id')
+        if not cid:
+            continue
+        try:
+            d = _api(data_inicial=data, data_final=data, caixa_ids=str(cid))
+        except Exception as e:
+            print(f'    caixa {cid}: FALHA ({type(e).__name__}) — vendas ficam sem caixa.', flush=True)
+            continue
+        for c in (d.get('comandas') or {}).get('comandas') or []:
+            mapa.setdefault(c.get('comanda_id'), (cid, cx.get('usuario'), cx.get('filial')))
+    return mapa
+
+
+def montar_linhas(data, comandas, mapa=None):
+    mapa = mapa or {}
     rows = []
     for c in comandas:
         if c.get('cancelada'):
             continue
         cid = c.get('comanda_id')
+        caixa_ext, caixa_usuario, filial = mapa.get(cid, (None, None, None))
         for idx, p in enumerate(c.get('pagamentos') or []):
             valor = round(float(p.get('valor') or 0), 2)
             if valor <= 0:
@@ -107,6 +150,10 @@ def montar_linhas(data, comandas):
                 'bandeira': cls['bandeira'],
                 'status_conciliacao': 'pendente',
                 'fonte': 'api_pdv',
+                'caixa_ext': caixa_ext,
+                'caixa_usuario': caixa_usuario,
+                'unidade_nome': filial,
+                'unidade_id': UNIDADES.get(filial),
                 'raw': {'forma': p.get('forma'), 'modalidade': cls['modalidade'],
                         'hora': hora, 'comanda_id': cid},
             })
@@ -124,6 +171,36 @@ def gravar(rows):
             headers={**HDR, 'Content-Type': 'application/json',
                      'Prefer': 'return=minimal,resolution=ignore-duplicates'})
         urllib.request.urlopen(req, timeout=90)
+
+
+def atualizar_caixa(rows):
+    """Grava caixa/loja nas linhas que já existiam.
+
+    O insert usa resolution=ignore-duplicates (não sobrescreve nada), então uma
+    linha gravada antes desta mudança nunca receberia o caixa. Este PATCH toca
+    SÓ as colunas de caixa/unidade — não encosta em valor, forma ou
+    status_conciliacao.
+    """
+    grupos = {}
+    for r in rows:
+        if r.get('caixa_ext') is None:
+            continue
+        k = (r['caixa_ext'], r.get('caixa_usuario'), r.get('unidade_nome'), r.get('unidade_id'))
+        grupos.setdefault(k, []).append(r['id_venda_externa'])
+    tocadas = 0
+    for (cx, usuario, uni_nome, uni_id), ids in grupos.items():
+        corpo = json.dumps({'caixa_ext': cx, 'caixa_usuario': usuario,
+                            'unidade_nome': uni_nome, 'unidade_id': uni_id}).encode()
+        for i in range(0, len(ids), 150):
+            lote = ids[i:i + 150]
+            filtro = urllib.parse.urlencode({
+                'id_venda_externa': 'in.(' + ','.join('"' + x + '"' for x in lote) + ')'})
+            req = urllib.request.Request(
+                f'{BASE}/pdv_vendas?{filtro}', data=corpo, method='PATCH',
+                headers={**HDR, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'})
+            urllib.request.urlopen(req, timeout=90)
+            tocadas += len(lote)
+    return tocadas
 
 
 def datas_janela():
@@ -148,14 +225,19 @@ def main():
     total = 0
     for data in dias:
         try:
-            comandas = buscar_dia(data)
+            comandas, caixas = buscar_dia(data)
         except Exception as e:
             print(f'  {data}: FALHA na API ({type(e).__name__}: {e}) — pulando.', flush=True)
             continue
-        rows = montar_linhas(data, comandas)
+        mapa = mapa_caixa(data, caixas)
+        rows = montar_linhas(data, comandas, mapa)
         gravar(rows)
+        atualizar_caixa(rows)
         total += len(rows)
-        print(f'  {data}: {len(comandas)} comandas → {len(rows)} pagamentos gravados/confirmados.', flush=True)
+        sem = sum(1 for r in rows if r.get('caixa_ext') is None)
+        aviso = f' ⚠️ {sem} sem caixa' if sem else ''
+        print(f'  {data}: {len(comandas)} comandas em {len(caixas)} caixa(s) → '
+              f'{len(rows)} pagamentos.{aviso}', flush=True)
     print(f'✅ Concluído: {total} pagamentos processados (idempotente, sem duplicar).', flush=True)
 
 
