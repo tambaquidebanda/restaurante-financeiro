@@ -3860,7 +3860,7 @@ async function computeEtapaA(db, de, ate) {
 
   const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
   const gnet = await ccFetchPaginado(() => db.from('card_transacoes')
-    .select('id,data_venda,data_hora_utc,valor_bruto,bandeira,modalidade').eq('tipo_registro', 'venda')
+    .select('id,data_venda,data_hora_utc,valor_bruto,bandeira,modalidade,terminal').eq('tipo_registro', 'venda')
     .gte('data_venda', dd(de, -1)).lte('data_venda', dd(ate, 1)));
 
   const manaus = iso => iso ? new Date(Date.parse(iso) - 4 * 3600000).toISOString() : '';
@@ -3868,7 +3868,12 @@ async function computeEtapaA(db, de, ate) {
   pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.dtMs = Date.parse(p.data_hora_utc); p.mod = p.raw && p.raw.modalidade; p.ok = false; });
 
   const pool = new Map();
-  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ id: g.id, band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), used: false }); });
+  gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ id: g.id, band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), term: g.terminal || null, used: false }); });
+  // Terminal → caixa, aprendido dos pares que casaram, DENTRO de cada dia.
+  // A Getnet não sabe o caixa; o terminal é uma pista. Medido em 14–19/08/2026:
+  // acerta 91% (0% se comparado entre dias — o número do caixa muda diariamente).
+  // Por isso o resultado aparece como "provável", nunca como certeza.
+  const termCaixa = {};
   const TOL = 50; // R$ 0,50
   const casar = (p, tol, exigeBand) => {
     const C = Math.round(p.valor_bruto * 100); let best = null;
@@ -3882,7 +3887,15 @@ async function computeEtapaA(db, de, ate) {
         if (!best || score < best.score) best = { g, score };
       }
     }
-    if (best) { best.g.used = true; return true; }
+    if (best) {
+      best.g.used = true;
+      if (best.g.term && p.caixa_ext) {
+        const t = (termCaixa[best.g.data] = termCaixa[best.g.data] || {});
+        const c = (t[best.g.term] = t[best.g.term] || {});
+        c[p.caixa_ext] = (c[p.caixa_ext] || 0) + 1;
+      }
+      return true;
+    }
     return false;
   };
   [[0, true], [0, false], [TOL, true], [TOL, false]].forEach(([tol, eb]) => {
@@ -3890,7 +3903,21 @@ async function computeEtapaA(db, de, ate) {
   });
 
   const gUnmatched = [];
-  pool.forEach((arr, k) => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gUnmatched.push({ id: g.id, valor: k / 100, band: g.band, mod: g.mod, hora: g.hora, data: g.data, dtMs: g.dtMs, noise: false }); }));
+  pool.forEach((arr, k) => arr.forEach(g => { if (!g.used && g.data >= de && g.data <= ate) gUnmatched.push({ id: g.id, valor: k / 100, band: g.band, mod: g.mod, hora: g.hora, data: g.data, dtMs: g.dtMs, term: g.term, noise: false }); }));
+
+  // Ficha de cada caixa (para nomear a dica) e o palpite por terminal.
+  const fichaCaixa = {};
+  pdv.forEach(p => { if (p.caixa_ext && !fichaCaixa[p.caixa_ext]) fichaCaixa[p.caixa_ext] = { ext: p.caixa_ext, usuario: p.caixa_usuario, loja: p.unidade_nome }; });
+  gUnmatched.forEach(g => {
+    const c = g.term && termCaixa[g.data] && termCaixa[g.data][g.term];
+    if (!c) return;
+    const pares = Object.entries(c).sort((a, b) => b[1] - a[1]);
+    const total = pares.reduce((s, x) => s + x[1], 0);
+    // Só arrisca se o terminal for bem dominado por um caixa naquele dia.
+    if (total < 3 || pares[0][1] / total < 0.7) return;
+    const f = fichaCaixa[pares[0][0]];
+    if (f) g.palpite = { ...f, confianca: pares[0][1] / total };
+  });
   const JANELA = 15 * 60 * 1000;
   pdv.filter(p => !p.ok).forEach(p => {
     let par = null;
@@ -3945,13 +3972,29 @@ function ccLojaCurta(nome) {
   return nome || '';
 }
 
+// "MARIA DE FATIMA DA SILVA SANTOS" não cabe na linha — vira "MARIA SANTOS".
+function ccNomeCurto(nome) {
+  const w = (nome || '').trim().split(/\s+/).filter(Boolean);
+  return w.length > 2 ? `${w[0]} ${w[w.length - 1]}` : (nome || '');
+}
+
 // "Centro · Gisele" — o número do caixa muda todo dia, então quem identifica
 // de verdade é a loja + quem operou. O número fica como referência miúda.
 function ccCaixaLabel(c) {
   if (!c.ext) return '<span style="color:#999">sem caixa</span>';
   const loja = ccLojaCurta(c.loja);
-  const quem = c.usuario ? ` · ${c.usuario}` : '';
+  const quem = c.usuario ? ` · ${ccNomeCurto(c.usuario)}` : '';
   return `${loja}${quem} <span style="color:#bbb;font-weight:400">#${c.ext}</span>`;
+}
+
+// Dica de caixa para cobranças da Getnet sem venda no PDV. A Getnet não sabe o
+// caixa — isto é deduzido do terminal e acerta ~91%, então aparece como palpite.
+function ccPalpiteCaixa(x) {
+  if (!x.palpite) return '';
+  const loja = ccLojaCurta(x.palpite.loja);
+  const quem = x.palpite.usuario ? ` · ${ccNomeCurto(x.palpite.usuario)}` : '';
+  return `<span title="Deduzido pelo terminal da maquininha (acerta cerca de 91% das vezes) — confira antes de concluir."
+    style="font-size:11px;color:#999;font-style:italic;margin-left:6px">provável: ${loja}${quem}</span>`;
 }
 
 function ccCaixasOrdenados(mapa) {
@@ -4017,10 +4060,12 @@ async function computeEtapaB(db, de, ate) {
 // fiado/transferência (esperado); o que sobra no PDV é venda que não caiu (⚠️).
 async function computePix(db, de, ate) {
   let pdv;
+  const buscaPix = cols => ccFetchPaginado(() => db.from('pdv_vendas')
+    .select(cols).eq('forma_pagamento', 'pix')
+    .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
   try {
-    pdv = await ccFetchPaginado(() => db.from('pdv_vendas')
-      .select('id,data_hora_utc,valor_bruto').eq('forma_pagamento', 'pix')
-      .gte('data_hora_utc', de + 'T00:00:00-04:00').lte('data_hora_utc', ate + 'T23:59:59-04:00'));
+    try { pdv = await buscaPix('id,data_hora_utc,valor_bruto,caixa_ext,caixa_usuario,unidade_nome'); }
+    catch (semCaixa) { pdv = await buscaPix('id,data_hora_utc,valor_bruto'); }
   } catch (e) { return { dias: {} }; }
   if (!pdv.length) return { dias: {} };
   const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
@@ -4043,12 +4088,16 @@ async function computePix(db, de, ate) {
     return false;
   };
   const dias = {};
-  const novo = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], semExtrato: false });
+  const novo = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], semExtrato: false, caixas: {} });
   // ordena por dia+hora → prioriza casar no mesmo dia (gap 0) na ordem cronológica
   pdv.sort((a, b) => (a.dia + a.hora).localeCompare(b.dia + b.hora)).forEach(p => {
     const D = dias[p.dia] = dias[p.dia] || novo();
     D.n++; D.total += (p.valor_bruto || 0);
-    if (casar(p)) D.ok++; else D.semBanco.push(p);
+    const ck = ccCaixaChave(p);
+    const C  = (D.caixas[ck] = D.caixas[ck] || { chave: ck, ext: p.caixa_ext || null,
+      usuario: p.caixa_usuario || null, loja: p.unidade_nome || null, bruto: 0, n: 0, inv: 0 });
+    C.bruto += (p.valor_bruto || 0); C.n++;
+    if (casar(p)) D.ok++; else { D.semBanco.push(p); C.inv++; }
   });
   // Resolvidos manualmente (Pix informado errado no fechamento) — saem das pendências.
   const resMap = new Map();
@@ -4182,12 +4231,16 @@ async function renderCartao() {
     ['invest', 'ruido', 'gAlone', 'resolv'].forEach(k => DA[k].forEach(x => { x._vd = sd; T[k].push(x); }));
     if (sd !== c) T.saleDays.add(sd);
   });
-  const novoP = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], gapN: 0 });
+  const novoP = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], gapN: 0, caixas: {} });
   Object.keys(P.dias).forEach(sd => {
     const c = proxCredito(sd) || sd;
     const T = pixG[c] = pixG[c] || novoP();
     const PD = P.dias[sd];
     T.n += PD.n; T.ok += PD.ok; T.total += PD.total;
+    Object.values(PD.caixas || {}).forEach(c => {
+      const t = (T.caixas[c.chave] = T.caixas[c.chave] || { ...c, bruto: 0, n: 0, inv: 0 });
+      t.bruto += c.bruto; t.n += c.n; t.inv += c.inv;
+    });
     if (PD.semExtrato) T.gapN += PD.n;
     PD.semBanco.forEach(x => { x._vd = sd; T.semBanco.push(x); });
     (PD.resolv || []).forEach(x => { x._vd = sd; T.resolv.push(x); });
@@ -4269,7 +4322,7 @@ async function renderCartao() {
       }).join('');
       b1 += `<div style="margin-top:6px;font-size:11px;color:#e74c3c;font-weight:700">Venda no PDV sem nada na Getnet:</div>${l}`;
     }
-    if (DA && gaN) { const l = DA.gAlone.slice().sort((a, b) => (a._vd + (a.hora || '')).localeCompare(b._vd + (b.hora || ''))).map(x => linhaAcao(dchip(x) + cel(x.hora || '', x.mod, x.band || '-', ccBRL(x.valor)) + btnsGnet(x))).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Cobrança na Getnet sem venda no PDV:</div>${l}`; }
+    if (DA && gaN) { const l = DA.gAlone.slice().sort((a, b) => (a._vd + (a.hora || '')).localeCompare(b._vd + (b.hora || ''))).map(x => linhaAcao(dchip(x) + cel(x.hora || '', x.mod, x.band || '-', ccBRL(x.valor)) + ccPalpiteCaixa(x) + btnsGnet(x))).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Cobrança na Getnet sem venda no PDV:</div>${l}`; }
     if (DA && DA.resolv.length) { const l = DA.resolv.slice().map(x => { const isP = x.valor_bruto !== undefined; const kind = isP ? 'pdv' : 'gnet'; const band = isP ? (x.bandeira || '-') : (x.band || '-'); const val = isP ? x.valor_bruto : x.valor; return `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:1px 0;opacity:.85">${dchip(x)}${cel(x.hora || '', x.mod, band, ccBRL(val))}<span style="font-size:11px;color:#16a085;margin-left:6px">✔️ ${motivoLbl(x.resol && x.resol.tipo_divergencia)}</span><button onclick="event.stopPropagation();ccDesfazer('${kind}','${x.id}')" style="font-size:11px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline;margin-left:4px">desfazer</button></div>`; }).join(''); b1 += `<div style="margin-top:6px;font-size:11px;color:#16a085;font-weight:700">✔️ Resolvidos:</div>${l}`; }
     if (DA && DA.ruido.length) b1 += `<div style="margin-top:6px;font-size:11px;color:#999">🔗 ${DA.ruido.length} par(es) de ruído (mesma venda digitada torto — não é problema).</div>`;
 
@@ -4281,9 +4334,23 @@ async function renderCartao() {
     let b3;
     if (PG && PG.n) {
       const stP = pixKO > 0 ? `<span style="color:#e67e22">⚠️ ${pixKO} de ${confN} não caíram</span>` : (PG.gapN ? `<span style="color:#c9930a">⏳ ${PG.gapN} sem extrato importado</span>` : `<span style="color:#16a085">🟢 ${confN} conferidos</span>`);
-      b3 = linhaVal('Total Pix (PDV)', ccBRL(PG.total), true) + `<div style="font-size:12px;margin-top:4px">${stP}</div>`;
+      b3 = linhaVal('Total Pix (PDV)', ccBRL(PG.total), true);
+      const cxsP = ccCaixasOrdenados(PG.caixas);
+      if (cxsP.length > 1) {
+        b3 += cxsP.map(c => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:0 0 0 10px;color:#888">
+          <span>${ccCaixaLabel(c)}${c.inv ? ` <span style="color:#e67e22;font-weight:700">⚠️ ${c.inv}</span>` : ''}</span>
+          <span style="font-variant-numeric:tabular-nums">${ccBRL(c.bruto)}</span></div>`).join('');
+      }
+      b3 += `<div style="font-size:12px;margin-top:4px">${stP}</div>`;
       if (pixKO > 0) {
-        const l = PG.semBanco.slice().sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(p => linhaAcao(dchip(p) + `<span style="font-size:12px;color:#555;width:46px">${p.hora || ''}</span><span style="font-size:12px;width:80px;text-align:right">${ccBRL(p.valor_bruto)}</span>` + btnsPix(p))).join('');
+        const linhaPix = p => linhaAcao(dchip(p) + `<span style="font-size:12px;color:#555;width:46px">${p.hora || ''}</span><span style="font-size:12px;width:80px;text-align:right">${ccBRL(p.valor_bruto)}</span>` + btnsPix(p));
+        const porCx = {};
+        PG.semBanco.forEach(p => { const k = ccCaixaChave(p); (porCx[k] = porCx[k] || []).push(p); });
+        const l = cxsP.filter(c => porCx[c.chave]).map(c => {
+          const itens = porCx[c.chave].sort((a, b) => ((a._vd || '') + (a.hora || '')).localeCompare((b._vd || '') + (b.hora || ''))).map(linhaPix).join('');
+          const cab = cxsP.length > 1 ? `<div style="font-size:11px;color:#555;font-weight:600;margin:4px 0 1px">${ccCaixaLabel(c)}</div>` : '';
+          return cab + itens;
+        }).join('');
         b3 += `<div style="margin-top:6px;font-size:11px;color:#e67e22;font-weight:700">Pix do PDV sem entrada no banco:</div>${l}`;
       }
       if (PG.resolv && PG.resolv.length) {
