@@ -4412,6 +4412,20 @@ const CXQ_TOL = 1.00; // diferença de caixa aceitável (R$)
 
 function cxqContado(c) { return c.contado_ajuste != null ? Number(c.contado_ajuste) : Number(c.contado_api || 0); }
 
+// Valor das diferenças já explicadas por uma despesa (id do lançamento → valor).
+// O botão só aparece se a coluna dif_lancamento_id existir (select('*') não a
+// traz antes do SQL) — assim a tela não oferece um botão que iria falhar.
+let cxqDifValor = {};
+
+// Diferença de caixa já lançada como despesa. Caso típico: cliente pagou no
+// cartão, pediu para tirar o serviço e o gerente devolveu em espécie sem
+// registrar sangria no PDV — o dinheiro saiu da gaveta, mas o "esperado" que
+// vem da API do PDV não sabe disso.
+function cxqDifLancada(c) { return c.dif_lancamento_id ? (cxqDifValor[c.dif_lancamento_id] || 0) : 0; }
+
+// Esperado da API menos o que já foi lançado como despesa.
+function cxqEsperado(c) { return Number(c.esperado || 0) - cxqDifLancada(c); }
+
 async function renderCaixaEspecie() {
   if (!document.getElementById('cxq-cal')) return;
   if (!cxqMes) cxqMes = ccMesAtual();
@@ -4431,6 +4445,16 @@ async function renderCaixaEspecie() {
     return;
   }
 
+  // Valores das diferenças já lançadas, para abater do esperado.
+  cxqDifValor = {};
+  const difIds = confs.map(c => c.dif_lancamento_id).filter(Boolean);
+  if (difIds.length) {
+    try {
+      const ls = await ccFetchPaginado(() => db.from('lancamentos').select('id,valor').in('id', difIds));
+      ls.forEach(l => { cxqDifValor[l.id] = Number(l.valor) || 0; });
+    } catch (e) { /* coluna nova ainda sem SQL — segue sem abater */ }
+  }
+
   const dias = {};
   confs.forEach(c => { (dias[c.data] = dias[c.data] || { confs: [], movs: [] }).confs.push(c); });
   movs.forEach(m => { (dias[m.data] = dias[m.data] || { confs: [], movs: [] }).movs.push(m); });
@@ -4440,7 +4464,7 @@ async function renderCaixaEspecie() {
   Object.keys(dias).forEach(d => {
     const { confs: cs, movs: ms } = dias[d];
     const contado = cs.reduce((s, c) => s + cxqContado(c), 0);
-    const maxDif = cs.reduce((mx, c) => Math.max(mx, Math.abs(cxqContado(c) - Number(c.esperado || 0))), 0);
+    const maxDif = cs.reduce((mx, c) => Math.max(mx, Math.abs(cxqContado(c) - cxqEsperado(c))), 0);
     const pend = ms.filter(m => m.status === 'pendente');
     totContado += contado;
     if (pend.length) { totPend += pend.length; totPendValor += pend.reduce((s, m) => s + Number(m.valor || 0), 0); }
@@ -4560,7 +4584,8 @@ function cxqDetalheHTML(d, confs, movs) {
       let card;
       if (c) {
         const contado = cxqContado(c);
-        const esperado = Number(c.esperado || 0);
+        const difLanc = cxqDifLancada(c);
+        const esperado = cxqEsperado(c);
         const bruto = Number(c.vendas_dinheiro || 0);
         const dif = contado - esperado;
         const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
@@ -4569,12 +4594,15 @@ function cxqDetalheHTML(d, confs, movs) {
           ${linha('Faturado em dinheiro', ccBRL(bruto))}
           ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
           ${pagList}
+          ${difLanc > 0 ? linha('(−) Diferença lançada', ccBRL(difLanc), { cor: '#8e44ad' })
+            + `<div style="font-size:11px;color:#8e44ad;padding:1px 0">✔️ lançada no Contas a Pagar <button onclick="cxqDesfazerDif('${c.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>` : ''}
           <div style="border-top:1px solid #eee;margin:7px 0 3px"></div>
           ${linha('Esperado no caixa', ccBRL(esperado), { forte: true })}
           <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
             <span style="font-size:12px;color:#777">contado</span>
             <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:90px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
             <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
+            ${(dif < -CXQ_TOL && ('dif_lancamento_id' in c) && !c.dif_lancamento_id) ? `<button onclick="cxqLancarDif('${c.id}')" title="O dinheiro saiu da gaveta mas não foi registrado no PDV (ex.: devolução ao cliente). Cria a despesa e a diferença zera." style="font-size:11px;border:1px solid #8e44ad;background:#fff;color:#8e44ad;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ lançar falta como despesa</button>` : ''}
             <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
           </div>`;
       } else {
@@ -4668,6 +4696,18 @@ async function cxqVincularSalvo(lancamentoId, planoContaId) {
   const pend = _cxqPendente; _cxqPendente = null;
   if (!pend) return;
   const db = obterSupabase();
+
+  // Fluxo B: diferença de caixa lançada como despesa
+  if (pend.difConfId) {
+    const { error } = await db.from('caixa_dia_conf')
+      .update({ dif_lancamento_id: lancamentoId }).eq('id', pend.difConfId);
+    if (error) { mostrarToast('Despesa criada, mas não consegui amarrá-la ao caixa: ' + error.message, 'erro'); return; }
+    mostrarToast('Diferença lançada no Contas a Pagar ✔️', 'sucesso');
+    if (typeof renderCaixaEspecie === 'function') renderCaixaEspecie();
+    return;
+  }
+
+  // Fluxo A: pagamento em dinheiro do PDV
   let email = '';
   try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
   const { error } = await db.from('caixa_movimentos').update({
@@ -4677,6 +4717,48 @@ async function cxqVincularSalvo(lancamentoId, planoContaId) {
   if (error) { mostrarToast('Conta criada, mas não consegui marcar o pagamento no caixa: ' + error.message, 'erro'); return; }
   mostrarToast('Pagamento enviado ao Contas a Pagar ✔️', 'sucesso');
   if (typeof renderCaixaEspecie === 'function') renderCaixaEspecie();
+}
+
+// Falta de dinheiro na gaveta que TEM explicação: o valor saiu de verdade, só
+// não passou pelo PDV. Abre a mesma tela de Conta a Pagar com o valor da
+// diferença; ao salvar, o esperado passa a descontá-la e a diferença zera.
+async function cxqLancarDif(confId) {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const { data: c, error } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
+  if (error || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
+  if (c.dif_lancamento_id) { mostrarToast('Esta diferença já foi lançada.', 'erro'); return; }
+  const falta = cxqEsperado(c) - cxqContado(c);        // positivo = falta dinheiro
+  if (falta <= CXQ_TOL) { mostrarToast('Não há falta de dinheiro neste caixa.', 'erro'); return; }
+  const caixaBanco = cxeCaixaBancoId();
+  if (!caixaBanco) { mostrarToast('Banco Caixa/Dinheiro não encontrado.', 'erro'); return; }
+
+  abrirModal('modal-pagar');
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('pagar-descricao', `Diferença de caixa · Caixa ${c.caixa_ext} · ${ccDT(c.data)}`);
+  setValorMoeda('pagar-valor', Number(falta.toFixed(2)));
+  set('pagar-vencimento', c.data);
+  set('pagar-banco', caixaBanco);
+  set('pagar-status', 'pago');
+  set('pagar-data-pagamento', c.data);
+  if (c.unidade_id) set('pagar-unidade', c.unidade_id);
+  set('pagar-observacoes', `Falta no caixa ${c.caixa_ext} de ${ccDT(c.data)} — dinheiro que saiu da gaveta sem passar pelo PDV. Esperado ${ccBRL(cxqEsperado(c))}, contado ${ccBRL(cxqContado(c))}.`);
+  const grupo = document.getElementById('grupo-data-pagamento-pagar');
+  if (grupo) grupo.style.display = 'flex';
+
+  _cxqPendente = { difConfId: confId };
+}
+
+async function cxqDesfazerDif(confId) {
+  if (!confirm('Desfazer o lançamento desta diferença? A despesa some do Contas a Pagar e a diferença volta a aparecer.')) return;
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const { data: c } = await db.from('caixa_dia_conf').select('dif_lancamento_id').eq('id', confId).single();
+  if (c && c.dif_lancamento_id) await db.from('lancamentos').delete().eq('id', c.dif_lancamento_id);
+  const { error } = await db.from('caixa_dia_conf').update({ dif_lancamento_id: null }).eq('id', confId);
+  if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
+  mostrarToast('Lançamento da diferença desfeito', 'sucesso');
+  renderCaixaEspecie();
 }
 
 async function cxqDesfazer(movId) {
