@@ -2352,6 +2352,8 @@ function abrirModal(idModal) {
 
 function fecharModal(idModal) {
   document.getElementById(idModal).classList.add('hidden');
+  // Fechou sem salvar: o pagamento do caixa continua pendente.
+  if (idModal === 'modal-pagar') _cxqPendente = null;
 }
 
 async function verificarDuplicadoPedido(tipo) {
@@ -2490,6 +2492,8 @@ async function salvarLancamento(tipo, btnEl) {
 
   mostrarToast(id ? 'Lançamento atualizado!' : 'Lançamento salvo!', 'sucesso');
   restaurarComTimeout();
+  // Veio da Conciliação do Dinheiro? Amarra o pagamento do caixa a esta conta.
+  if (!id && tipo === 'pagar' && _cxqPendente) await cxqVincularSalvo(lancamentoId, planoConta);
   fecharModal(`modal-${tipo}`);
   carregarLancamentos(tipo);
   carregarDashboard();
@@ -4518,26 +4522,13 @@ function cxqRenderDetalhe() {
     : '<div class="sem-dados" style="padding:20px;color:#999">👈 Clique num dia pra ver os caixas e pagamentos.</div>';
 }
 
-function cxqPlanoOptions() {
-  const grupos = (planoContas || []).filter(p => p.tipo === 'pagar' && !p.grupo_id);
-  const subs = (planoContas || []).filter(p => p.tipo === 'pagar' && p.grupo_id);
-  let html = '<option value="">Plano de contas…</option>';
-  grupos.forEach(g => {
-    const ss = subs.filter(s => s.grupo_id === g.id);
-    if (!ss.length) return;
-    html += `<optgroup label="${g.nome}">` + ss.map(s => `<option value="${s.id}">${s.nome}</option>`).join('') + '</optgroup>';
-  });
-  return html;
-}
-
 function cxqPagamentoHTML(m) {
   if (m.status === 'lancado') {
     return `<div style="font-size:12px;color:#16a085;padding:2px 0">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
   }
   return `<div style="background:#fbf8f2;border:1px solid #efe0c8;border-radius:8px;padding:8px 10px;margin-bottom:6px">
     <div style="font-size:12px;color:#2c3e50"><strong>${ccBRL(m.valor)}</strong> · ${m.hora || ''} · <span style="color:#777">${m.descricao || ''}</span></div>
-    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-      <select id="cxq-plano-${m.id}" style="flex:1;min-width:150px;padding:5px;border:1px solid #ddd;border-radius:6px;font-size:12px">${cxqPlanoOptions()}</select>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;justify-content:flex-end">
       <button onclick="cxqCategorizar('${m.id}')" style="font-size:12px;background:#2c3e50;color:#fff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap">→ Contas a Pagar</button>
     </div></div>`;
 }
@@ -4637,29 +4628,55 @@ async function cxqConfirmar(confId) {
   renderCaixaEspecie();
 }
 
+// Pagamento do caixa aguardando o modal de Conta a Pagar ser salvo.
+let _cxqPendente = null;
+
+// Abre a tela normal de Conta a Pagar já preenchida com o pagamento do PDV.
+// Antes isto criava o lançamento direto, só com o plano de contas — o usuário
+// tinha que ir depois ao Contas a Pagar completar fornecedor, NF, centro de
+// custo etc. Agora completa tudo de uma vez, sem retrabalho.
 async function cxqCategorizar(movId) {
   if (!(await garantirSessao())) return;
-  const sel = document.getElementById(`cxq-plano-${movId}`);
-  const planoId = sel && sel.value;
-  if (!planoId) { mostrarToast('Escolha o plano de contas.', 'erro'); return; }
   const db = obterSupabase();
-  const { data: m, error: e0 } = await db.from('caixa_movimentos').select('*').eq('id', movId).single();
-  if (e0 || !m) { mostrarToast('Movimento não encontrado.', 'erro'); return; }
+  const { data: m, error } = await db.from('caixa_movimentos').select('*').eq('id', movId).single();
+  if (error || !m) { mostrarToast('Movimento não encontrado.', 'erro'); return; }
   const caixaBanco = cxeCaixaBancoId();
   if (!caixaBanco) { mostrarToast('Banco Caixa/Dinheiro não encontrado.', 'erro'); return; }
-  let email = ''; try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
-  const { data: lanc, error: e1 } = await db.from('lancamentos').insert({
-    descricao: m.descricao || ('Pagamento em dinheiro ' + ccDT(m.data)),
-    valor: m.valor, tipo: 'pagar', status: 'pago',
-    data_pagamento: m.data, vencimento: m.data,
-    banco_id: caixaBanco, plano_conta_id: planoId, unidade_id: m.unidade_id || null,
-    observacoes: 'Caixa iComanda' + (m.usuario ? ' · ' + m.usuario : '')
-  }).select('id').single();
-  if (e1) { mostrarToast('Erro ao lançar: ' + e1.message, 'erro'); return; }
-  const { error: e2 } = await db.from('caixa_movimentos').update({ status: 'lancado', plano_conta_id: planoId, lancamento_id: lanc.id, processado_por: email, processado_em: new Date().toISOString() }).eq('id', movId);
-  if (e2) mostrarToast('Lançado, mas erro ao marcar o movimento: ' + e2.message, 'erro');
-  else mostrarToast('Pagamento enviado ao Contas a Pagar (pago) ✔️', 'sucesso');
-  renderCaixaEspecie();
+
+  abrirModal('modal-pagar');            // zera o formulário
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('pagar-descricao', m.descricao || ('Pagamento em dinheiro ' + ccDT(m.data)));
+  setValorMoeda('pagar-valor', Number(m.valor) || 0);
+  set('pagar-vencimento', m.data);
+  set('pagar-banco', caixaBanco);
+  set('pagar-status', 'pago');
+  set('pagar-data-pagamento', m.data);
+  if (m.unidade_id) set('pagar-unidade', m.unidade_id);
+  // Guarda o texto original do PDV: a descrição costuma ser reescrita para algo
+  // curto, e sem isto a origem do pagamento se perderia.
+  const origem = ['Caixa iComanda', m.usuario, m.hora].filter(Boolean).join(' · ');
+  set('pagar-observacoes', origem + (m.descricao ? ' — ' + m.descricao : ''));
+  const grupo = document.getElementById('grupo-data-pagamento-pagar');
+  if (grupo) grupo.style.display = 'flex';   // status=pago revela a data
+
+  _cxqPendente = { movId };
+}
+
+// Chamado pelo salvarLancamento quando o lançamento veio deste fluxo:
+// amarra o movimento do caixa ao lançamento recém-criado.
+async function cxqVincularSalvo(lancamentoId, planoContaId) {
+  const pend = _cxqPendente; _cxqPendente = null;
+  if (!pend) return;
+  const db = obterSupabase();
+  let email = '';
+  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const { error } = await db.from('caixa_movimentos').update({
+    status: 'lancado', lancamento_id: lancamentoId, plano_conta_id: planoContaId || null,
+    processado_por: email, processado_em: new Date().toISOString()
+  }).eq('id', pend.movId);
+  if (error) { mostrarToast('Conta criada, mas não consegui marcar o pagamento no caixa: ' + error.message, 'erro'); return; }
+  mostrarToast('Pagamento enviado ao Contas a Pagar ✔️', 'sucesso');
+  if (typeof renderCaixaEspecie === 'function') renderCaixaEspecie();
 }
 
 async function cxqDesfazer(movId) {
