@@ -183,12 +183,34 @@ def _conf_vazia():
         return True
 
 
+def _formas_faltando():
+    """Existe dia antigo sem o fechamento por forma?
+
+    A coluna `formas` chegou depois, entao as linhas ja gravadas ficaram nulas.
+    Em vez de depender de alguem rodar o robo a mao com uma janela maior, ele
+    mesmo percebe e refaz desde o inicio. Assim que todos os dias tiverem o
+    fechamento, a janela volta sozinha para DAYS_BACK.
+    """
+    try:
+        req = urllib.request.Request(
+            f'{BASE}/caixa_dia_conf?select=data&formas=is.null&limit=1',
+            headers={**HDR, 'Range': '0-0'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return len(json.load(r)) > 0
+    except Exception:
+        # Coluna ainda nao existe (SQL nao rodou) — nao ha o que refazer.
+        return False
+
+
 def datas_janela():
     hoje = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-4))).date()
     piso = datetime.fromisoformat(START_DAT).date()
     if _conf_vazia():
         ini = piso
         print(f'Primeira carga: backfill desde {piso}.', flush=True)
+    elif _formas_faltando():
+        ini = piso
+        print(f'Ha dia sem o fechamento por forma — refazendo desde {piso}.', flush=True)
     else:
         ini = hoje - timedelta(days=DAYS_BACK)
         if ini < piso:
