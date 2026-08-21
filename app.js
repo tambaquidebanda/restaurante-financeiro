@@ -4248,6 +4248,29 @@ function ccBuckets(formas) {
 
 const ccBucketLbl = b => b.forma + (b.bandeira ? '/' + b.bandeira : '');
 
+// Chave comparável entre o fechamento da loja e a venda. Precisa aguentar as
+// duas origens: a API manda "Cartão Débito" com a bandeira num campo separado,
+// e a planilha do PDV manda tudo junto numa string só ("Cartão Débito Visa").
+// Fora do cartão o nome importa — Alelo e Sodexo são os dois "voucher".
+const ccMarca = n => (n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z ]/g, ' ').trim().split(/\s+/)[0] || '';
+
+function ccChaveForma(nome, bandeira) {
+  const c = classificarFormaPDV(nome || '');
+  const b = bandeira || c.bandeira || '';
+  if (c.grupo === 'cartao') return 'cartao|' + (c.modalidade || '') + '|' + (b && b !== 'Outro' ? b : '');
+  return c.grupo + '|' + ccMarca(nome);
+}
+
+// Cartão casa mesmo quando um dos lados não sabe a bandeira ('Outro' ou vazio).
+function ccFormaBate(a, b) {
+  if (a === b) return true;
+  const A = a.split('|'), B = b.split('|');
+  if (A[0] !== 'cartao' || B[0] !== 'cartao') return false;
+  if (A[1] !== B[1]) return false;
+  return !A[2] || !B[2];
+}
+
 // Subconjunto de até 3 vendas que soma o valor procurado. Precisa disso porque
 // uma forma pode ter perdido duas vendas de uma vez — no caixa 12807 de 09/08 o
 // Pix sumido de R$ 128,03 era R$ 27,93 + R$ 100,10.
@@ -4277,35 +4300,44 @@ async function ccCarregarPalpites(db, de, ate) {
   });
   if (!alvo.length) return;
 
-  // Busca TODAS as formas de pagamento desses caixas, não só cartão: a venda
-  // trocada pode ter ido parar no dinheiro ou num voucher.
-  const caixas = [...new Set(alvo.map(c => c.caixa_ext).filter(x => x != null))];
-  const dias = alvo.map(c => c.data).sort();
+  // Busca TODAS as formas de pagamento, não só cartão: a venda trocada pode ter
+  // ido parar no dinheiro ou num voucher. E sem filtrar por caixa — as vendas
+  // que vieram da planilha do PDV (dias 06 a 09/08) não têm caixa gravado.
+  const diasSet = new Set(alvo.map(c => c.data));
+  const dias = [...diasSet].sort();
+  // Só a forma interessa do `raw`; puxar o jsonb inteiro de milhares de vendas
+  // a cada abertura da tela seria desperdício.
+  const COLS = 'id,valor_bruto,bandeira,caixa_ext,data_hora_utc';
+  const buscaV = extra => ccFetchPaginado(() => db.from('pdv_vendas')
+    .select(COLS + extra)
+    .gte('data_hora_utc', dias[0] + 'T00:00:00-04:00')
+    .lte('data_hora_utc', dias[dias.length - 1] + 'T23:59:59-04:00'));
   let vendas = [];
   try {
-    vendas = await ccFetchPaginado(() => db.from('pdv_vendas')
-      .select('id,valor_bruto,bandeira,raw,caixa_ext,data_hora_utc')
-      .in('caixa_ext', caixas)
-      .gte('data_hora_utc', dias[0] + 'T00:00:00-04:00')
-      .lte('data_hora_utc', dias[dias.length - 1] + 'T23:59:59-04:00'));
+    try { vendas = await buscaV(',forma_raw:raw->>forma'); }
+    catch (semSeta) { vendas = await buscaV(',raw'); }
   } catch (e) { return; }
   vendas.forEach(v => { v._dia = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString().slice(0, 10); });
+  vendas = vendas.filter(v => diasSet.has(v._dia));
+  // Venda sem caixa pode ser de qualquer caixa daquele dia; para não deixar dois
+  // caixas do mesmo dia disputarem a mesma venda, quem pega primeiro fica com ela.
+  const usadosDia = {};
 
   alvo.forEach(c => {
     const { sobra, falta } = ccBuckets(cxqFormas(c));
-    const doCaixa = vendas.filter(v => v._dia === c.data && String(v.caixa_ext) === String(c.caixa_ext));
-    const usados = new Set(), pend = [];
+    const doCaixa = vendas.filter(v => v._dia === c.data
+      && (v.caixa_ext == null || String(v.caixa_ext) === String(c.caixa_ext)));
+    const usados = usadosDia[c.data] = usadosDia[c.data] || new Set();
+    const pend = [];
     sobra.forEach(s => {
       // A venda trocada vale o que sobrou aqui OU o que faltou lá.
       const alvos = [s.valor].concat(falta.map(f => f.valor));
       let melhor = null;
       doCaixa.forEach(v => {
         if (usados.has(v.id)) return;
-        const nome = ((v.raw && v.raw.forma) || '').trim();
-        if (nome !== s.forma) return;
-        // A API não manda a bandeira por venda; o robô grava 'Outro'. Nesse caso
-        // a bandeira não desqualifica — o valor é que decide.
-        if (s.bandeira && v.bandeira && v.bandeira !== 'Outro' && v.bandeira !== s.bandeira) return;
+        const nome = (v.forma_raw || (v.raw && v.raw.forma) || '').trim();
+        if (!nome) return;
+        if (!ccFormaBate(ccChaveForma(nome, v.bandeira), ccChaveForma(s.forma, s.bandeira))) return;
         alvos.forEach(a => {
           const d = Math.abs(Number(v.valor_bruto || 0) - a);
           if (d < 0.60 && (!melhor || d < melhor.d)) melhor = { d, v };
