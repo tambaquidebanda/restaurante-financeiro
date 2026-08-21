@@ -4219,6 +4219,117 @@ function ccStatusBancoTxt(DB) {
   return `🔴 recebeu ${ccBRL(DB.dif)} a MENOS que o esperado`;
 }
 
+// ---- Palpite de forma trocada pelo PDV ------------------------------------
+// A nuvem do iComanda troca a forma de pagamento de algumas vendas. O fechamento
+// da loja (caixa_dia_conf.formas) diz QUANTO sobrou numa forma e quanto faltou
+// em outra; as vendas daquele caixa dizem QUAL venda tem exatamente aquele valor.
+// Onde as duas pontas batem, dá pra apontar a venda com nome e sobrenome.
+// Conferido em agosto/2026: 13 vendas identificadas em 15 dias.
+let ccPalpiteForma = new Map();
+
+// Sobras e faltas por forma (e por bandeira, quando a API detalha).
+function ccBuckets(formas) {
+  const sobra = [], falta = [];
+  (formas || []).forEach(f => {
+    const nome = (f.forma || '').trim();
+    const bs = f.bandeiras || [];
+    if (bs.length) {
+      bs.forEach(b => {
+        const d = Number(b.computado || 0) - Number(b.digitado || 0);
+        if (Math.abs(d) >= CXQ_RUIDO) (d > 0 ? sobra : falta).push({ forma: nome, bandeira: b.bandeira, valor: Math.abs(d) });
+      });
+    } else {
+      const d = Number(f.computado || 0) - Number(f.digitado || 0);
+      if (Math.abs(d) >= CXQ_RUIDO) (d > 0 ? sobra : falta).push({ forma: nome, bandeira: null, valor: Math.abs(d) });
+    }
+  });
+  return { sobra, falta };
+}
+
+const ccBucketLbl = b => b.forma + (b.bandeira ? '/' + b.bandeira : '');
+
+// Subconjunto de até 3 vendas que soma o valor procurado. Precisa disso porque
+// uma forma pode ter perdido duas vendas de uma vez — no caixa 12807 de 09/08 o
+// Pix sumido de R$ 128,03 era R$ 27,93 + R$ 100,10.
+function ccSubset(valores, alvo, tol) {
+  const n = valores.length;
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(valores[i] - alvo) < tol) return [i];
+    for (let j = i + 1; j < n; j++) {
+      if (Math.abs(valores[i] + valores[j] - alvo) < tol) return [i, j];
+      for (let k = j + 1; k < n; k++)
+        if (Math.abs(valores[i] + valores[j] + valores[k] - alvo) < tol) return [i, j, k];
+    }
+  }
+  return null;
+}
+
+async function ccCarregarPalpites(db, de, ate) {
+  ccPalpiteForma = new Map();
+  let confs = [];
+  try {
+    confs = await ccFetchPaginado(() => db.from('caixa_dia_conf')
+      .select('data,caixa_ext,formas').gte('data', de).lte('data', ate));
+  } catch (e) { return; }   // coluna 'formas' ainda não existe
+  const alvo = confs.filter(c => {
+    const b = ccBuckets(cxqFormas(c));
+    return b.sobra.length && b.falta.length;
+  });
+  if (!alvo.length) return;
+
+  // Busca TODAS as formas de pagamento desses caixas, não só cartão: a venda
+  // trocada pode ter ido parar no dinheiro ou num voucher.
+  const caixas = [...new Set(alvo.map(c => c.caixa_ext).filter(x => x != null))];
+  const dias = alvo.map(c => c.data).sort();
+  let vendas = [];
+  try {
+    vendas = await ccFetchPaginado(() => db.from('pdv_vendas')
+      .select('id,valor_bruto,bandeira,raw,caixa_ext,data_hora_utc')
+      .in('caixa_ext', caixas)
+      .gte('data_hora_utc', dias[0] + 'T00:00:00-04:00')
+      .lte('data_hora_utc', dias[dias.length - 1] + 'T23:59:59-04:00'));
+  } catch (e) { return; }
+  vendas.forEach(v => { v._dia = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString().slice(0, 10); });
+
+  alvo.forEach(c => {
+    const { sobra, falta } = ccBuckets(cxqFormas(c));
+    const doCaixa = vendas.filter(v => v._dia === c.data && String(v.caixa_ext) === String(c.caixa_ext));
+    const usados = new Set(), pend = [];
+    sobra.forEach(s => {
+      // A venda trocada vale o que sobrou aqui OU o que faltou lá.
+      const alvos = [s.valor].concat(falta.map(f => f.valor));
+      let melhor = null;
+      doCaixa.forEach(v => {
+        if (usados.has(v.id)) return;
+        const nome = ((v.raw && v.raw.forma) || '').trim();
+        if (nome !== s.forma) return;
+        // A API não manda a bandeira por venda; o robô grava 'Outro'. Nesse caso
+        // a bandeira não desqualifica — o valor é que decide.
+        if (s.bandeira && v.bandeira && v.bandeira !== 'Outro' && v.bandeira !== s.bandeira) return;
+        alvos.forEach(a => {
+          const d = Math.abs(Number(v.valor_bruto || 0) - a);
+          if (d < 0.60 && (!melhor || d < melhor.d)) melhor = { d, v };
+        });
+      });
+      if (melhor) { usados.add(melhor.v.id); pend.push({ v: melhor.v, de: s }); }
+    });
+    if (!pend.length) return;
+
+    // Cada falta tem que ser explicada pelas vendas achadas.
+    let livres = pend.map((_, i) => i);
+    falta.slice().sort((a, b) => b.valor - a.valor).forEach(f => {
+      const idx = ccSubset(livres.map(i => Number(pend[i].v.valor_bruto || 0)), f.valor, 0.60);
+      if (!idx) return;
+      const escolhidos = idx.map(i => livres[i]);
+      escolhidos.forEach(i => {
+        const g = classificarFormaPDV(f.forma).grupo;
+        ccPalpiteForma.set(pend[i].v.id, { de: ccBucketLbl(pend[i].de), para: ccBucketLbl(f), grupo: g });
+      });
+      livres = livres.filter(i => escolhidos.indexOf(i) < 0);
+    });
+  });
+}
+
 async function renderCartao() {
   const cal = document.getElementById('car-cal');
   if (!cal) return;
@@ -4236,6 +4347,7 @@ async function renderCartao() {
   if (A.erro === 'pdv') { cal.innerHTML = ccCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Importe o relatório do PDV primeiro (botão no topo).</div>'; if (cardsEl) cardsEl.innerHTML = ''; ccResumoDia = {}; ccDetalhes = {}; ccRenderDetalhe(); return; }
   const B = await computeEtapaB(db, de, ate);
   const P = await computePix(db, de, ate);
+  await ccCarregarPalpites(db, de, ate);
 
   // Regroup por dia de liquidação (proxCredito), igual à versão em tabela.
   const creditDates = B.creditDates || [];
@@ -4286,9 +4398,18 @@ async function renderCartao() {
       ${ops.map(o => `<option value="${o[0]}">era ${o[1]}</option>`).join('')}
     </select>`;
   };
-  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${selForma(p, 'cartao')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
+  // Quando o fechamento da loja aponta exatamente esta venda, o palpite vira um
+  // botão com a resposta pronta — não precisa escolher na lista.
+  const dicaForma = (p, atual) => {
+    const g = ccPalpiteForma.get(p.id);
+    if (!g) return '';
+    const tit = `O fechamento da loja aponta esta venda: entrou como ${g.de} e era ${g.para}.`;
+    if (g.grupo === atual) return `<span title="${tit}" style="font-size:11px;color:#8e44ad;white-space:nowrap;align-self:center">⇢ era ${g.para}</span>`;
+    return `<button title="${tit}" onclick="event.stopPropagation();ccTrocarForma('${p.id}','${g.grupo}',this)" style="font-size:11px;border:1px solid #8e44ad;background:#f6effa;color:#8e44ad;font-weight:600;border-radius:5px;padding:2px 7px;cursor:pointer;white-space:nowrap">⇢ era ${g.para}</button>`;
+  };
+  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${dicaForma(p, 'cartao')}${selForma(p, 'cartao')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
   const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ OK')}</span>`;
-  const btnsPix = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${selForma(p, 'pix')}${rb('pix', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Não recebido')}${rb('pix', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
+  const btnsPix = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${dicaForma(p, 'pix')}${selForma(p, 'pix')}${rb('pix', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Não recebido')}${rb('pix', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
   const motivoLbl = m => ({ forma_errada: 'Pago em outra forma', venda_nao_processada: 'Venda perdida', conferido: 'Conferido', outra_comanda: 'Lançada em outra comanda', cartao_duplicado: 'Cartão passado 2x', recebimento_sem_venda: 'Conferido' }[m] || m || 'Resolvido');
   const linhaAcao = inner => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:2px 0">${inner}</div>`;
   const bloco = (tit, inner) => `<div style="border:1px solid #eee;border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">${tit}${inner}</div>`;
