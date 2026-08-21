@@ -13,7 +13,7 @@ Variáveis de ambiente (GitHub Actions secrets) — iguais ao robô do PDV:
   ICOMANDA_API_URL, ICOMANDA_API_KEY, ICOMANDA_START_DATE, ICOMANDA_DAYS_BACK (opcionais)
   SUPABASE_URL, SUPABASE_SERVICE_KEY (obrigatórios)
 """
-import os, re, sys, json, urllib.request, urllib.parse
+import os, re, sys, json, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 
 
@@ -66,6 +66,35 @@ def _dinheiro(fc):
     return {}
 
 
+def _formas(fc):
+    """Fechamento por forma de pagamento, do jeito que a API entrega.
+
+    'computado' vem da nuvem do iComanda e ANDA ERRADO: ela troca a forma de
+    pagamento de algumas vendas (Sodexo vira Alelo, Pix vira Débito...). O
+    'digitado'/'conferido' e o fechamento que a loja fez no PDV, esse esta certo.
+    Guardamos os dois para a tela poder comparar e corrigir.
+    """
+    out = []
+    for f in (fc or {}).get('formas', []) or []:
+        c = round(float(f.get('computado') or 0), 2)
+        g = round(float(f.get('digitado') or 0), 2)
+        v = round(float(f.get('conferido') or 0), 2)
+        if c == 0 and g == 0 and v == 0:
+            continue
+        item = {'forma': (f.get('forma') or '').strip(), 'computado': c, 'digitado': g, 'conferido': v}
+        bands = []
+        for b in f.get('bandeiras') or []:
+            bc = round(float(b.get('computado') or 0), 2)
+            bg = round(float(b.get('digitado') or 0), 2)
+            if bc == 0 and bg == 0:
+                continue
+            bands.append({'bandeira': b.get('bandeira'), 'computado': bc, 'digitado': bg})
+        if bands:
+            item['bandeiras'] = bands
+        out.append(item)
+    return out
+
+
 def dados_caixa(data, caixa_ext):
     d = _get({'api_key': API_KEY, 'data_inicial': data, 'data_final': data,
               'caixa_ids': str(caixa_ext), 'blocos': 'servicos_descontos'})
@@ -87,6 +116,7 @@ def dados_caixa(data, caixa_ext):
         'esperado': round(float(din.get('computado') or 0), 2),
         'contado_api': round(float(din.get('conferido') or 0), 2),
         'vendas_dinheiro': vendas_din,
+        'formas': _formas(fc),
     }
     mv = d.get('movimentacoes')
     arr = mv if isinstance(mv, list) else ((mv or {}).get('movimentacoes') if isinstance(mv, dict) else [])
@@ -113,6 +143,23 @@ def dados_caixa(data, caixa_ext):
 
 
 # ---------- Supabase ----------
+def _post_tolerante(path, rows, conflict, coluna, merge=False):
+    # A coluna pode ainda nao existir no banco (o SQL e rodado a mao). Se for esse
+    # o caso, manda sem ela em vez de derrubar o robo inteiro.
+    try:
+        _post(path, rows, conflict, merge=merge)
+    except urllib.error.HTTPError as e:
+        corpo = ''
+        try: corpo = e.read().decode('utf-8', 'replace')
+        except Exception: pass
+        if e.code != 400 or coluna not in corpo:
+            raise
+        print(f'  AVISO: coluna {path}.{coluna} nao existe ainda — rode o SQL. '
+              f'Gravando sem ela.', flush=True)
+        _post(path, [{k: v for k, v in r.items() if k != coluna} for r in rows],
+              conflict, merge=merge)
+
+
 def _post(path, rows, conflict, merge=False):
     # merge=True atualiza as colunas enviadas (mantém contado_ajuste/confirmado/recebimento,
     # que não vão no payload); ignore = não mexe em linha já existente.
@@ -176,7 +223,7 @@ def main():
             confs.append(conf)
             movs.extend(ms)
         if confs:
-            _post('caixa_dia_conf', confs, 'data,caixa_ext', merge=True)
+            _post_tolerante('caixa_dia_conf', confs, 'data,caixa_ext', 'formas', merge=True)
         movs = [m for m in movs if m.get('movimentacao_ext') is not None]
         if movs:
             _post('caixa_movimentos', movs, 'movimentacao_ext')

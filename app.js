@@ -4275,9 +4275,20 @@ async function renderCartao() {
   const modCor = m => m === 'debito' ? '#2980b9' : '#8e44ad';
   const cel = (a, m, b, c) => `<div style="display:flex;gap:8px;padding:1px 0;font-size:12px;color:#555"><span style="width:40px">${a}</span><span style="width:52px;color:${modCor(m)};font-weight:600">${modLbl(m)}</span><span style="width:46px">${b}</span><span style="width:80px;text-align:right">${c}</span></div>`;
   const rb = (kind, id, tipo, valor, label) => `<button title="${label}" onclick="event.stopPropagation();ccResolver('${kind}','${id}','${tipo}',${valor})" style="font-size:11px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:2px 6px;cursor:pointer;white-space:nowrap">${label}</button>`;
-  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('pdv', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
+  // A nuvem do PDV erra a forma de pagamento de algumas vendas (um Pix chega como
+  // Débito, por exemplo). Aqui o caixa diz qual era a forma de verdade e a venda
+  // muda de lugar: sai desta conferência e entra na conferência certa.
+  const selForma = (p, atual) => {
+    const ops = [['pix', 'Pix'], ['dinheiro', 'Dinheiro'], ['cartao', 'Cartão'],
+      ['voucher', 'Voucher/Refeição'], ['ifood', 'iFood'], ['outro', 'Outro']].filter(o => o[0] !== atual);
+    return `<select onchange="event.stopPropagation();ccTrocarForma('${p.id}',this.value,this)" onclick="event.stopPropagation()" style="font-size:11px;border:1px solid #ddd;border-radius:5px;padding:2px 5px;cursor:pointer;background:#fff;color:#555">
+      <option value="">🔀 era outra forma…</option>
+      ${ops.map(o => `<option value="${o[0]}">era ${o[1]}</option>`).join('')}
+    </select>`;
+  };
+  const btnsPdv = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${selForma(p, 'cartao')}${rb('pdv', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Perdida')}${rb('pdv', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
   const btnsGnet = g => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('gnet', g.id, 'outra_comanda', g.valor, '🔀 Outra comanda')}${rb('gnet', g.id, 'cartao_duplicado', g.valor, '💳 2x')}${rb('gnet', g.id, 'conferido', g.valor, '✔️ OK')}</span>`;
-  const btnsPix = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${rb('pix', p.id, 'forma_errada', p.valor_bruto, '🔀 Outra forma')}${rb('pix', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Não recebido')}${rb('pix', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
+  const btnsPix = p => `<span style="display:inline-flex;gap:4px;margin-left:6px">${selForma(p, 'pix')}${rb('pix', p.id, 'venda_nao_processada', p.valor_bruto, '💸 Não recebido')}${rb('pix', p.id, 'conferido', p.valor_bruto, '✔️ OK')}</span>`;
   const motivoLbl = m => ({ forma_errada: 'Pago em outra forma', venda_nao_processada: 'Venda perdida', conferido: 'Conferido', outra_comanda: 'Lançada em outra comanda', cartao_duplicado: 'Cartão passado 2x', recebimento_sem_venda: 'Conferido' }[m] || m || 'Resolvido');
   const linhaAcao = inner => `<div style="display:flex;align-items:center;flex-wrap:wrap;padding:2px 0">${inner}</div>`;
   const bloco = (tit, inner) => `<div style="border:1px solid #eee;border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">${tit}${inner}</div>`;
@@ -4443,7 +4454,86 @@ let cxqDifValor = {};
 function cxqDifLancada(c) { return c.dif_lancamento_id ? (cxqDifValor[c.dif_lancamento_id] || 0) : 0; }
 
 // Esperado da API menos o que já foi lançado como despesa.
-function cxqEsperado(c) { return Number(c.esperado || 0) - cxqDifLancada(c); }
+// Se o fechamento da loja foi adotado, ele manda (ver cxqDiag abaixo).
+function cxqEsperado(c) {
+  if (c.esperado_ajuste != null) return Number(c.esperado_ajuste);
+  return Number(c.esperado || 0) - cxqDifLancada(c);
+}
+
+// ---- Fechamento da loja × nuvem do PDV ------------------------------------
+// A nuvem do iComanda troca a forma de pagamento de algumas vendas antes de
+// mandar pra API (Sodexo vira Alelo, Pix vira Débito...). A API manda os dois
+// números por forma: 'computado' (da nuvem, errado) e 'digitado' (o fechamento
+// que a loja fez no PDV, certo). O robô guarda os dois em caixa_dia_conf.formas.
+const CXQ_RUIDO = 1.00; // abaixo disso é arredondamento (o caixa digita reais redondos)
+
+function cxqFormas(c) {
+  const f = c && c.formas;
+  if (!f) return null;
+  try { return typeof f === 'string' ? JSON.parse(f) : f; } catch (e) { return null; }
+}
+
+// Diagnóstico do caixa: o que a nuvem trocou e se o caixa fecha assim mesmo.
+// A soma dos desvios de TODAS as formas é o teste: se dá zero, nada sumiu —
+// a nuvem só pendurou o dinheiro na forma errada.
+function cxqDiag(c) {
+  const formas = cxqFormas(c);
+  if (!formas || !formas.length) return null;
+  const desvios = formas.map(f => ({
+    forma: (f.forma || '').trim(), computado: Number(f.computado || 0),
+    digitado: Number(f.digitado || 0), bandeiras: f.bandeiras || null,
+    valor: Number(f.computado || 0) - Number(f.digitado || 0)
+  }));
+  const grandes = desvios.filter(d => Math.abs(d.valor) >= CXQ_RUIDO);
+  if (!grandes.length) return null;
+  const soma = desvios.reduce((s, d) => s + d.valor, 0);
+  const din = desvios.find(d => /inheiro/.test(d.forma));
+  const difDin = din ? din.valor : 0;
+  return { formas, desvios, grandes, soma,
+    // Os desvios se anulam dentro do caixa → a nuvem só trocou os rótulos.
+    troca: Math.abs(soma) < CXQ_RUIDO,
+    // A troca chegou a mexer no dinheiro? Se não, não há o que corrigir aqui —
+    // interessa só pra achar a venda na conferência de Cartão e Pix.
+    mexeNoDinheiro: Math.abs(difDin) >= CXQ_TOL,
+    difDinheiro: difDin,
+    dinheiroLoja: din ? din.digitado : null, dinheiroNuvem: din ? din.computado : null };
+}
+
+// Emparelha o que faltou numa forma com o que sobrou em outra, quando o valor
+// bate exatamente — aí dá pra dizer "Sodexo virou Alelo" com todas as letras.
+function cxqPares(grandes) {
+  const mais = grandes.filter(d => d.valor > 0).map(d => ({ ...d }));
+  const menos = grandes.filter(d => d.valor < 0).map(d => ({ ...d }));
+  const pares = [], faltou = [], sobrou = [];
+  menos.forEach(m => {
+    const i = mais.findIndex(x => !x._usado && Math.abs(x.valor + m.valor) < 0.02);
+    if (i >= 0) { mais[i]._usado = true; pares.push({ real: m.forma, virou: mais[i].forma, valor: -m.valor }); }
+    else faltou.push({ forma: m.forma, valor: -m.valor });
+  });
+  mais.filter(x => !x._usado).forEach(x => sobrou.push({ forma: x.forma, valor: x.valor }));
+  return { pares, faltou, sobrou };
+}
+
+// Faturado em dinheiro do caixa (o que vira a Conta a Receber). Com o fechamento
+// da loja adotado, é o que a loja apurou mais os pagamentos que saíram da gaveta.
+function cxqBruto(c, despesas) {
+  if (c.esperado_ajuste != null) return Number(c.esperado_ajuste) + Number(despesas || 0);
+  return Number(c.vendas_dinheiro || 0);
+}
+
+// A diferença deste caixa já está explicada pela troca de formas do PDV?
+// Se está, lançar despesa seria inventar uma saída de dinheiro que não houve —
+// o certo ali é adotar o fechamento da loja.
+function cxqTrocaExplica(c) {
+  const dg = cxqDiag(c);
+  return !!(dg && dg.troca && dg.mexeNoDinheiro);
+}
+
+async function cxqDespesasDb(db, c) {
+  const { data } = await db.from('caixa_movimentos').select('valor')
+    .eq('tipo', 'pagamento').eq('data', c.data).eq('caixa_ext', c.caixa_ext);
+  return (data || []).reduce((s, m) => s + Number(m.valor || 0), 0);
+}
 
 async function renderCaixaEspecie() {
   if (!document.getElementById('cxq-cal')) return;
@@ -4605,23 +4695,25 @@ function cxqDetalheHTML(d, confs, movs) {
         const contado = cxqContado(c);
         const difLanc = cxqDifLancada(c);
         const esperado = cxqEsperado(c);
-        const bruto = Number(c.vendas_dinheiro || 0);
+        const bruto = cxqBruto(c, despesas);
         const dif = contado - esperado;
         const corDif = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
         const okc = c.confirmado ? '<span style="font-size:11px;color:#16a085">✔️ conferido</span>' : '';
         card = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="font-weight:700;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
           ${linha('Faturado em dinheiro', ccBRL(bruto))}
+          ${c.esperado_ajuste != null ? `<div style="font-size:11px;color:#2e7d32;padding:1px 0">✔️ pelo fechamento da loja <button onclick="cxqDesfazerLoja('${c.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>` : ''}
           ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
           ${pagList}
           ${difLanc > 0 ? linha('(−) Diferença lançada', ccBRL(difLanc), { cor: '#8e44ad' })
             + `<div style="font-size:11px;color:#8e44ad;padding:1px 0">✔️ lançada no Contas a Pagar <button onclick="cxqDesfazerDif('${c.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>` : ''}
+          ${cxqTrocaHTML(c)}
           <div style="border-top:1px solid #eee;margin:7px 0 3px"></div>
           ${linha('Esperado no caixa', ccBRL(esperado), { forte: true })}
           <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
             <span style="font-size:12px;color:#777">contado</span>
             <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:90px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
             <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
-            ${(dif < -CXQ_TOL && ('dif_lancamento_id' in c) && !c.dif_lancamento_id) ? `<button onclick="cxqLancarDif('${c.id}')" title="O dinheiro saiu da gaveta mas não foi registrado no PDV (ex.: devolução ao cliente). Cria a despesa e a diferença zera." style="font-size:11px;border:1px solid #8e44ad;background:#fff;color:#8e44ad;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ lançar falta como despesa</button>` : ''}
+            ${(dif < -CXQ_TOL && ('dif_lancamento_id' in c) && !c.dif_lancamento_id && !cxqTrocaExplica(c)) ? `<button onclick="cxqLancarDif('${c.id}')" title="O dinheiro saiu da gaveta mas não foi registrado no PDV (ex.: devolução ao cliente). Cria a despesa e a diferença zera." style="font-size:11px;border:1px solid #8e44ad;background:#fff;color:#8e44ad;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ lançar falta como despesa</button>` : ''}
             <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
           </div>`;
       } else {
@@ -4631,6 +4723,138 @@ function cxqDetalheHTML(d, confs, movs) {
     });
   });
   return html;
+}
+
+// Aviso de "a nuvem do PDV trocou a forma de pagamento" + tabela nuvem × loja.
+function cxqTrocaHTML(c) {
+  const dg = cxqDiag(c);
+  if (!dg) return '';
+  // Se a única divergência é o próprio dinheiro, a linha "dif" logo acima já
+  // conta a história inteira — repetir aqui só polui o card.
+  if (!dg.troca && dg.grandes.length === 1 && /inheiro/.test(dg.grandes[0].forma)) return '';
+  const { pares, faltou, sobrou } = cxqPares(dg.grandes);
+  const lista = l => l.map(x => `${x.forma} ${ccBRL(x.valor)}`).join(' · ');
+  // Só oferece adotar o fechamento da loja quando a troca de fato sujou o
+  // dinheiro deste caixa. Senão, trocar o número só perderia centavos à toa.
+  const podeAdotar = dg.troca && dg.mexeNoDinheiro && dg.dinheiroLoja != null
+    && ('esperado_ajuste' in c) && c.esperado_ajuste == null;
+
+  let corpo = pares.map(p => `<div style="padding:1px 0"><strong>${p.real} ${ccBRL(p.valor)}</strong> entrou como ${p.virou}</div>`).join('');
+  if (faltou.length) corpo += `<div style="padding:1px 0">a nuvem contou <strong>a menos</strong> em: ${lista(faltou)}</div>`;
+  if (sobrou.length) corpo += `<div style="padding:1px 0">a nuvem contou <strong>a mais</strong> em: ${lista(sobrou)}</div>`;
+
+  let tit, cor, rodape;
+  if (dg.troca && dg.mexeNoDinheiro) {
+    tit = '⚠️ O PDV trocou a forma de pagamento — o caixa fecha assim mesmo';
+    cor = '#e67e22';
+    rodape = 'O total do caixa está certo: nada sumiu, só foi pendurado na forma errada.';
+  } else if (dg.troca) {
+    tit = 'ℹ️ O PDV trocou a forma de pagamento (o dinheiro não foi afetado)';
+    cor = '#7f8c8d';
+    rodape = 'Serve pra achar a venda na conferência de Cartão e Pix.';
+  } else if (dg.mexeNoDinheiro) {
+    tit = `⚠️ Em dinheiro, o PDV e a loja divergem em ${ccBRL(Math.abs(dg.difDinheiro))}`;
+    cor = '#c0392b';
+    rodape = 'Não é troca de rótulo: sobra diferença de verdade. Se ela se explicar (devolução, sangria não registrada), use o botão de lançar a falta como despesa.';
+  } else {
+    tit = 'ℹ️ O PDV divergiu da loja em outras formas (o dinheiro está certo)';
+    cor = '#7f8c8d';
+    rodape = 'Não mexe no dinheiro deste caixa; interessa à conferência de Cartão e Pix.';
+  }
+  const discreto = !dg.mexeNoDinheiro;
+
+  const tid = 'cxq-fech-' + c.id;
+  const linhaT = (nome, nuvem, loja, ind) => {
+    const d = nuvem - loja;
+    const cd = Math.abs(d) < CXQ_RUIDO ? '#999' : (d > 0 ? '#c0392b' : '#2e7d32');
+    return `<tr><td style="padding:2px 6px;${ind ? 'padding-left:20px;color:#888' : ''}">${nome}</td>
+      <td style="padding:2px 6px;text-align:right;font-variant-numeric:tabular-nums">${ccBRL(nuvem)}</td>
+      <td style="padding:2px 6px;text-align:right;font-variant-numeric:tabular-nums">${ccBRL(loja)}</td>
+      <td style="padding:2px 6px;text-align:right;font-variant-numeric:tabular-nums;color:${cd}">${Math.abs(d) < 0.005 ? '—' : ccBRL(d)}</td></tr>`;
+  };
+  const linhas = dg.desvios.map(d => linhaT(d.forma, d.computado, d.digitado, false)
+    + (d.bandeiras || []).map(b => linhaT(b.bandeira, Number(b.computado || 0), Number(b.digitado || 0), true)).join('')).join('');
+
+  const tabela = `<div id="${tid}" style="display:none;margin-top:7px;overflow-x:auto">
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <tr style="color:#888;text-align:left"><th style="padding:2px 6px;font-weight:600">Forma</th>
+          <th style="padding:2px 6px;text-align:right;font-weight:600">Nuvem</th>
+          <th style="padding:2px 6px;text-align:right;font-weight:600">Loja</th>
+          <th style="padding:2px 6px;text-align:right;font-weight:600">Dif.</th></tr>
+        ${linhas}
+      </table>
+    </div>`;
+
+  // Quando o dinheiro não foi afetado, isso é recado — não alarme. Fica numa
+  // linha discreta para não competir com a diferença de caixa de verdade.
+  if (discreto) {
+    return `<div style="margin-top:7px">
+      <div style="font-size:11px;color:#8a8a8a">${tit}
+        <button onclick="cxqToggleFech('${tid}')" style="font-size:11px;border:none;background:none;color:#777;cursor:pointer;text-decoration:underline;padding:0 0 0 4px">ver</button></div>
+      <div style="font-size:11px;color:#8a8a8a;margin-top:2px">${corpo}</div>
+      ${tabela}
+    </div>`;
+  }
+
+  return `<div style="background:#fdf6ec;border:1px solid #f0d9b5;border-radius:8px;padding:8px 10px;margin-top:8px">
+    <div style="font-size:12px;font-weight:700;color:${cor};margin-bottom:4px">${tit}</div>
+    <div style="font-size:12px;color:#5a5a5a">${corpo}</div>
+    <div style="font-size:11px;color:#8a8a8a;margin-top:5px">${rodape}</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:7px;flex-wrap:wrap">
+      ${podeAdotar ? `<button onclick="cxqUsarLoja('${c.id}')" style="font-size:11px;border:1px solid #2e7d32;background:#fff;color:#2e7d32;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ usar o fechamento da loja</button>` : ''}
+      <button onclick="cxqToggleFech('${tid}')" style="font-size:11px;border:none;background:none;color:#777;cursor:pointer;text-decoration:underline">ver fechamento da loja</button>
+    </div>
+    ${tabela}
+  </div>`;
+}
+
+function cxqToggleFech(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+// Adota o fechamento da loja: o esperado passa a ser o que a loja apurou, a
+// diferença falsa some e o recebimento no Caixa é corrigido junto.
+async function cxqUsarLoja(confId) {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const { data: c, error: e0 } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
+  if (e0 || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
+  const dg = cxqDiag(c);
+  if (!dg || !dg.troca || !dg.mexeNoDinheiro || dg.dinheiroLoja == null) {
+    mostrarToast('Este caixa não fecha só com a troca de formas — confira à mão.', 'erro'); return;
+  }
+  if (c.dif_lancamento_id) {
+    mostrarToast('Este caixa já tem a diferença lançada como despesa. Desfaça antes.', 'erro'); return;
+  }
+  const despesas = await cxqDespesasDb(db, c);
+  const novoBruto = dg.dinheiroLoja + despesas;
+  if (!confirm(`Adotar o fechamento da loja no caixa ${c.caixa_ext}?\n\n`
+    + `Dinheiro esperado: ${ccBRL(dg.dinheiroNuvem)} (PDV) → ${ccBRL(dg.dinheiroLoja)} (loja)\n`
+    + `Faturado em dinheiro: ${ccBRL(Number(c.vendas_dinheiro || 0))} → ${ccBRL(novoBruto)}\n\n`
+    + `A diferença deixa de aparecer e o recebimento no Caixa passa a usar o valor da loja.`)) return;
+
+  const { error } = await db.from('caixa_dia_conf').update({ esperado_ajuste: dg.dinheiroLoja }).eq('id', confId);
+  if (error) { mostrarToast('Erro ao ajustar: ' + error.message, 'erro'); return; }
+  // Se o recebimento já tinha sido lançado, corrige o valor junto.
+  if (c.recebimento_lancamento_id && novoBruto > 0) {
+    await db.from('lancamentos').update({ valor: novoBruto }).eq('id', c.recebimento_lancamento_id);
+  }
+  mostrarToast('Fechamento da loja adotado ✔️', 'sucesso');
+  renderCaixaEspecie();
+}
+
+async function cxqDesfazerLoja(confId) {
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  const { data: c } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
+  const { error } = await db.from('caixa_dia_conf').update({ esperado_ajuste: null }).eq('id', confId);
+  if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
+  if (c && c.recebimento_lancamento_id && Number(c.vendas_dinheiro || 0) > 0) {
+    await db.from('lancamentos').update({ valor: Number(c.vendas_dinheiro) }).eq('id', c.recebimento_lancamento_id);
+  }
+  mostrarToast('Voltou para o valor do PDV', 'sucesso');
+  renderCaixaEspecie();
 }
 
 async function cxqConfirmar(confId) {
@@ -4643,7 +4867,7 @@ async function cxqConfirmar(confId) {
   if (e0 || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
   let email = ''; try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
   const caixaBanco = cxeCaixaBancoId();
-  const bruto = Number(c.vendas_dinheiro || 0);
+  const bruto = cxqBruto(c, await cxqDespesasDb(db, c));
 
   // 1) recebimento das vendas em dinheiro (BRUTO) no Caixa — cria ou atualiza
   let recId = c.recebimento_lancamento_id || null;
@@ -4747,6 +4971,9 @@ async function cxqLancarDif(confId) {
   const { data: c, error } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
   if (error || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
   if (c.dif_lancamento_id) { mostrarToast('Esta diferença já foi lançada.', 'erro'); return; }
+  if (cxqTrocaExplica(c)) {
+    mostrarToast('Esta diferença é troca de forma do PDV, não falta de dinheiro. Use "usar o fechamento da loja".', 'erro'); return;
+  }
   const falta = cxqEsperado(c) - cxqContado(c);        // positivo = falta dinheiro
   if (falta <= CXQ_TOL) { mostrarToast('Não há falta de dinheiro neste caixa.', 'erro'); return; }
   const caixaBanco = cxeCaixaBancoId();
@@ -4934,6 +5161,42 @@ async function ccResolver(kind, id, tipo, valor) {
   const { error } = await db.from('conc_conciliacoes').insert(row);
   if (error) { mostrarToast('Erro ao resolver: ' + error.message, 'erro'); return; }
   mostrarToast('Caso resolvido ✔️', 'sucesso');
+  renderCartao();
+}
+
+const CC_FORMA_LBL = { cartao: 'Cartão', pix: 'Pix', dinheiro: 'Dinheiro',
+  voucher: 'Voucher/Refeição', ifood: 'iFood', cortesia: 'Cortesia',
+  conta_assinada: 'Conta assinada', outro: 'Outro' };
+const ccFormaLbl = f => CC_FORMA_LBL[f] || f || '—';
+
+// Corrige a forma de pagamento de UMA venda do PDV. O robô do PDV nunca
+// sobrescreve linha já existente (insert com ignore-duplicates), então a
+// correção fica de pé mesmo se ele reprocessar o dia.
+async function ccTrocarForma(id, nova, el) {
+  if (!nova) return;
+  const voltar = () => { if (el) { el.disabled = false; el.value = ''; } };
+  if (el) el.disabled = true;
+  if (!(await garantirSessao())) { voltar(); return; }
+  const db = obterSupabase();
+  const { data: v, error: e0 } = await db.from('pdv_vendas')
+    .select('id,forma_pagamento,valor_bruto').eq('id', id).single();
+  if (e0 || !v) { mostrarToast('Venda não encontrada.', 'erro'); voltar(); return; }
+  if (!confirm(`Corrigir a forma desta venda de ${ccBRL(Number(v.valor_bruto) || 0)}?\n\n`
+    + `${ccFormaLbl(v.forma_pagamento)} → ${ccFormaLbl(nova)}\n\n`
+    + `Ela sai desta conferência e passa a ser cobrada na conferência de ${ccFormaLbl(nova)}.`)) { voltar(); return; }
+
+  let email = '';
+  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const completo = { forma_pagamento: nova, forma_original: v.forma_pagamento,
+    forma_corrigida_por: email, forma_corrigida_em: new Date().toISOString() };
+  let { error } = await db.from('pdv_vendas').update(completo).eq('id', id);
+  if (error) {
+    // As colunas de auditoria podem não existir ainda; o essencial é a forma.
+    const r2 = await db.from('pdv_vendas').update({ forma_pagamento: nova }).eq('id', id);
+    error = r2.error;
+  }
+  if (error) { mostrarToast('Erro ao corrigir: ' + error.message, 'erro'); voltar(); return; }
+  mostrarToast(`Venda corrigida para ${ccFormaLbl(nova)} ✔️`, 'sucesso');
   renderCartao();
 }
 
