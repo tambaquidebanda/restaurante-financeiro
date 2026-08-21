@@ -3804,11 +3804,22 @@ function ccProximoDiaUtil(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-async function ccFetchPaginado(build) {
-  let out = [], from = 0;
+// O Supabase devolve no máximo 1000 linhas por vez, então buscamos de mil em mil.
+// A ordenação por uma coluna única (id) é OBRIGATÓRIA: sem ORDER BY o Postgres pode
+// devolver cada página numa ordem diferente, repetindo umas linhas e perdendo outras.
+// Era isso que fazia dias já conferidos voltarem para "a investigar" a cada recarga.
+async function ccFetchPaginado(build, chave) {
+  const col = chave || 'id';
+  let out = [], from = 0, ordenar = true;
   while (true) {
-    const { data, error } = await build().range(from, from + 999);
-    if (error) throw error;
+    let qy = build();
+    if (ordenar) qy = qy.order(col, { ascending: true });
+    const { data, error } = await qy.range(from, from + 999);
+    if (error) {
+      // Tabela sem a coluna de ordenação: tenta do jeito antigo (só na 1ª página).
+      if (ordenar && from === 0) { ordenar = false; continue; }
+      throw error;
+    }
     out = out.concat(data || []);
     if (!data || data.length < 1000) break;
     from += 1000;
@@ -3870,9 +3881,15 @@ async function computeEtapaA(db, de, ate) {
   const manaus = iso => iso ? new Date(Date.parse(iso) - 4 * 3600000).toISOString() : '';
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
   pdv.forEach(p => { const m = manaus(p.data_hora_utc); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); p.dtMs = Date.parse(p.data_hora_utc); p.mod = p.raw && p.raw.modalidade; p.ok = false; });
+  // O casamento é guloso: a primeira venda a pedir uma cobrança fica com ela.
+  // Logo, a ORDEM muda o resultado. Fixamos a ordem (hora, depois id) para que a
+  // mesma conferência dê sempre o mesmo resultado, não importa como o banco devolveu.
+  const ccOrdem = (a, b) => (a.dtMs - b.dtMs) || String(a.id).localeCompare(String(b.id));
+  pdv.sort(ccOrdem);
 
   const pool = new Map();
   gnet.forEach(g => { const k = Math.round((g.valor_bruto || 0) * 100); const m = manaus(g.data_hora_utc); (pool.get(k) || pool.set(k, []).get(k)).push({ id: g.id, band: g.bandeira, mod: g.modalidade, data: g.data_venda, hora: m.slice(11, 16), dtMs: Date.parse(g.data_hora_utc), term: g.terminal || null, used: false }); });
+  pool.forEach(arr => arr.sort(ccOrdem));
   // Terminal → caixa, aprendido dos pares que casaram, DENTRO de cada dia.
   // A Getnet não sabe o caixa; o terminal é uma pista. Medido em 14–19/08/2026:
   // acerta 91% (0% se comparado entre dias — o número do caixa muda diariamente).
@@ -4082,6 +4099,8 @@ async function computePix(db, de, ate) {
   // Pool de Pix recebidos no banco por valor (centavos)
   const pool = new Map();
   banco.forEach(b => { const k = Math.round((Number(b.valor) || 0) * 100); const d = (b.data_pagamento || '').slice(0, 10); if (!d) return; (pool.get(k) || pool.set(k, []).get(k)).push({ data: d, used: false }); });
+  // Mesma regra da Etapa A: ordem fixa = resultado sempre igual.
+  pool.forEach(arr => arr.sort((a, b) => a.data.localeCompare(b.data)));
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
   pdv.forEach(p => { const m = new Date(Date.parse(p.data_hora_utc) - 4 * 3600000).toISOString(); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); });
   const casar = p => {
@@ -4094,7 +4113,7 @@ async function computePix(db, de, ate) {
   const dias = {};
   const novo = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], semExtrato: false, caixas: {} });
   // ordena por dia+hora → prioriza casar no mesmo dia (gap 0) na ordem cronológica
-  pdv.sort((a, b) => (a.dia + a.hora).localeCompare(b.dia + b.hora)).forEach(p => {
+  pdv.sort((a, b) => (a.dia + a.hora).localeCompare(b.dia + b.hora) || String(a.id).localeCompare(String(b.id))).forEach(p => {
     const D = dias[p.dia] = dias[p.dia] || novo();
     D.n++; D.total += (p.valor_bruto || 0);
     const ck = ccCaixaChave(p);
