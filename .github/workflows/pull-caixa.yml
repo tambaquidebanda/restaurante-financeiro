@@ -4,7 +4,12 @@ on:
   schedule:
     - cron: '40 12 * * *'   # 08:40 Manaus — dia anterior já fechado
     - cron: '40 15 * * *'   # 11:40 Manaus — segunda tentativa
-  workflow_dispatch: {}      # botão "Run workflow"
+  workflow_dispatch:         # botão "Run workflow"
+    inputs:
+      dias_back:
+        description: 'Quantos dias para trás refazer (vazio = 4). Use 30 para refazer o mês.'
+        required: false
+        default: ''
 
 concurrency:
   group: pull-caixa
@@ -26,6 +31,7 @@ jobs:
           ICOMANDA_API_URL: ${{ secrets.ICOMANDA_API_URL }}
           ICOMANDA_API_KEY: ${{ secrets.ICOMANDA_API_KEY }}
           ICOMANDA_CAIXA_START_DATE: ${{ secrets.ICOMANDA_CAIXA_START_DATE }}
+          ICOMANDA_DAYS_BACK: ${{ github.event.inputs.dias_back }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_caixa.py
