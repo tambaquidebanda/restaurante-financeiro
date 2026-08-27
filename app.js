@@ -1905,7 +1905,7 @@ async function carregarLancamentos(tipo) {
   const filtros = lerFiltrosLancamentos(tipo);
 
   const tbody   = document.getElementById(`tbody-${tipo}`);
-  const colspan = tipo === 'pagar' ? '9' : '8';
+  const colspan = tipo === 'pagar' ? '10' : '8';
   if (tbody) tbody.innerHTML = `<tr><td colspan="${colspan}" class="sem-dados"><i class="fas fa-spinner fa-spin" style="margin-right:6px;color:#c0392b;"></i>Carregando...</td></tr>`;
 
   // Uma única busca serve a tabela E os cards de total — antes eram duas
@@ -2176,7 +2176,7 @@ function extrairNumeroPedido(descricao) {
 function renderizarLinhasLancamentos(tipo, lancamentos) {
   const hoje   = new Date().toISOString().split('T')[0];
   const tbody  = document.getElementById(`tbody-${tipo}`);
-  const colspan = tipo === 'pagar' ? '9' : '8';
+  const colspan = tipo === 'pagar' ? '10' : '8';
   const labelPagar = tipo === 'pagar' ? 'Pago' : 'Recebido';
   if (!tbody) return;
 
@@ -2269,7 +2269,7 @@ function renderizarLinhasLancamentos(tipo, lancamentos) {
       return `<tr>
         <td><input type="checkbox" class="cb-pagar" data-id="${l.id}" data-valor="${l.valor}"
           onchange="atualizarBotaoPagarLote()"></td>
-        ${pedidoCell}${fornCell}${descCell}${catCell}${datCell}${valCell}${stCell}${actCell}
+        ${pedidoCell}${fornCell}${descCell}${catCell}${bancoCell}${datCell}${valCell}${stCell}${actCell}
       </tr>`;
     } else {
       return `<tr>${uniCell}${descCell}${catCell}${bancoCell}${datCell}${valCell}${stCell}${actCell}</tr>`;
