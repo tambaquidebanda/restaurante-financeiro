@@ -4683,9 +4683,22 @@ function cxqTrocaExplica(c) {
 }
 
 async function cxqDespesasDb(db, c) {
-  const { data } = await db.from('caixa_movimentos').select('valor')
+  // Pagamento marcado como estornado nao saiu da gaveta: a operadora errou e
+  // desfez no PDV (volta como suprimento). Nao pode entrar na conta do caixa.
+  const { data } = await db.from('caixa_movimentos').select('valor,status')
     .eq('tipo', 'pagamento').eq('data', c.data).eq('caixa_ext', c.caixa_ext);
-  return (data || []).reduce((s, m) => s + Number(m.valor || 0), 0);
+  return (data || []).filter(m => m.status !== 'estornado')
+                     .reduce((s, m) => s + Number(m.valor || 0), 0);
+}
+
+// Procura, entre os suprimentos do mesmo caixa, um de valor igual lancado na
+// mesma hora ou depois do pagamento — a cara de um estorno. So sugere; quem
+// decide e quem esta conciliando, pelo botao "estornado".
+function cxqSugereEstorno(pag, sups, usados) {
+  if (pag.status !== 'pendente') return null;
+  return sups.find(s => !usados.has(s.id)
+    && Math.abs(Number(s.valor) - Number(pag.valor)) < 0.005
+    && (!s.hora || !pag.hora || s.hora >= pag.hora)) || null;
 }
 
 async function renderCaixaEspecie() {
@@ -4701,7 +4714,7 @@ async function renderCaixaEspecie() {
   let confs = [], movs = [];
   try {
     confs = await ccFetchPaginado(() => db.from('caixa_dia_conf').select('*').gte('data', mesIni).lte('data', mesFim));
-    movs  = await ccFetchPaginado(() => db.from('caixa_movimentos').select('*').eq('tipo', 'pagamento').gte('data', mesIni).lte('data', mesFim));
+    movs  = await ccFetchPaginado(() => db.from('caixa_movimentos').select('*').in('tipo', ['pagamento', 'suprimento']).gte('data', mesIni).lte('data', mesFim));
   } catch (e) {
     cal.innerHTML = cxqCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Rode o SQL_CAIXA_CONCILIACAO.sql e espere o robô do caixa rodar.</div>';
     return;
@@ -4808,15 +4821,53 @@ function cxqRenderDetalhe() {
     : '<div class="sem-dados" style="padding:20px;color:#999">👈 Clique num dia pra ver os caixas e pagamentos.</div>';
 }
 
-function cxqPagamentoHTML(m) {
+function cxqPagamentoHTML(m, sugestao) {
   if (m.status === 'lancado') {
     return `<div style="font-size:12px;color:#16a085;padding:2px 0">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
   }
+  if (m.status === 'estornado') {
+    return `<div style="font-size:12px;color:#999;padding:2px 0">↩️ <span style="text-decoration:line-through">${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''}</span> <span style="color:#777;font-style:italic">estornado no PDV</span> <button onclick="cxqDesfazerEstorno('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
+  }
+  // Dica: existe um suprimento de mesmo valor neste caixa? Provavel estorno.
+  const dica = sugestao
+    ? `<div style="font-size:11px;color:#8e44ad;background:#f6f0fb;border-radius:6px;padding:4px 7px;margin-top:6px">
+         ↩️ Existe um suprimento de ${ccBRL(sugestao.valor)}${sugestao.hora ? ' às ' + sugestao.hora : ''} neste caixa — provavelmente este pagamento foi estornado.
+       </div>` : '';
+  const btnEstorno = `<button onclick="cxqEstornar('${m.id}')" title="A operadora lancou errado e desfez no PDV. O pagamento sai da lista e nao entra na conta do caixa." style="font-size:12px;background:#fff;color:${sugestao ? '#8e44ad' : '#999'};border:1px solid ${sugestao ? '#8e44ad' : '#ddd'};border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap">↩️ Estornado</button>`;
   return `<div style="background:#fbf8f2;border:1px solid #efe0c8;border-radius:8px;padding:8px 10px;margin-bottom:6px">
     <div style="font-size:12px;color:#2c3e50"><strong>${ccBRL(m.valor)}</strong> · ${m.hora || ''} · <span style="color:#777">${m.descricao || ''}</span></div>
+    ${dica}
     <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;justify-content:flex-end">
+      ${btnEstorno}
       <button onclick="cxqCategorizar('${m.id}')" style="font-size:12px;background:#2c3e50;color:#fff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap">→ Contas a Pagar</button>
     </div></div>`;
+}
+
+// Marca o pagamento como estornado no PDV: sai da lista de trabalho e deixa de
+// pesar na conta do caixa. Nao apaga a linha — o robo do caixa reprocessa os
+// ultimos dias e traria o registro de volta.
+async function cxqEstornar(movId) {
+  if (!confirm('Marcar este pagamento como estornado no PDV?\n\nEle sai da lista, nao vira despesa e deixa de ser descontado do caixa. Da para desfazer depois.')) return;
+  if (!(await garantirSessao())) return;
+  const db = obterSupabase();
+  let email = '';
+  try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
+  const { error } = await db.from('caixa_movimentos').update({
+    status: 'estornado', processado_por: email, processado_em: new Date().toISOString(),
+  }).eq('id', movId);
+  if (error) { mostrarToast('Erro ao marcar estorno: ' + error.message, 'erro'); return; }
+  mostrarToast('Pagamento marcado como estornado', 'sucesso');
+  renderCaixaEspecie();
+}
+
+async function cxqDesfazerEstorno(movId) {
+  const db = obterSupabase();
+  const { error } = await db.from('caixa_movimentos').update({
+    status: 'pendente', processado_por: null, processado_em: null,
+  }).eq('id', movId);
+  if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
+  mostrarToast('Estorno desfeito — o pagamento voltou para a lista', 'sucesso');
+  renderCaixaEspecie();
 }
 
 function cxqDetalheHTML(d, confs, movs) {
@@ -4835,13 +4886,25 @@ function cxqDetalheHTML(d, confs, movs) {
     html += `<div style="font-size:13px;font-weight:700;color:#2c3e50;margin:10px 0 6px;border-bottom:1px solid #eee;padding-bottom:3px">🏬 ${loja}</div>`;
     const caixas = Object.values(lojas[loja].caixas).sort((a, b) => a.ext - b.ext);
     caixas.forEach(({ ext, conf: c, movs: ms }) => {
-      const despesas = (ms || []).reduce((s, m) => s + Number(m.valor || 0), 0);
-      const temPend = ms.some(m => m.status !== 'lancado');
+      // O caixa traz pagamentos (dinheiro que sai da gaveta) e suprimentos
+      // (dinheiro que volta — em geral o estorno de um pagamento errado).
+      const pags = (ms || []).filter(m => m.tipo !== 'suprimento');
+      const sups = (ms || []).filter(m => m.tipo === 'suprimento');
+      const despesas = pags.filter(m => m.status !== 'estornado')
+                           .reduce((s, m) => s + Number(m.valor || 0), 0);
+      const temPend = pags.some(m => m.status === 'pendente');
       const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
       // lista de pagamentos (categorize) — entra logo abaixo do (−) Pagamentos
-      const pagList = ms.length
+      const usados = new Set();
+      const pagsOrd = pags.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
+      const pagList = pagsOrd.length
         ? `<div style="font-size:11px;color:#e67e22;font-weight:700;margin:7px 0 5px">💸 Pagamentos deste caixa — categorize:</div>`
-          + ms.slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || '')).map(m => cxqPagamentoHTML(m)).join('')
+          + pagsOrd.map(m => {
+              const sug = cxqSugereEstorno(m, sups, usados);
+              if (sug) usados.add(sug.id);
+              return cxqPagamentoHTML(m, sug);
+            }).join('')
+          + (sups.length ? `<div style="font-size:11px;color:#8e44ad;margin:2px 0 6px">↩️ ${sups.length} suprimento${sups.length > 1 ? 's' : ''} neste caixa (${sups.map(s => ccBRL(s.valor)).join(', ')}) — dinheiro que voltou para a gaveta.</div>` : '')
         : '';
       let card;
       if (c) {
