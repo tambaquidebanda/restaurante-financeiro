@@ -4683,19 +4683,20 @@ function cxqTrocaExplica(c) {
 }
 
 async function cxqDespesasDb(db, c) {
-  // Pagamento marcado como estornado nao saiu da gaveta: a operadora errou e
-  // desfez no PDV (volta como suprimento). Nao pode entrar na conta do caixa.
-  const { data } = await db.from('caixa_movimentos').select('valor,status')
-    .eq('tipo', 'pagamento').eq('data', c.data).eq('caixa_ext', c.caixa_ext);
-  return (data || []).filter(m => m.status !== 'estornado')
-                     .reduce((s, m) => s + Number(m.valor || 0), 0);
+  // O que de fato saiu da gaveta = pagamentos - suprimentos. Suprimento e
+  // dinheiro que voltou (quase sempre o estorno de um pagamento errado).
+  // E a mesma conta que o PDV faz para chegar no "esperado".
+  const { data } = await db.from('caixa_movimentos').select('valor,tipo')
+    .in('tipo', ['pagamento', 'suprimento']).eq('data', c.data).eq('caixa_ext', c.caixa_ext);
+  return (data || []).reduce((s, m) =>
+    s + (m.tipo === 'suprimento' ? -Number(m.valor || 0) : Number(m.valor || 0)), 0);
 }
 
 // Procura, entre os suprimentos do mesmo caixa, um de valor igual lancado na
 // mesma hora ou depois do pagamento — a cara de um estorno. So sugere; quem
 // decide e quem esta conciliando, pelo botao "estornado".
 function cxqSugereEstorno(pag, sups, usados) {
-  if (pag.status !== 'pendente') return null;
+  if (pag.status === 'estornado') return null;
   return sups.find(s => !usados.has(s.id)
     && Math.abs(Number(s.valor) - Number(pag.valor)) < 0.005
     && (!s.hora || !pag.hora || s.hora >= pag.hora)) || null;
@@ -4823,7 +4824,13 @@ function cxqRenderDetalhe() {
 
 function cxqPagamentoHTML(m, sugestao) {
   if (m.status === 'lancado') {
-    return `<div style="font-size:12px;color:#16a085;padding:2px 0">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
+    // Ja virou despesa. Se existe suprimento de mesmo valor, e o caso mais
+    // perigoso: a despesa pode ser de um pagamento que foi desfeito no PDV.
+    const alerta = sugestao
+      ? `<div style="font-size:11px;color:#c0392b;background:#fdf0ee;border:1px solid #f5c6c0;border-radius:6px;padding:4px 7px;margin:2px 0 6px">
+           ⚠️ Existe um suprimento de ${ccBRL(sugestao.valor)}${sugestao.hora ? ' às ' + sugestao.hora : ''} neste caixa. Se este pagamento foi estornado no PDV, esta despesa não existe: clique em <strong>desfazer</strong> e depois em <strong>↩️ Estornado</strong>.
+         </div>` : '';
+    return `<div style="font-size:12px;color:#16a085;padding:2px 0">✔️ ${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''} <button onclick="cxqDesfazer('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>${alerta}`;
   }
   if (m.status === 'estornado') {
     return `<div style="font-size:12px;color:#999;padding:2px 0">↩️ <span style="text-decoration:line-through">${m.hora || ''} ${ccBRL(m.valor)} — ${m.descricao || ''}</span> <span style="color:#777;font-style:italic">estornado no PDV</span> <button onclick="cxqDesfazerEstorno('${m.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>`;
@@ -4890,8 +4897,9 @@ function cxqDetalheHTML(d, confs, movs) {
       // (dinheiro que volta — em geral o estorno de um pagamento errado).
       const pags = (ms || []).filter(m => m.tipo !== 'suprimento');
       const sups = (ms || []).filter(m => m.tipo === 'suprimento');
-      const despesas = pags.filter(m => m.status !== 'estornado')
-                           .reduce((s, m) => s + Number(m.valor || 0), 0);
+      const pagBruto = pags.reduce((s, m) => s + Number(m.valor || 0), 0);
+      const supTotal = sups.reduce((s, m) => s + Number(m.valor || 0), 0);
+      const despesas = pagBruto - supTotal;   // o que sobrou fora da gaveta
       const temPend = pags.some(m => m.status === 'pendente');
       const linha = (lbl, val, opt) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${(opt && opt.forte) ? 'font-weight:700;' : ''}${(opt && opt.cor) ? 'color:' + opt.cor + ';' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
       // lista de pagamentos (categorize) — entra logo abaixo do (−) Pagamentos
@@ -4904,7 +4912,7 @@ function cxqDetalheHTML(d, confs, movs) {
               if (sug) usados.add(sug.id);
               return cxqPagamentoHTML(m, sug);
             }).join('')
-          + (sups.length ? `<div style="font-size:11px;color:#8e44ad;margin:2px 0 6px">↩️ ${sups.length} suprimento${sups.length > 1 ? 's' : ''} neste caixa (${sups.map(s => ccBRL(s.valor)).join(', ')}) — dinheiro que voltou para a gaveta.</div>` : '')
+          + (sups.length ? `<div style="font-size:11px;color:#8e44ad;margin:2px 0 6px">↩️ ${sups.length} suprimento${sups.length > 1 ? 's' : ''} (${sups.map(s => ccBRL(s.valor)).join(', ')}) — dinheiro que voltou para a gaveta. Já está somado acima.</div>` : '')
         : '';
       let card;
       if (c) {
@@ -4918,7 +4926,8 @@ function cxqDetalheHTML(d, confs, movs) {
         card = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="font-weight:700;color:#2c3e50">Caixa ${ext}</span>${okc}</div>
           ${linha('Faturado em dinheiro', ccBRL(bruto))}
           ${c.esperado_ajuste != null ? `<div style="font-size:11px;color:#2e7d32;padding:1px 0">✔️ pelo fechamento da loja <button onclick="cxqDesfazerLoja('${c.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>` : ''}
-          ${despesas > 0 ? linha('(−) Pagamentos', ccBRL(despesas), { cor: '#e67e22' }) : ''}
+          ${pagBruto > 0 ? linha('(−) Pagamentos', ccBRL(pagBruto), { cor: '#e67e22' }) : ''}
+          ${supTotal > 0 ? linha('(+) Suprimentos (estornos)', ccBRL(supTotal), { cor: '#8e44ad' }) : ''}
           ${pagList}
           ${difLanc > 0 ? linha('(−) Diferença lançada', ccBRL(difLanc), { cor: '#8e44ad' })
             + `<div style="font-size:11px;color:#8e44ad;padding:1px 0">✔️ lançada no Contas a Pagar <button onclick="cxqDesfazerDif('${c.id}')" style="font-size:10px;border:none;background:none;color:#999;cursor:pointer;text-decoration:underline">desfazer</button></div>` : ''}
