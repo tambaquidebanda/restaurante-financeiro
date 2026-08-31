@@ -85,12 +85,34 @@ def sb_get(path):
         if len(c) < 1000: break
         fr += 1000
     return out
-def sb_post(path, rows):
-    for i in range(0, len(rows), 500):
-        data = json.dumps(rows[i:i+500]).encode()
-        req = urllib.request.Request(BASE + path, data=data, method='POST',
-            headers={**HDR, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'})
+def _post_lote(path, rows):
+    data = json.dumps(rows).encode()
+    req = urllib.request.Request(BASE + path, data=data, method='POST',
+        headers={**HDR, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'})
+    try:
         urllib.request.urlopen(req, timeout=90)
+        return len(rows), 0
+    except urllib.error.HTTPError as e:
+        corpo = e.read().decode('utf-8', 'replace')[:400]
+        if e.code != 409:
+            raise RuntimeError(f'HTTP {e.code} em {path}: {corpo}')
+        # 409 = o banco recusou uma linha repetida. Em vez de perder o lote
+        # inteiro, parte no meio ate isolar a culpada e segue com o resto.
+        if len(rows) == 1:
+            print(f'   PULADA (ja existe): {json.dumps(rows[0], ensure_ascii=False)[:200]}', flush=True)
+            print(f'        motivo: {corpo}', flush=True)
+            return 0, 1
+        m = len(rows) // 2
+        a1, p1 = _post_lote(path, rows[:m])
+        a2, p2 = _post_lote(path, rows[m:])
+        return a1 + a2, p1 + p2
+
+def sb_post(path, rows):
+    grav = pul = 0
+    for i in range(0, len(rows), 500):
+        g, p = _post_lote(path, rows[i:i+500])
+        grav += g; pul += p
+    return grav, pul
 
 # ---------- SFTP ----------
 def baixar_arquivos():
@@ -107,14 +129,21 @@ def baixar_arquivos():
     sftp.close(); t.close()
     return arquivos
 
+# Mesma chave do indice unico do banco (ux_card_transacoes_nat):
+# COALESCE(nsu,''), data_venda, valor_bruto, tipo_registro.
+def chave_venda(v):
+    return (v.get('nsu') or '', v['data_venda'], round(float(v['valor_bruto']), 2))
+
 def main():
     arquivos = baixar_arquivos()
     vendas, fin = {}, {}
     for nome, txt in arquivos.items():
         vs, fs = parse(txt, nome)
         for v in vs:
-            vendas[(v['nsu'], v['data_venda'], round(v['valor_bruto'], 2))] = v
+            if not v['data_venda']: continue   # sem data nao da para deduplicar nem conciliar
+            vendas[chave_venda(v)] = v
         for x in fs:
+            if not x['data_pagamento']: continue
             fin[(x['data_pagamento'], x['modalidade'], x['valor_liquido_esperado'])] = x
     vendas = list(vendas.values()); fin = list(fin.values())
     print(f'Parse: {len(vendas)} vendas, {len(fin)} liquidações (deduplicadas).', flush=True)
@@ -125,8 +154,8 @@ def main():
     if dsV:
         q = f"/card_transacoes?select=nsu,data_venda,valor_bruto&tipo_registro=eq.venda&data_venda=in.({','.join(dsV)})"
         for r in sb_get(q):
-            exV.add((r['nsu'], r['data_venda'], round(float(r['valor_bruto']), 2)))
-    novasV = [v for v in vendas if (v['nsu'], v['data_venda'], round(v['valor_bruto'], 2)) not in exV]
+            exV.add((r['nsu'] or '', r['data_venda'], round(float(r['valor_bruto']), 2)))
+    novasV = [v for v in vendas if chave_venda(v) not in exV]
 
     dsL = sorted({x['data_pagamento'] for x in fin if x['data_pagamento']})
     exL = set()
@@ -136,9 +165,11 @@ def main():
             exL.add((r['data_pagamento'], r['modalidade'], round(float(r['valor_liquido_esperado']), 2)))
     novasL = [x for x in fin if (x['data_pagamento'], x['modalidade'], x['valor_liquido_esperado']) not in exL]
 
-    if novasV: sb_post('/card_transacoes', novasV)
-    if novasL: sb_post('/card_lotes_pagamento', novasL)
-    print(f'✅ Gravado: {len(novasV)} vendas novas, {len(novasL)} liquidações novas.', flush=True)
+    gv = pv = gl = pl = 0
+    if novasV: gv, pv = sb_post('/card_transacoes', novasV)
+    if novasL: gl, pl = sb_post('/card_lotes_pagamento', novasL)
+    print(f'✅ Vendas: {gv} gravadas, {pv} puladas. '
+          f'Liquidações: {gl} gravadas, {pl} puladas.', flush=True)
 
 if __name__ == '__main__':
     try:
