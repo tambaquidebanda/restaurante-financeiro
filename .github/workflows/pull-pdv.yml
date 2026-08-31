@@ -1,9 +1,17 @@
 name: Robô PDV (iComanda → Supabase)
 
 on:
+  # Três janelas porque o `schedule` do GitHub é best-effort: ele atrasa e às
+  # vezes PULA execuções sob carga, sem falha vermelha para ninguém ver. Em
+  # 31/08/2026 as duas janelas do dia não dispararam (nem aqui nem no Robô
+  # Caixa) e o financeiro ficou sem o PDV desde a tarde anterior — 490
+  # pagamentos parados, achados por scripts/checar_caixas.py no outro repo.
+  # Como o robô é idempotente e revisita 4 dias, sobrar tentativa não custa
+  # nada: a que pegar primeiro grava, as outras não duplicam.
   schedule:
     - cron: '30 12 * * *'   # 08:30 Manaus — dia anterior já fechado
     - cron: '30 15 * * *'   # 11:30 Manaus — segunda tentativa (pega caixas fechados tarde)
+    - cron: '30 21 * * *'   # 17:30 Manaus — rede, bem longe das outras duas
   workflow_dispatch: {}      # botão "Run workflow" para rodar na hora
 
 # Evita duas execuções simultâneas

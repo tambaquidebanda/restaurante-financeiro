@@ -1,9 +1,13 @@
 name: Robô Caixa (iComanda → Supabase)
 
 on:
+  # Três janelas pelo mesmo motivo do Robô PDV: o `schedule` do GitHub é
+  # best-effort e pulou as duas janelas de 31/08/2026 nos dois robôs, calado.
+  # Idempotente e com janela retroativa, então tentativa a mais não custa nada.
   schedule:
     - cron: '40 12 * * *'   # 08:40 Manaus — dia anterior já fechado
     - cron: '40 15 * * *'   # 11:40 Manaus — segunda tentativa
+    - cron: '40 21 * * *'   # 17:40 Manaus — rede, bem longe das outras duas
   workflow_dispatch:         # botão "Run workflow"
     inputs:
       dias_back:
