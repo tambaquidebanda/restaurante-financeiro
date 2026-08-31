@@ -6350,6 +6350,53 @@ async function verificarDuplicatas(transacoes) {
       });
     }
   }
+
+  // 5. Cobranca "re-cotada" pelo banco. Juros que correm por dia (MORA, por ex.)
+  //    vem no extrato varias vezes com o valor previsto crescendo, e cada versao
+  //    traz um FITID diferente — por isso nenhuma das travas acima pega, e a
+  //    mesma cobranca entra 2 ou 3 vezes (caso Bradesco Muy Gringo, 31/08/2026:
+  //    158,76 + 159,82 + 159,93, quando so a ultima existiu de verdade).
+  //    Aqui NAO bloqueamos: so desmarcamos e avisamos. Quem decide e quem importa.
+  const semAviso = transacoes.filter(t => !t.jaImportado);
+  if (semAviso.length && bancoId) {
+    const norm = txt => (txt || '').toUpperCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim();
+    const DIA = 86400000;
+    const marcos = semAviso.map(t => +new Date(t.data)).filter(n => !isNaN(n));
+    if (marcos.length) {
+      const iso = ms => new Date(ms).toISOString().substring(0, 10);
+      const { data: pagos } = await db.from('lancamentos')
+        .select('id, descricao, valor, data_pagamento, tipo')
+        .eq('status', 'pago')
+        .eq('banco_id', bancoId)
+        .gte('data_pagamento', iso(Math.min(...marcos) - 10 * DIA))
+        .lte('data_pagamento', iso(Math.max(...marcos) + 10 * DIA));
+      semAviso.forEach(t => {
+        const nt = norm(t.descricao);
+        if (!nt) return;
+        // entre os candidatos, mostra o mais proximo na data (e, empatando, no valor)
+        const parecido = (pagos || []).filter(p => {
+          if (p.tipo !== t.tipo || norm(p.descricao) !== nt) return false;
+          const dif = Math.abs(Number(p.valor) - t.valor);
+          const teto = Math.max(t.valor, Number(p.valor)) * 0.05;
+          // perto MAS nao igual — valor igual na mesma data ja foi pego no passo 2
+          if (dif <= 0.005 || dif > teto) return false;
+          return Math.abs(new Date(p.data_pagamento) - new Date(t.data)) <= 10 * DIA;
+        }).sort((a, b) =>
+          Math.abs(new Date(a.data_pagamento) - new Date(t.data)) - Math.abs(new Date(b.data_pagamento) - new Date(t.data))
+          || Math.abs(Number(a.valor) - t.valor) - Math.abs(Number(b.valor) - t.valor)
+        )[0];
+        if (parecido) {
+          t.similarExistente = {
+            descricao: parecido.descricao,
+            valor: Number(parecido.valor),
+            data: (parecido.data_pagamento || '').substring(0, 10)
+          };
+          t.selecionado = false;
+        }
+      });
+    }
+  }
 }
 
 function autoMatchConciliacao(transacoes) {
@@ -6811,8 +6858,23 @@ function renderizarPreviewOFX(transacoes) {
         </tr>`;
     }
 
+    // Faixa de aviso em linha propria (a coluna de descricao e estreita demais)
+    const linhaSimilar = t.similarExistente ? `
+      <tr style="background:#fffdf5;">
+        <td></td>
+        <td colspan="7" style="padding:0 8px 8px 0;">
+          <div style="padding:7px 10px;background:#fff8e1;border:1px solid #f39c12;border-radius:6px;font-size:12px;color:#856404;">
+            <span style="font-weight:600;"><i class="fas fa-exclamation-triangle"></i> Parece a mesma cobrança que já está lançada.</span>
+            Já existe <strong>${t.similarExistente.descricao}</strong> de
+            <strong>${formatarMoeda(t.similarExistente.valor)}</strong> em
+            <strong>${formatarData(t.similarExistente.data)}</strong> neste banco.
+            <div style="margin-top:3px;color:#8a7a5c;">Juro que corre por dia (mora, por exemplo) o banco manda várias vezes, com o valor crescendo — só a última é real. Marque o quadradinho só se for uma cobrança nova mesmo.</div>
+          </div>
+        </td>
+      </tr>` : '';
+
     return `
-      <tr>
+      <tr${t.similarExistente ? ' style="background:#fffdf5;"' : ''}>
         <td><input type="checkbox" ${t.selecionado ? 'checked' : ''}
           onchange="transacoesOFX[${i}].selecionado = this.checked"></td>
         <td>${formatarData(t.data)}</td>
@@ -6842,7 +6904,8 @@ function renderizarPreviewOFX(transacoes) {
         <td id="concil-cell-${i}" style="min-width:220px;">
           ${htmlConciliacaoCell(t, i)}
         </td>
-      </tr>`;
+      </tr>
+      ${linhaSimilar}`;
   }).join('');
 }
 
