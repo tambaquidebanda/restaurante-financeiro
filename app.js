@@ -8064,12 +8064,15 @@ async function importarTransacoes() {
       const planoAjuste = t.desconto_cm_plano || null;
       const rotulo = (t.descricao_original || t.descricao || 'extrato').substring(0, 60);
       const linha = {
-        // Com categoria de despesa = estorno (valor negativo abate o custo na DRE).
-        // Sem categoria = devolução de dinheiro, fora da DRE (fica no balde
-        // "sem categoria" e aparece no relatório Resultado × Caixa).
+        // Sempre despesa NEGATIVA, com ou sem categoria: esse dinheiro saiu como
+        // despesa antes, então ao voltar ele reduz despesa — não é receita.
+        // Entrada (`receber`) seria contada como receita na Previsão Semanal, na
+        // Receita do dia e na Conciliação por dia, que somam por tipo e não por
+        // categoria. Sem categoria ele cai no balde "sem categoria" da DRE e
+        // aparece no relatório Resultado × Caixa, para ser classificado depois.
         descricao:      planoAjuste ? `Devolução/estorno — ${rotulo}` : `Valor devolvido — ${rotulo}`,
-        valor:          planoAjuste ? -ajuste : ajuste,
-        tipo:           planoAjuste ? 'pagar' : 'receber',
+        valor:          -ajuste,
+        tipo:           'pagar',
         status:         'pago',
         vencimento:     t.data,
         data_pagamento: t.data,
