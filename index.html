@@ -2125,6 +2125,16 @@
               placeholder="0,00"
               oninput="atualizarTotalCM()">
           </div>
+          <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;margin-top:8px;">
+            <label style="font-size:13px;color:#555;">O desconto entra como:</label>
+            <select id="cm-desconto-plano"
+              style="flex:1;min-width:0;max-width:380px;padding:6px 10px;border:1px solid #f39c12;border-radius:6px;font-size:13px;"></select>
+          </div>
+          <div style="font-size:11px;color:#8a7a5c;margin-top:6px;text-align:right;line-height:1.5;">
+            O sistema cria um lançamento de ajuste nessa data, com esse valor, para o saldo bater com o banco.<br>
+            Devolução de mercadoria → escolha a categoria da despesa (entra como estorno, abatendo o custo).<br>
+            Dinheiro pago a mais que voltou → deixe "Sem categoria" (entra como devolução, fora do DRE).
+          </div>
         </div>
       </div>
       <div class="modal-footer">

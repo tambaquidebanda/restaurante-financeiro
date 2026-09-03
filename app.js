@@ -6658,10 +6658,18 @@ function htmlConciliacaoCell(t, i) {
     }, 0);
     const dif = Math.abs(total - t.valor);
     const cor = dif < 0.01 ? '#27ae60' : '#f39c12';
+    // Deixa visível que o desconto vai virar um lançamento de ajuste — antes ele
+    // sumia da tela depois de confirmado e ninguém sabia o que tinha acontecido.
+    const aj = Number(t.desconto_cm) || 0;
+    const avisoAjuste = aj > 0 ? `
+      <div style="font-size:11px;color:#b7770d;margin-bottom:4px;">
+        + ajuste de ${formatarMoeda(aj)} ${t.desconto_cm_plano ? '(estorno de despesa)' : '(valor devolvido, sem categoria)'}
+      </div>` : '';
     return `
       <div style="font-size:12px;font-weight:600;color:${cor};margin-bottom:4px;">
         <i class="fas fa-layer-group"></i> ${t.lancamentos_ids.length} lançamento(s) — ${formatarMoeda(total)}
       </div>
+      ${avisoAjuste}
       <div style="display:flex;gap:4px;">
         <button class="btn btn-outline btn-sm" onclick="abrirConciliacaoMultipla(${i})">Editar</button>
         <button class="btn btn-sm" style="background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;cursor:pointer;border-radius:6px;padding:2px 8px;font-size:12px;" onclick="limparConciliacaoMultipla(${i})">✕ Limpar</button>
@@ -7127,6 +7135,18 @@ function abrirConciliacaoMultipla(i) {
   if (descontoWrap) descontoWrap.style.display = 'none';
   if (btnConfirmar) btnConfirmar.disabled = true;
 
+  // Categoria do lançamento de ajuste que o desconto vai gerar. "Sem categoria"
+  // é o padrão: serve para dinheiro pago a mais que voltou, que não é despesa
+  // nem receita e por isso fica fora da DRE.
+  preencherSelectPlanoContas('cm-desconto-plano', 'pagar');
+  const planoEl = document.getElementById('cm-desconto-plano');
+  if (planoEl) {
+    // preencherSelectPlanoContas já cria a 1ª opção vazia ("Selecione a
+    // categoria..."). Aqui ela vira o "sem categoria", que é o padrão.
+    if (planoEl.options[0]) planoEl.options[0].textContent = 'Sem categoria (dinheiro pago a mais que voltou)';
+    planoEl.value = '';
+  }
+
   renderizarListaCM(t.data || '');
   atualizarTotalCM();
   document.getElementById('modal-conciliacao-multipla').classList.remove('hidden');
@@ -7195,14 +7215,19 @@ function confirmarConciliacaoMultipla() {
   const desconto   = descontoEl ? (parseFloat((descontoEl.value || '0').replace(/\./g, '').replace(',', '.')) || 0) : 0;
   transacoesOFX[i].lancamentos_ids = ids;
   transacoesOFX[i].lancamento_id   = null;
-  if (desconto > 0) transacoesOFX[i].desconto_cm = desconto;
+  transacoesOFX[i].desconto_cm       = desconto > 0 ? desconto : null;
+  transacoesOFX[i].desconto_cm_plano = desconto > 0
+    ? (document.getElementById('cm-desconto-plano')?.value || null)
+    : null;
   fecharModal('modal-conciliacao-multipla');
   renderizarCelulaConciliacao(i);
   mostrarToast(`${ids.length} lançamento(s) vinculado(s) com sucesso.`, 'sucesso');
 }
 
 function limparConciliacaoMultipla(i) {
-  transacoesOFX[i].lancamentos_ids = [];
+  transacoesOFX[i].lancamentos_ids   = [];
+  transacoesOFX[i].desconto_cm       = null;
+  transacoesOFX[i].desconto_cm_plano = null;
   renderizarCelulaConciliacao(i);
 }
 
@@ -8026,6 +8051,36 @@ async function importarTransacoes() {
           ofx_id:         fitIdsRef.length ? fitIdsRef[j % fitIdsRef.length] : null
         }));
       }
+    }
+
+    // Desconto/ajuste: a soma dos lançamentos é maior do que o banco debitou
+    // (típico de fatura de cartão com devolução de compra ou crédito de valor
+    // pago a mais). Cada lançamento fica com o valor cheio dele — quem devolveu
+    // não foi nenhuma dessas compras — e a diferença vira UM lançamento de
+    // ajuste, senão o saldo do banco fica menor do que o real para sempre.
+    // Até 03/09/2026 esse desconto era digitado na tela e descartado.
+    const ajuste = Number(t.desconto_cm) || 0;
+    if (ajuste > 0) {
+      const planoAjuste = t.desconto_cm_plano || null;
+      const rotulo = (t.descricao_original || t.descricao || 'extrato').substring(0, 60);
+      const linha = {
+        // Com categoria de despesa = estorno (valor negativo abate o custo na DRE).
+        // Sem categoria = devolução de dinheiro, fora da DRE (fica no balde
+        // "sem categoria" e aparece no relatório Resultado × Caixa).
+        descricao:      planoAjuste ? `Devolução/estorno — ${rotulo}` : `Valor devolvido — ${rotulo}`,
+        valor:          planoAjuste ? -ajuste : ajuste,
+        tipo:           planoAjuste ? 'pagar' : 'receber',
+        status:         'pago',
+        vencimento:     t.data,
+        data_pagamento: t.data,
+        banco_id:       bancoId,
+        plano_conta_id: planoAjuste,
+        unidade_id:     t.unidade_id || null,
+        ofx_id:         fitIdsRef.length ? fitIdsRef[0] : null,
+        observacoes:    `Ajuste da conciliação: os lançamentos vinculados somam ${formatarMoeda(t.valor + ajuste)}, mas o extrato debitou ${formatarMoeda(t.valor)}.`
+      };
+      const { error: errAj } = await db.from('lancamentos').insert(linha);
+      if (errAj) erros++;
     }
   }
 
