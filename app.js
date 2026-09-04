@@ -407,6 +407,7 @@ function irPara(pagina, elemento) {
   if (pagina === 'transferencias')   carregarTransferencias();
   if (pagina === 'orcamento')        carregarOrcamentoModo();
   if (pagina === 'relatorios')       carregarRelatorio();
+  if (pagina === 'pacote-contabil')   carregarPacoteContabil();
   if (pagina === 'dre')              carregarDre();
   if (pagina === 'ponte-caixa')      carregarPonteCaixa();
   if (pagina === 'usuarios')         carregarUsuarios();
@@ -424,6 +425,7 @@ function irPara(pagina, elemento) {
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
     'dre': 'relatorios', 'ponte-caixa': 'relatorios', 'relatorios': 'relatorios',
+    'pacote-contabil': 'relatorios',
     'usuarios': 'configuracoes', 'configuracoes': 'configuracoes'
   };
   if (grupoNavPorPagina[pagina]) expandirNavGrupo(grupoNavPorPagina[pagina]);
@@ -10910,4 +10912,1122 @@ async function verificarIntegracoesPendentes() {
       badge.style.display = 'inline';
     }
   } catch (_) {}
+}
+
+// =========================================================
+// PACOTE CONTÁBIL — relatórios para enviar à contabilidade
+// Tela: Relatórios > Pacote Contábil (pagina-pacote-contabil)
+// Só leitura: nenhuma função daqui grava em `lancamentos`.
+// =========================================================
+let _pkEmpresas = [];     // cont_empresas
+let _pkDados    = null;   // resultado da última geração
+let _pkTabelaOk = true;   // false = a tabela cont_empresas ainda não existe
+
+const PK_NAO_IDENT = '__nao_ident__';
+const PK_MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                       'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const PK_MES_CURTO  = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+const PK_FMT_MOEDA  = 'R$ #,##0.00;-R$ #,##0.00;"-"';
+const PK_FMT_PCT    = '0.0%';
+
+// Linha 1 do razão no Excel (cabeçalho na 4, dados a partir da 5) — 1-indexado.
+const PK_RZ_INI = 5;
+const PK_TR_INI = 5;
+
+async function carregarPacoteContabil() {
+  if (!(await garantirSessao())) return;
+  pkPreencherPeriodo();
+  await pkCarregarEmpresas();
+}
+
+function pkAba(qual) {
+  document.getElementById('pk-painel-gerar').style.display    = qual === 'gerar'    ? '' : 'none';
+  document.getElementById('pk-painel-empresas').style.display = qual === 'empresas' ? '' : 'none';
+  document.getElementById('pk-tab-gerar').classList.toggle('pk-tab-on',    qual === 'gerar');
+  document.getElementById('pk-tab-empresas').classList.toggle('pk-tab-on', qual === 'empresas');
+}
+
+// ---------------------------------------------------------- período
+function pkPreencherPeriodo() {
+  const hoje    = new Date();
+  const anoAtual = hoje.getFullYear();
+  const anos = [];
+  for (let a = anoAtual - 3; a <= anoAtual + 1; a++) anos.push(a);
+  const optMes = PK_MESES_NOME.map((n,i) => `<option value="${i+1}">${n}</option>`).join('');
+  const optAno = anos.map(a => `<option value="${a}">${a}</option>`).join('');
+  ['pk-mes-ini','pk-mes-fim'].forEach(id => {
+    const el = document.getElementById(id); if (el && !el.options.length) el.innerHTML = optMes;
+  });
+  ['pk-ano-ini','pk-ano-fim'].forEach(id => {
+    const el = document.getElementById(id); if (el && !el.options.length) el.innerHTML = optAno;
+  });
+  // Padrão: de janeiro do ano corrente até o último mês fechado.
+  const mesFim = hoje.getMonth() === 0 ? 12 : hoje.getMonth();      // mês anterior
+  const anoFim = hoje.getMonth() === 0 ? anoAtual - 1 : anoAtual;
+  const set = (id,v) => { const el = document.getElementById(id); if (el) el.value = String(v); };
+  set('pk-mes-ini', 1);       set('pk-ano-ini', anoFim);
+  set('pk-mes-fim', mesFim);  set('pk-ano-fim', anoFim);
+}
+
+function pkPeriodoEscolhido() {
+  const mi = Number(document.getElementById('pk-mes-ini').value);
+  const ai = Number(document.getElementById('pk-ano-ini').value);
+  const mf = Number(document.getElementById('pk-mes-fim').value);
+  const af = Number(document.getElementById('pk-ano-fim').value);
+  if (ai * 12 + mi > af * 12 + mf) return null;
+  const ini = `${ai}-${String(mi).padStart(2,'0')}-01`;
+  const ultimoDia = new Date(af, mf, 0).getDate();       // dia 0 do mês seguinte = último dia
+  const fim = `${af}-${String(mf).padStart(2,'0')}-${String(ultimoDia).padStart(2,'0')}`;
+  const meses = [];
+  let a = ai, m = mi;
+  while (a * 12 + m <= af * 12 + mf) {
+    meses.push(`${a}-${String(m).padStart(2,'0')}`);
+    m++; if (m === 13) { a++; m = 1; }
+  }
+  return { ini, fim, meses };
+}
+
+function pkRotuloMes(mes) {   // '2026-08' -> 'ago/26'
+  return `${PK_MES_CURTO[Number(mes.slice(5,7)) - 1]}/${mes.slice(2,4)}`;
+}
+
+// ---------------------------------------------------------- empresas
+async function pkCarregarEmpresas() {
+  const db = obterSupabase();
+  const { data, error } = await q(db.from('cont_empresas').select('*').order('nome'));
+  if (error) {
+    _pkTabelaOk = false; _pkEmpresas = [];
+    document.getElementById('pk-empresas-lista').innerHTML = `
+      <div style="background:#fdecea;border:1px solid #f5b7b1;border-radius:10px;padding:16px 18px;color:#922b21;font-size:13.5px;line-height:1.7;">
+        <strong>A tabela de empresas ainda não foi criada no banco.</strong><br>
+        Peça para rodar o SQL de criação da tabela <code>cont_empresas</code> no Supabase.
+        Enquanto isso, o pacote pode ser gerado, mas sai tudo num arquivo só, sem CNPJ.
+      </div>`;
+    document.getElementById('pk-empresas-orfaos').innerHTML = '';
+    return;
+  }
+  _pkTabelaOk = true;
+  _pkEmpresas = data || [];
+  pkRenderEmpresas();
+}
+
+function pkRenderEmpresas() {
+  const alvo = document.getElementById('pk-empresas-lista');
+  if (!alvo) return;
+  if (!_pkEmpresas.length) {
+    alvo.innerHTML = `
+      <div style="text-align:center;padding:40px 20px;color:#aaa;">
+        <i class="fas fa-building" style="font-size:34px;opacity:.35"></i>
+        <div style="margin-top:10px;font-size:14px;">Nenhuma empresa cadastrada ainda.</div>
+        <div style="font-size:13px;margin-top:4px;">Clique em <strong>Nova empresa</strong> para começar.</div>
+      </div>`;
+  } else {
+    const nomeBanco  = id => (bancosCadastrados.find(b => b.id === id) || {}).nome || '?';
+    const nomeUnid   = id => (unidades.find(u => u.id === id) || {}).nome || '?';
+    const nomeCentro = id => (centrosCusto.find(c => c.id === id) || {}).nome || '?';
+    alvo.innerHTML = `
+      <div class="tabela-box"><div style="overflow-x:auto;"><table>
+        <thead><tr>
+          <th>Empresa</th><th>CNPJ</th><th>Contas bancárias</th><th>Unidades</th><th style="width:90px"></th>
+        </tr></thead><tbody>
+        ${_pkEmpresas.map(e => `
+          <tr>
+            <td><strong>${e.nome || '(sem nome)'}</strong>
+              ${e.razao_social ? `<div style="font-size:12px;color:#888;">${e.razao_social}</div>` : ''}</td>
+            <td>${e.cnpj ? e.cnpj : '<span style="color:#e67e22;font-weight:600;">falta preencher</span>'}</td>
+            <td style="font-size:12.5px;color:#666;">${(e.bancos_ids||[]).map(nomeBanco).join(', ') || '—'}</td>
+            <td style="font-size:12.5px;color:#666;">${(e.unidades_ids||[]).map(nomeUnid).join(', ') || '—'}</td>
+            <td><button class="btn btn-outline btn-sm" onclick="pkAbrirEmpresa('${e.id}')">
+              <i class="fas fa-pen"></i></button></td>
+          </tr>`).join('')}
+        </tbody></table></div></div>`;
+  }
+  pkRenderOrfaos();
+}
+
+function pkRenderOrfaos() {
+  const alvo = document.getElementById('pk-empresas-orfaos');
+  if (!alvo) return;
+  const usados = k => new Set(_pkEmpresas.flatMap(e => e[k] || []));
+  const ub = usados('bancos_ids'), uu = usados('unidades_ids'), uc = usados('centros_ids');
+  const soltos = [
+    ...bancosCadastrados.filter(b => b.ativo !== false && !ub.has(b.id)).map(b => `Conta: ${b.nome}`),
+    ...unidades.filter(u => u.ativo !== false && !uu.has(u.id)).map(u => `Unidade: ${u.nome}`),
+    ...centrosCusto.filter(c => c.ativo !== false && !uc.has(c.id)).map(c => `Centro de custo: ${c.nome}`)
+  ];
+  alvo.innerHTML = !soltos.length ? '' : `
+    <div style="background:#fff8e1;border:1px solid #ffe0a3;border-radius:10px;padding:14px 16px;font-size:13px;color:#7a5c14;line-height:1.7;">
+      <strong><i class="fas fa-triangle-exclamation"></i> Ainda não pertencem a nenhuma empresa:</strong><br>
+      ${soltos.join(' · ')}
+      <div style="margin-top:6px;font-size:12.5px;">
+        Lançamentos ligados a estes itens vão cair no arquivo “Não identificado”.
+      </div>
+    </div>`;
+}
+
+function pkAbrirEmpresa(id) {
+  if (!_pkTabelaOk) { mostrarToast('Crie a tabela cont_empresas primeiro.', 'erro'); return; }
+  const e = _pkEmpresas.find(x => x.id === id) || {};
+  document.getElementById('pk-emp-titulo').textContent = id ? 'Editar empresa' : 'Nova empresa';
+  document.getElementById('pk-emp-id').value    = id || '';
+  document.getElementById('pk-emp-nome').value  = e.nome || '';
+  document.getElementById('pk-emp-razao').value = e.razao_social || '';
+  document.getElementById('pk-emp-cnpj').value  = e.cnpj || '';
+  document.getElementById('pk-emp-excluir').style.display = id ? '' : 'none';
+
+  // Marca o que já está em OUTRA empresa, para não deixar o mesmo item em duas.
+  const outros = k => new Set(_pkEmpresas.filter(x => x.id !== id).flatMap(x => x[k] || []));
+  const bloco = (elId, titulo, itens, marcados, ocupados) => {
+    document.getElementById(elId).innerHTML =
+      `<div class="pk-check-titulo">${titulo}</div>` +
+      (itens.length ? itens.map(it => {
+        const dono = ocupados.has(it.id);
+        return `<label class="${dono ? 'pk-usado' : ''}" title="${dono ? 'Já pertence a outra empresa' : ''}">
+          <input type="checkbox" value="${it.id}" ${marcados.includes(it.id) ? 'checked' : ''} ${dono ? 'disabled' : ''}>
+          ${it.nome}</label>`;
+      }).join('') : '<span style="font-size:13px;color:#aaa;">nenhum cadastrado</span>');
+  };
+  bloco('pk-emp-bancos',  'Contas bancárias', bancosCadastrados.filter(b => b.ativo !== false), e.bancos_ids || [],   outros('bancos_ids'));
+  bloco('pk-emp-unids',   'Unidades',         unidades.filter(u => u.ativo !== false),         e.unidades_ids || [], outros('unidades_ids'));
+  bloco('pk-emp-centros', 'Centros de custo', centrosCusto.filter(c => c.ativo !== false),     e.centros_ids || [],  outros('centros_ids'));
+  document.getElementById('modal-pk-empresa').classList.remove('hidden');
+}
+
+function _pkMarcados(elId) {
+  return Array.from(document.querySelectorAll(`#${elId} input:checked`)).map(i => i.value);
+}
+
+async function pkSalvarEmpresa() {
+  const nome = document.getElementById('pk-emp-nome').value.trim();
+  if (!nome) { mostrarToast('Informe o nome da empresa.', 'erro'); return; }
+  const id  = document.getElementById('pk-emp-id').value;
+  const reg = {
+    nome,
+    razao_social: document.getElementById('pk-emp-razao').value.trim() || null,
+    cnpj:         document.getElementById('pk-emp-cnpj').value.trim()  || null,
+    bancos_ids:   _pkMarcados('pk-emp-bancos'),
+    unidades_ids: _pkMarcados('pk-emp-unids'),
+    centros_ids:  _pkMarcados('pk-emp-centros')
+  };
+  const db = obterSupabase();
+  const { error } = await q(id
+    ? db.from('cont_empresas').update(reg).eq('id', id)
+    : db.from('cont_empresas').insert(reg));
+  if (error) { mostrarToast('Erro ao salvar a empresa.', 'erro'); return; }
+  fecharModal('modal-pk-empresa');
+  mostrarToast('Empresa salva.', 'sucesso');
+  await pkCarregarEmpresas();
+}
+
+async function pkExcluirEmpresa() {
+  const id = document.getElementById('pk-emp-id').value;
+  if (!id) return;
+  if (!confirm('Excluir esta empresa? Os lançamentos não são apagados — eles apenas deixam de ser separados por ela.')) return;
+  const db = obterSupabase();
+  const { error } = await q(db.from('cont_empresas').delete().eq('id', id));
+  if (error) { mostrarToast('Erro ao excluir.', 'erro'); return; }
+  fecharModal('modal-pk-empresa');
+  mostrarToast('Empresa excluída.', 'sucesso');
+  await pkCarregarEmpresas();
+}
+
+// ---------------------------------------------------------- geração
+async function pkGerar() {
+  if (!(await garantirSessao())) return;
+  const per = pkPeriodoEscolhido();
+  if (!per) { mostrarToast('O mês inicial precisa vir antes do mês final.', 'erro'); return; }
+
+  const btn = document.getElementById('pk-btn-gerar');
+  document.getElementById('pk-vazio').style.display     = 'none';
+  document.getElementById('pk-resultado').style.display = 'none';
+  document.getElementById('pk-carregando').style.display = '';
+  if (btn) btn.disabled = true;
+
+  try {
+    const db = obterSupabase();
+    const campos = 'id,descricao,valor,tipo,status,vencimento,data_pagamento,banco_id,unidade_id,' +
+                   'centro_custo_id,plano_conta_id,fornecedor_id,forma_pagamento_id,tipo_documento,' +
+                   'numero_pedido,observacoes';
+
+    document.getElementById('pk-carregando-txt').textContent = 'Buscando os lançamentos pagos…';
+    const pagos = await fetchTodosPag((de, ate) => db.from('lancamentos').select(campos)
+      .eq('status','pago').gte('data_pagamento', per.ini).lte('data_pagamento', per.fim)
+      .order('id').range(de, ate));
+
+    document.getElementById('pk-carregando-txt').textContent = 'Buscando as contas em aberto…';
+    const pendentes = await fetchTodosPag((de, ate) => db.from('lancamentos').select(campos)
+      .eq('status','pendente').gte('vencimento', per.ini)
+      .order('id').range(de, ate));
+
+    document.getElementById('pk-carregando-txt').textContent = 'Buscando as transferências…';
+    const transf = await fetchTodosPag((de, ate) => db.from('transferencias')
+      .select('id,data,valor,descricao,banco_origem_id,banco_destino_id')
+      .gte('data', per.ini).lte('data', per.fim).order('id').range(de, ate));
+
+    document.getElementById('pk-carregando-txt').textContent = 'Organizando por empresa…';
+    _pkDados = pkMontar(per, pagos, pendentes, transf);
+    pkRenderResultado();
+  } catch (e) {
+    console.error(e);
+    mostrarToast('Não consegui gerar o pacote. Veja o console para o detalhe.', 'erro');
+  } finally {
+    document.getElementById('pk-carregando').style.display = 'none';
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Monta a estrutura de dados do pacote. Não toca no banco.
+function pkMontar(per, pagos, pendentes, transf) {
+  const mapaBanco = new Map(), mapaUnid = new Map(), mapaCentro = new Map();
+  _pkEmpresas.forEach(e => {
+    (e.bancos_ids   || []).forEach(id => mapaBanco.set(id, e.id));
+    (e.unidades_ids || []).forEach(id => mapaUnid.set(id, e.id));
+    (e.centros_ids  || []).forEach(id => mapaCentro.set(id, e.id));
+  });
+
+  const nomeDe   = (lista, id) => (lista.find(x => x.id === id) || {}).nome || null;
+  const pcPorId  = new Map(planoContas.map(p => [p.id, p]));
+  const grupoDe  = pcid => { const p = pcPorId.get(pcid); if (!p) return null;
+                             const g = pcPorId.get(p.grupo_id); return g ? g.nome : p.nome; };
+
+  const classificar = l => {
+    if (l.banco_id        && mapaBanco.has(l.banco_id))         return ['banco',  mapaBanco.get(l.banco_id)];
+    if (l.unidade_id      && mapaUnid.has(l.unidade_id))        return ['unidade',mapaUnid.get(l.unidade_id)];
+    if (l.centro_custo_id && mapaCentro.has(l.centro_custo_id)) return ['centro', mapaCentro.get(l.centro_custo_id)];
+    return ['nenhum', PK_NAO_IDENT];
+  };
+
+  const linha = l => {
+    const dt  = (l.data_pagamento || '').slice(0,10);
+    const ent = l.tipo === 'receber';
+    const v   = Number(l.valor) || 0;
+    const pc  = pcPorId.get(l.plano_conta_id);
+    return {
+      data: dt, mes: dt.slice(0,7), tipo: ent ? 'Entrada' : 'Saída',
+      grupo: grupoDe(l.plano_conta_id) || (ent ? 'Receitas sem categoria' : 'Despesas sem categoria'),
+      conta: pc ? pc.nome : '(sem categoria)',
+      hist:  (l.descricao || '').trim(),
+      forn:  nomeDe(fornecedores, l.fornecedor_id) || '(sem fornecedor)',
+      unid:  nomeDe(unidades, l.unidade_id) || '(sem unidade)',
+      cc:    nomeDe(centrosCusto, l.centro_custo_id) || '(sem centro de custo)',
+      banco: nomeDe(bancosCadastrados, l.banco_id) || '(sem conta bancária)',
+      forma: nomeDe(formasPagamento, l.forma_pagamento_id) || '',
+      doc:   String(l.numero_pedido || l.tipo_documento || ''),
+      valor: ent ? v : -v,
+      origem: l.banco_id ? 'Com conta bancária' : 'Sem conta bancária',
+      obs:   (l.observacoes || '').trim(),
+      id:    l.id,
+      _semCategoria: !l.plano_conta_id, _semBanco: !l.banco_id,
+      _semUnidade: !l.unidade_id, _negativo: v < 0
+    };
+  };
+
+  const emp = new Map();   // id da empresa -> pacote
+  const nova = id => ({
+    id, empresa: _pkEmpresas.find(e => e.id === id) || null,
+    nome: id === PK_NAO_IDENT ? 'Não identificado'
+        : ((_pkEmpresas.find(e => e.id === id) || {}).nome || 'Empresa'),
+    razao: (_pkEmpresas.find(e => e.id === id) || {}).razao_social || '',
+    cnpj:  (_pkEmpresas.find(e => e.id === id) || {}).cnpj || '',
+    bancosIds: (_pkEmpresas.find(e => e.id === id) || {}).bancos_ids || [],
+    razaoLinhas: [], transf: [], aberto: [], diverg: []
+  });
+  const pega = id => { if (!emp.has(id)) emp.set(id, nova(id)); return emp.get(id); };
+  _pkEmpresas.forEach(e => pega(e.id));
+
+  pagos.forEach(l => {
+    const [origem, id] = classificar(l);
+    const r = linha(l); r._origem = origem;
+    const p = pega(id); p.razaoLinhas.push(r);
+    const unidEmp = l.unidade_id ? mapaUnid.get(l.unidade_id) : null;
+    if (origem === 'banco' && unidEmp && unidEmp !== id)
+      p.diverg.push([r, 'A conta bancária é de ' + p.nome + ', mas a unidade é de outra empresa']);
+    else if (r._semCategoria) p.diverg.push([r, 'Lançamento pago sem categoria no plano de contas']);
+    else if (id === PK_NAO_IDENT) p.diverg.push([r, 'Sem conta bancária, sem unidade e sem centro de custo']);
+    else if (r._negativo) p.diverg.push([r, 'Valor negativo (estorno ou devolução) — confira o histórico']);
+  });
+
+  pendentes.forEach(l => { const [, id] = classificar(l); pega(id).aberto.push(l); });
+
+  transf.forEach(t => {
+    const o = nomeDe(bancosCadastrados, t.banco_origem_id)  || '(?)';
+    const d = nomeDe(bancosCadastrados, t.banco_destino_id) || '(?)';
+    const donos = new Set([mapaBanco.get(t.banco_origem_id), mapaBanco.get(t.banco_destino_id)]);
+    donos.delete(undefined);
+    donos.forEach(id => pega(id).transf.push({
+      data: (t.data||'').slice(0,10), mes: (t.data||'').slice(0,7),
+      origem: o, destino: d, valor: Number(t.valor) || 0, desc: t.descricao || '',
+      entrou: mapaBanco.get(t.banco_destino_id) === id ? 'Sim' : 'Não',
+      saiu:   mapaBanco.get(t.banco_origem_id)  === id ? 'Sim' : 'Não'
+    }));
+  });
+
+  const pacotes = Array.from(emp.values())
+    .filter(p => p.razaoLinhas.length || p.aberto.length)
+    .sort((a,b) => b.razaoLinhas.length - a.razaoLinhas.length);
+  pacotes.forEach(p => {
+    p.razaoLinhas.sort((a,b) => (a.data + a.tipo + a.hist).localeCompare(b.data + b.tipo + b.hist, 'pt-BR'));
+    p.transf.sort((a,b) => a.data.localeCompare(b.data));
+    p.entradas = p.razaoLinhas.filter(r => r.tipo === 'Entrada').reduce((s,r) => s + r.valor, 0);
+    p.saidas   = p.razaoLinhas.filter(r => r.tipo === 'Saída').reduce((s,r) => s - r.valor, 0);
+  });
+
+  return { per, pacotes, todas: pagos.length, avisos: pkAvisos(per, pacotes) };
+}
+
+// Conferência automática: o que a gerente precisa olhar antes de enviar.
+function pkAvisos(per, pacotes) {
+  const av = [];
+  const todas = pacotes.flatMap(p => p.razaoLinhas);
+  const add = (nivel, titulo, texto, itens) =>
+    av.push({ nivel, titulo, texto, itens: itens || [], id: 'pkav' + av.length });
+
+  if (!_pkEmpresas.length)
+    add('grave', 'Nenhuma empresa cadastrada',
+        'Sem empresa cadastrada, tudo sai num único arquivo chamado “Não identificado”, sem CNPJ. ' +
+        'Vá na aba “Empresas e CNPJ” e cadastre pelo menos uma.');
+
+  const semCnpj = _pkEmpresas.filter(e => !e.cnpj || !String(e.cnpj).trim());
+  if (semCnpj.length)
+    add('grave', 'Empresa sem CNPJ preenchido',
+        'A contabilidade precisa do CNPJ para saber de qual empresa é cada arquivo. ' +
+        'Falta em: ' + semCnpj.map(e => e.nome).join(', ') + '.');
+
+  const naoIdent = pacotes.find(p => p.id === PK_NAO_IDENT);
+  if (naoIdent && naoIdent.razaoLinhas.length)
+    add('grave', 'Lançamentos que não pertencem a nenhuma empresa',
+        `${naoIdent.razaoLinhas.length} lançamento(s) sem conta bancária, sem unidade e sem centro de custo. ` +
+        'Eles saem num arquivo à parte. O ideal é corrigir cada um antes de enviar.',
+        naoIdent.razaoLinhas);
+
+  // Mês com volume muito abaixo dos outros — pega mês incompleto ou importação parcial.
+  const porMes = {};
+  per.meses.forEach(m => porMes[m] = 0);
+  todas.forEach(r => { if (r.mes in porMes) porMes[r.mes]++; });
+  const cont = per.meses.map(m => porMes[m]).slice().sort((a,b) => a - b);
+  const mediana = cont.length ? cont[Math.floor(cont.length / 2)] : 0;
+  if (mediana >= 20) {
+    const fracos = per.meses.filter(m => porMes[m] < mediana * 0.45);
+    if (fracos.length)
+      add('grave', 'Mês com muito menos lançamento que os outros',
+          fracos.map(m => `${pkRotuloMes(m)} tem ${porMes[m]}`).join(' · ') +
+          `, contra cerca de ${mediana} nos demais meses. ` +
+          'Um mês assim quase sempre está incompleto — não deve ser usado para apuração de imposto ' +
+          'nem para comparar com os outros meses.');
+  }
+
+  // Meses em que a maioria dos lançamentos não tem conta bancária.
+  const semBanco = todas.filter(r => r._semBanco);
+  if (semBanco.length) {
+    const mesesRuins = per.meses.filter(m => {
+      const t = todas.filter(r => r.mes === m).length;
+      return t >= 10 && todas.filter(r => r.mes === m && r._semBanco).length > t * 0.5;
+    });
+    add(mesesRuins.length ? 'atencao' : 'info', 'Lançamentos sem conta bancária',
+        `${semBanco.length} lançamento(s) pagos não dizem em qual conta o dinheiro passou` +
+        (mesesRuins.length
+          ? `, concentrados em ${mesesRuins.map(pkRotuloMes).join(', ')}. Nesses meses não há conciliação com extrato e a aba Bancos fica sem saldo.`
+          : '. Eles aparecem agrupados como “(sem conta bancária)” na aba Bancos.'),
+        semBanco);
+  }
+
+  const semCat = todas.filter(r => r._semCategoria);
+  if (semCat.length)
+    add('atencao', 'Lançamento pago sem categoria',
+        `${semCat.length} lançamento(s) não têm categoria do plano de contas. ` +
+        'Eles entram nos totais, mas caem num grupo “sem categoria” na DRE — a contabilidade vai perguntar o que são.',
+        semCat);
+
+  const divergUnid = pacotes.flatMap(p => p.diverg.filter(d => d[1].startsWith('A conta bancária')).map(d => d[0]));
+  if (divergUnid.length)
+    add('atencao', 'Conta bancária de uma empresa e unidade de outra',
+        `${divergUnid.length} lançamento(s) pagos pela conta de uma empresa mas marcados com a unidade de outra. ` +
+        'O pacote seguiu a conta bancária. Se estiver errado, corrija a unidade do lançamento.',
+        divergUnid);
+
+  const semUnid = todas.filter(r => r._semUnidade);
+  if (semUnid.length)
+    add('info', 'Lançamento sem unidade',
+        `${semUnid.length} lançamento(s) pagos sem unidade preenchida. ` +
+        'Não atrapalha a contabilidade, mas atrapalha a análise por loja.',
+        semUnid);
+
+  const negativos = todas.filter(r => r._negativo);
+  if (negativos.length)
+    add('info', 'Valores negativos (estornos e devoluções)',
+        `${negativos.length} lançamento(s) com valor negativo. É o normal para devolução de compra ou ` +
+        'crédito de fatura: reduz a despesa em vez de virar receita. Só confira se o histórico faz sentido.',
+        negativos);
+
+  return av;
+}
+
+// ---------------------------------------------------------- tela
+function pkRenderResultado() {
+  const d = _pkDados; if (!d) return;
+  const alvo = document.getElementById('pk-resultado');
+  const totEnt = d.pacotes.reduce((s,p) => s + p.entradas, 0);
+  const totSai = d.pacotes.reduce((s,p) => s + p.saidas, 0);
+  const totLan = d.pacotes.reduce((s,p) => s + p.razaoLinhas.length, 0);
+
+  const cor = { grave:'#e74c3c', atencao:'#e67e22', info:'#3498db' };
+  const ico = { grave:'circle-exclamation', atencao:'triangle-exclamation', info:'circle-info' };
+  const graves = d.avisos.filter(a => a.nivel === 'grave').length;
+
+  const card = (rot, val, cr) => `
+    <div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-radius:10px;padding:14px 16px;">
+      <div style="font-size:12px;color:#95a5a6;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">${rot}</div>
+      <div style="font-size:20px;font-weight:700;margin-top:4px;color:${cr||'#2c3e50'};">${val}</div>
+    </div>`;
+
+  // por mês
+  const mesEnt = {}, mesSai = {};
+  d.per.meses.forEach(m => { mesEnt[m] = 0; mesSai[m] = 0; });
+  d.pacotes.forEach(p => p.razaoLinhas.forEach(r => {
+    if (!(r.mes in mesEnt)) return;
+    if (r.tipo === 'Entrada') mesEnt[r.mes] += r.valor; else mesSai[r.mes] -= r.valor;
+  }));
+
+  alvo.innerHTML = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px;">
+      ${card('Período', pkRotuloMes(d.per.meses[0]) + ' a ' + pkRotuloMes(d.per.meses[d.per.meses.length-1]))}
+      ${card('Lançamentos', totLan.toLocaleString('pt-BR'))}
+      ${card('Entradas', formatarMoeda(totEnt), '#27ae60')}
+      ${card('Saídas', formatarMoeda(totSai), '#e74c3c')}
+      ${card('Resultado', formatarMoeda(totEnt - totSai), totEnt - totSai >= 0 ? '#27ae60' : '#e74c3c')}
+    </div>
+
+    <div class="tabela-box" style="margin-bottom:18px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <h3 style="margin:0;">
+          <i class="fas fa-clipboard-check" style="color:${graves ? '#e74c3c' : '#27ae60'}"></i>
+          Conferência antes de enviar
+        </h3>
+        <span style="font-size:13px;color:${graves ? '#e74c3c' : '#27ae60'};font-weight:600;">
+          ${graves ? `${graves} ponto(s) grave(s) para resolver` : 'Nenhum ponto grave'}
+        </span>
+      </div>
+      ${d.avisos.length ? d.avisos.map(a => `
+        <div style="border-left:4px solid ${cor[a.nivel]};background:#fafbfc;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:8px;">
+          <div style="font-weight:700;font-size:14px;color:${cor[a.nivel]};">
+            <i class="fas fa-${ico[a.nivel]}"></i> ${a.titulo}
+          </div>
+          <div style="font-size:13px;color:#555;margin-top:4px;line-height:1.6;">${a.texto}</div>
+          ${a.itens.length ? `
+            <button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="pkVerItens('${a.id}')">
+              <i class="fas fa-list"></i> Ver os ${a.itens.length} lançamentos
+            </button>
+            <div id="${a.id}" style="display:none;margin-top:10px;"></div>` : ''}
+        </div>`).join('')
+      : '<div style="font-size:13.5px;color:#27ae60;padding:8px 0;"><i class="fas fa-check"></i> Nada a conferir. Pode enviar.</div>'}
+    </div>
+
+    <div class="tabela-box" style="margin-bottom:18px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <h3 style="margin:0;"><i class="fas fa-building"></i> Arquivos que serão gerados</h3>
+        <button class="btn btn-primary btn-sm" onclick="pkBaixarTodos()">
+          <i class="fas fa-download"></i> Baixar todos
+        </button>
+      </div>
+      <div style="overflow-x:auto;"><table>
+        <thead><tr>
+          <th>Empresa</th><th>CNPJ</th><th style="text-align:right">Lanç.</th>
+          <th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th>
+          <th style="text-align:right">Resultado</th><th style="text-align:right">A conferir</th><th></th>
+        </tr></thead><tbody>
+        ${d.pacotes.map((p,i) => `
+          <tr>
+            <td><strong>${p.nome}</strong>${p.razao ? `<div style="font-size:12px;color:#888;">${p.razao}</div>` : ''}</td>
+            <td style="font-size:12.5px;">${p.cnpj || '<span style="color:#e67e22;font-weight:600;">falta</span>'}</td>
+            <td style="text-align:right">${p.razaoLinhas.length.toLocaleString('pt-BR')}</td>
+            <td style="text-align:right">${formatarMoeda(p.entradas)}</td>
+            <td style="text-align:right">${formatarMoeda(p.saidas)}</td>
+            <td style="text-align:right;color:${p.entradas - p.saidas >= 0 ? '#27ae60' : '#e74c3c'};font-weight:600;">
+              ${formatarMoeda(p.entradas - p.saidas)}</td>
+            <td style="text-align:right">${p.diverg.length || '—'}</td>
+            <td style="text-align:right"><button class="btn btn-outline btn-sm" onclick="pkBaixar(${i})">
+              <i class="fas fa-file-excel"></i> Baixar</button></td>
+          </tr>`).join('')}
+        </tbody></table></div>
+    </div>
+
+    <div class="tabela-box">
+      <h3 style="margin:0 0 10px;"><i class="fas fa-calendar"></i> Movimento mês a mês</h3>
+      <div style="overflow-x:auto;"><table>
+        <thead><tr><th>Mês</th><th style="text-align:right">Entradas</th>
+          <th style="text-align:right">Saídas</th><th style="text-align:right">Resultado</th>
+          <th style="text-align:right">Lançamentos</th></tr></thead><tbody>
+        ${d.per.meses.map(m => {
+          const n = d.pacotes.reduce((s,p) => s + p.razaoLinhas.filter(r => r.mes === m).length, 0);
+          const res = mesEnt[m] - mesSai[m];
+          return `<tr>
+            <td>${pkRotuloMes(m)}</td>
+            <td style="text-align:right">${formatarMoeda(mesEnt[m])}</td>
+            <td style="text-align:right">${formatarMoeda(mesSai[m])}</td>
+            <td style="text-align:right;color:${res >= 0 ? '#27ae60' : '#e74c3c'}">${formatarMoeda(res)}</td>
+            <td style="text-align:right">${n.toLocaleString('pt-BR')}</td></tr>`;
+        }).join('')}
+        </tbody></table></div>
+    </div>`;
+  alvo.style.display = '';
+}
+
+function pkVerItens(idAviso) {
+  const av = (_pkDados?.avisos || []).find(a => a.id === idAviso);
+  const box = document.getElementById(idAviso);
+  if (!av || !box) return;
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  const LIM = 300;
+  const itens = av.itens.slice(0, LIM);
+  box.innerHTML = `
+    <div style="max-height:340px;overflow:auto;border:1px solid #eee;border-radius:8px;">
+      <table style="font-size:12.5px;">
+        <thead><tr><th>Data</th><th>Tipo</th><th>Histórico</th><th>Categoria</th>
+          <th>Conta bancária</th><th style="text-align:right">Valor</th></tr></thead>
+        <tbody>${itens.map(r => `<tr>
+          <td>${r.data.split('-').reverse().join('/')}</td><td>${r.tipo}</td>
+          <td>${(r.hist || '').slice(0,70)}</td><td>${r.conta}</td><td>${r.banco}</td>
+          <td style="text-align:right">${formatarMoeda(r.valor)}</td></tr>`).join('')}
+        </tbody></table>
+    </div>
+    ${av.itens.length > LIM ? `<div style="font-size:12px;color:#888;margin-top:6px;">
+      Mostrando os ${LIM} primeiros de ${av.itens.length}. O restante está no Excel, na aba Divergencias.</div>` : ''}`;
+  box.style.display = '';
+}
+
+// ---------------------------------------------------------- Excel
+// Monta a planilha celula a celula. Cada resumo e uma formula SUMIFS apontando
+// para a aba Razao — e leva junto o valor ja calculado, para o arquivo abrir
+// com os numeros na tela mesmo antes do Excel recalcular.
+function _pkWs(matriz, larguras, autofiltro) {
+  const ws = {}; let maxC = 0;
+  matriz.forEach((linha, R) => (linha || []).forEach((cel, C) => {
+    if (cel === null || cel === undefined || cel === '') return;
+    const addr = XLSX.utils.encode_cell({ r: R, c: C });
+    if (typeof cel === 'object')      ws[addr] = cel;
+    else if (typeof cel === 'number') ws[addr] = { t: 'n', v: cel };
+    else                              ws[addr] = { t: 's', v: String(cel) };
+    if (C > maxC) maxC = C;
+  }));
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 },
+                 e: { r: Math.max(0, matriz.length - 1), c: maxC } });
+  if (larguras)   ws['!cols'] = larguras.map(w => ({ wch: w }));
+  if (autofiltro) ws['!autofilter'] = { ref: autofiltro };
+  return ws;
+}
+const _pkNum = (v, f) => { const c = { t:'n', v: Number(v)||0, z: PK_FMT_MOEDA }; if (f) c.f = f; return c; };
+const _pkPct = (v, f) => { const c = { t:'n', v: Number(v)||0, z: PK_FMT_PCT   }; if (f) c.f = f; return c; };
+const _pkCol = i => XLSX.utils.encode_col(i);
+const _pkAspas = s => String(s).replace(/"/g, '""');
+
+// faixa da aba Razao, ex.: Razao!$M$5:$M$1234
+const _pkFxRz = (col, ult) => `Razao!$${col}$${PK_RZ_INI}:$${col}$${ult}`;
+const _pkFxTr = (col, ult) => `Transferencias!$${col}$${PK_TR_INI}:$${col}$${ult}`;
+
+// Grupos e contas do plano que realmente tiveram movimento, na ordem do cadastro.
+function _pkPresentes(linhas, ehReceita) {
+  const vistos = new Map();
+  linhas.forEach(r => {
+    if ((r.tipo === 'Entrada') !== ehReceita) return;
+    if (!vistos.has(r.grupo)) vistos.set(r.grupo, new Set());
+    vistos.get(r.grupo).add(r.conta);
+  });
+  const ord = x => (x && x.ordem != null ? x.ordem : 9999);
+  const grupos = planoContas.filter(p => !p.grupo_id)
+    .sort((a,b) => ord(a) - ord(b) || String(a.nome).localeCompare(b.nome,'pt-BR'));
+  const saida = [];
+  grupos.forEach(g => {
+    if (!vistos.has(g.nome)) return;
+    const doPlano = planoContas.filter(p => p.grupo_id === g.id)
+      .sort((a,b) => ord(a) - ord(b) || String(a.nome).localeCompare(b.nome,'pt-BR'))
+      .map(p => p.nome).filter(n => vistos.get(g.nome).has(n));
+    const resto = Array.from(vistos.get(g.nome)).filter(n => !doPlano.includes(n)).sort();
+    saida.push([g.nome, doPlano.concat(resto)]);
+    vistos.delete(g.nome);
+  });
+  Array.from(vistos.keys()).sort().forEach(g =>
+    saida.push([g, Array.from(vistos.get(g)).sort()]));
+  return saida;
+}
+
+function pkMontarWorkbook(p) {
+  const meses = _pkDados.per.meses;
+  const L = p.razaoLinhas, T = p.transf;
+  const ultRz = Math.max(PK_RZ_INI, PK_RZ_INI + L.length - 1);
+  const ultTr = Math.max(PK_TR_INI, PK_TR_INI + T.length - 1);
+
+  // Agregados calculados aqui, para gravar valor + formula na mesma celula.
+  const porGrupo = {}, porConta = {}, porBanco = {}, porForn = {}, trMes = {};
+  meses.forEach(m => {
+    porGrupo[m] = {}; porConta[m] = {}; porBanco[m] = {}; porForn[m] = {};
+    trMes[m] = { entrou: 0, saiu: 0, bIn: {}, bOut: {} };
+  });
+  L.forEach(r => {
+    if (!(r.mes in porGrupo)) return;
+    porGrupo[r.mes][r.grupo] = (porGrupo[r.mes][r.grupo] || 0) + r.valor;
+    const k = r.grupo + '|' + r.conta;
+    porConta[r.mes][k] = (porConta[r.mes][k] || 0) + r.valor;
+    const b = r.banco + '|' + r.tipo;
+    porBanco[r.mes][b] = (porBanco[r.mes][b] || 0) + r.valor;
+    if (r.tipo !== 'Entrada') porForn[r.mes][r.forn] = (porForn[r.mes][r.forn] || 0) - r.valor;
+  });
+  T.forEach(t => {
+    if (!(t.mes in trMes)) return;
+    if (t.entrou === 'Sim') { trMes[t.mes].entrou += t.valor;
+      trMes[t.mes].bIn[t.destino] = (trMes[t.mes].bIn[t.destino] || 0) + t.valor; }
+    if (t.saiu === 'Sim') { trMes[t.mes].saiu += t.valor;
+      trMes[t.mes].bOut[t.origem] = (trMes[t.mes].bOut[t.origem] || 0) + t.valor; }
+  });
+
+  const ctx = { p, meses, ultRz, ultTr, porGrupo, porConta, porBanco, porForn, trMes };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, _pkAbaCapa(ctx),          'Capa');
+  XLSX.utils.book_append_sheet(wb, _pkAbaDre(ctx),           'DRE');
+  XLSX.utils.book_append_sheet(wb, _pkAbaDetalhe(ctx, true), 'Receitas');
+  XLSX.utils.book_append_sheet(wb, _pkAbaDetalhe(ctx, false),'Despesas');
+  XLSX.utils.book_append_sheet(wb, _pkAbaBancos(ctx),        'Bancos');
+  XLSX.utils.book_append_sheet(wb, _pkAbaFornecedores(ctx),  'Fornecedores');
+  XLSX.utils.book_append_sheet(wb, _pkAbaRazao(ctx),         'Razao');
+  XLSX.utils.book_append_sheet(wb, _pkAbaTransf(ctx),        'Transferencias');
+  XLSX.utils.book_append_sheet(wb, _pkAbaAberto(ctx),        'Em Aberto');
+  XLSX.utils.book_append_sheet(wb, _pkAbaDiverg(ctx),        'Divergencias');
+  return wb;
+}
+
+// ---- abas de dados (as outras apontam para estas por formula) ----
+function _pkData(iso) {
+  if (!iso || iso.length < 10) return '';
+  const [a, m, d] = iso.slice(0, 10).split('-').map(Number);
+  return { t: 'd', v: new Date(a, m - 1, d), z: 'dd/mm/yyyy' };
+}
+
+function _pkAbaRazao(ctx) {
+  const p = ctx.p;
+  const A = [
+    ['Razao Analitico - ' + p.nome],
+    ['Regime de caixa. Entradas positivas, saidas negativas. Esta aba e a fonte de todas as outras: ' +
+     'todo numero do pacote sai daqui por formula.'],
+    [],
+    ['Data','Mes','Tipo','Grupo','Conta','Historico','Fornecedor','Unidade','Centro de Custo',
+     'Conta Bancaria','Forma de Pagamento','Documento','Valor (R$)','Origem','Observacoes','ID do lancamento']
+  ];
+  p.razaoLinhas.forEach(r => A.push([
+    _pkData(r.data), r.mes, r.tipo, r.grupo, r.conta, r.hist, r.forn, r.unid, r.cc,
+    r.banco, r.forma, r.doc, _pkNum(r.valor), r.origem, r.obs, r.id
+  ]));
+  const ult = Math.max(4, A.length);
+  return _pkWs(A, [11,9,9,26,26,52,28,22,22,22,17,14,15,20,44,38], `A4:P${ult}`);
+}
+
+function _pkAbaTransf(ctx) {
+  const p = ctx.p;
+  const A = [
+    ['Transferencias entre contas proprias - ' + p.nome],
+    ['Movimento entre contas da propria empresa. Nao e receita nem despesa: nao entra na DRE, ' +
+     'mas altera o saldo das contas.'],
+    [],
+    ['Data','Mes','Conta de Origem','Conta de Destino','Valor (R$)',
+     'Entrou nesta empresa?','Saiu desta empresa?','Descricao']
+  ];
+  p.transf.forEach(t => A.push([
+    _pkData(t.data), t.mes, t.origem, t.destino, _pkNum(t.valor), t.entrou, t.saiu, t.desc
+  ]));
+  const ult = Math.max(4, A.length);
+  return _pkWs(A, [11,9,26,26,15,18,18,52], `A4:H${ult}`);
+}
+
+function _pkAbaAberto(ctx) {
+  const p = ctx.p;
+  const pcPorId = new Map(planoContas.map(x => [x.id, x]));
+  const grupoDe = id => { const c = pcPorId.get(id); if (!c) return '(sem grupo)';
+                          const g = pcPorId.get(c.grupo_id); return g ? g.nome : c.nome; };
+  const A = [
+    ['Contas em aberto - ' + p.nome],
+    ['Lancamentos ainda NAO pagos nem recebidos. Como o pacote e em regime de caixa, nada disto ' +
+     'entra na DRE: esta aqui so para a contabilidade enxergar o que esta por vir.'],
+    [],
+    ['Vencimento','Tipo','Grupo','Conta','Historico','Fornecedor','Unidade','Valor (R$)']
+  ];
+  const nomeDe = (lista, id) => (lista.find(x => x.id === id) || {}).nome || '';
+  p.aberto.slice().sort((a, b) => String(a.vencimento).localeCompare(String(b.vencimento)))
+    .forEach(l => {
+      const ent = l.tipo === 'receber', v = Number(l.valor) || 0;
+      A.push([
+        _pkData(l.vencimento), ent ? 'A receber' : 'A pagar',
+        grupoDe(l.plano_conta_id), (pcPorId.get(l.plano_conta_id) || {}).nome || '(sem categoria)',
+        (l.descricao || '').trim(), nomeDe(fornecedores, l.fornecedor_id) || '(sem fornecedor)',
+        nomeDe(unidades, l.unidade_id) || '(sem unidade)', _pkNum(ent ? v : -v)
+      ]);
+    });
+  if (p.aberto.length) {
+    const prim = 5, ult = A.length;
+    A.push(['(=) SALDO EM ABERTO', '', '', '', '', '', '', _pkNum(
+      p.aberto.reduce((s, l) => s + (l.tipo === 'receber' ? 1 : -1) * (Number(l.valor) || 0), 0),
+      `SUM(H${prim}:H${ult})`)]);
+  }
+  return _pkWs(A, [12,12,26,26,52,28,22,15], `A4:H${Math.max(4, A.length)}`);
+}
+
+function _pkAbaDiverg(ctx) {
+  const p = ctx.p;
+  const A = [
+    ['Pontos a conferir antes de enviar - ' + p.nome],
+    ['Lancamentos que o sistema marcou como duvidosos. Nao sao erros de calculo: os numeros do ' +
+     'pacote ja os incluem. Sao itens que o financeiro deve olhar e, se for o caso, corrigir no ' +
+     'sistema, e depois gerar o pacote de novo.'],
+    [],
+    ['Data','Tipo','Historico','Valor (R$)','Conta Bancaria','Unidade','O que conferir','ID do lancamento']
+  ];
+  p.diverg.slice().sort((a, b) => a[1].localeCompare(b[1]) || a[0].data.localeCompare(b[0].data))
+    .forEach(([r, motivo]) => A.push([
+      _pkData(r.data), r.tipo, r.hist, _pkNum(r.valor), r.banco, r.unid, motivo, r.id
+    ]));
+  if (!p.diverg.length) A.push(['Nenhuma divergencia encontrada nesta empresa.']);
+  return _pkWs(A, [11,10,52,15,24,22,52,38], `A4:H${Math.max(4, A.length)}`);
+}
+
+function _pkAbaCapa(ctx) {
+  const p = ctx.p, meses = ctx.meses;
+  const nomeBanco = id => (bancosCadastrados.find(b => b.id === id) || {}).nome || '';
+  const emp = p.empresa || {};
+  const bancos = (emp.bancos_ids || []).map(nomeBanco).filter(Boolean);
+  const unids  = (emp.unidades_ids || []).map(id => (unidades.find(u => u.id === id) || {}).nome).filter(Boolean);
+  const dtIni = _pkDados.per.ini.split('-').reverse().join('/');
+  const dtFim = _pkDados.per.fim.split('-').reverse().join('/');
+  const agora = new Date();
+  const dois = n => String(n).padStart(2, '0');
+
+  const A = [];
+  A.push(['PACOTE CONTABIL - ' + String(p.nome).toUpperCase()]);
+  A.push([]);
+  A.push(['IDENTIFICACAO']);
+  A.push(['Razao social', emp.razao_social || '>>> PREENCHER NO SISTEMA <<<']);
+  A.push(['CNPJ',         emp.cnpj         || '>>> PREENCHER NO SISTEMA <<<']);
+  A.push(['Nome interno', p.nome]);
+  A.push(['Unidades', unids.join(', ') || '-']);
+  A.push(['Contas bancarias', bancos.join(', ') || '-']);
+  A.push(['Periodo', 'de ' + dtIni + ' a ' + dtFim]);
+  A.push(['Regime', 'CAIXA - pela data de pagamento ou recebimento efetivo']);
+  A.push(['Gerado em', `${dois(agora.getDate())}/${dois(agora.getMonth()+1)}/${agora.getFullYear()} as ${dois(agora.getHours())}:${dois(agora.getMinutes())}`]);
+  A.push(['Origem', 'Sistema Financeiro interno - Tambaqui de Banda']);
+  A.push([]);
+  A.push(['O QUE TEM EM CADA ABA']);
+  [['DRE','Resultado mensal em regime de caixa: entradas e saidas por grupo, e o percentual sobre a receita.'],
+   ['Receitas','Recebimentos abertos conta a conta, mes a mes.'],
+   ['Despesas','Pagamentos abertos conta a conta, dentro de cada grupo, mes a mes.'],
+   ['Bancos','Movimento e saldo de cada conta bancaria, mes a mes. E a aba para cruzar com o extrato.'],
+   ['Fornecedores','Total pago a cada fornecedor, mes a mes.'],
+   ['Razao','RAZAO ANALITICO: todo lancamento em uma linha. E a fonte de todos os outros numeros.'],
+   ['Transferencias','Movimento entre contas proprias. Nao e receita nem despesa.'],
+   ['Em Aberto','O que ainda nao foi pago nem recebido. Fora da DRE, porque o regime e de caixa.'],
+   ['Divergencias','Lancamentos que o nosso financeiro ainda precisa conferir.']
+  ].forEach(l => A.push(l));
+  A.push([]);
+  A.push(['NUMEROS DESTE PACOTE']);
+  A.push(['Lancamentos no razao', p.razaoLinhas.length]);
+  A.push(['Total de entradas', _pkNum(p.entradas)]);
+  A.push(['Total de saidas',   _pkNum(p.saidas)]);
+  A.push(['Resultado de caixa',_pkNum(p.entradas - p.saidas)]);
+  A.push(['Transferencias', p.transf.length + ' movimento(s) entre contas proprias']);
+  A.push(['Contas em aberto', p.aberto.length + ' lancamento(s)']);
+  A.push(['Pontos a conferir', p.diverg.length + ' (ver aba Divergencias)']);
+  A.push([]);
+  A.push(['RESSALVAS - LEIA ANTES DE USAR OS NUMEROS']);
+  A.push(['1', 'REGIME DE CAIXA, NAO COMPETENCIA. Tudo aqui e pela data em que o dinheiro entrou ou ' +
+               'saiu, nao pela data da nota fiscal. Para escriturar por competencia sera preciso cruzar com as notas.']);
+  A.push(['2', 'SEPARACAO POR EMPRESA. A conta bancaria manda: o lancamento pertence a empresa dona da ' +
+               'conta. Sem banco informado vale a unidade; sem unidade, o centro de custo.']);
+  A.push(['3', 'VALORES NEGATIVOS sao estornos e devolucoes: dinheiro que saiu antes e voltou. ' +
+               'Reduzem a propria conta de despesa, em vez de virar receita.']);
+  A.push(['4', 'TRANSFERENCIAS ENTRE CONTAS PROPRIAS nao sao receita nem despesa. Ficam em aba separada ' +
+               'e aparecem na DRE apenas como memoria, fora do resultado.']);
+  ((_pkDados && _pkDados.avisos) || []).forEach((av, i) => {
+    const marca = av.nivel === 'grave' ? 'ATENCAO: ' : '';
+    A.push([String(5 + i), marca + av.titulo.toUpperCase() + '. ' + av.texto.replace(/<[^>]*>/g, '')]);
+  });
+  return _pkWs(A, [30, 100]);
+}
+
+// ---- abas de resumo (tudo por formula SUMIFS sobre a aba Razao) ----
+function _pkAbaDre(ctx) {
+  const p = ctx.p, meses = ctx.meses, ultRz = ctx.ultRz, ultTr = ctx.ultTr;
+  const nM = meses.length, iPct = 2 + nM;
+  const cTot = _pkCol(1 + nM), cUltMes = _pkCol(nM);
+  const A = [];
+  A.push(['Demonstracao de Resultado - ' + p.nome]);
+  A.push(['Regime de CAIXA (pela data de pagamento). Todos os valores vem da aba Razao por formula SUMIFS.']);
+  A.push([]);
+  A.push([]);
+  A.push(['Conta'].concat(meses.map(pkRotuloMes), ['Total do periodo', '% da receita']));
+
+  const linhaGrupo = (grupo, sinal) => {
+    const row = A.length + 1;
+    const cells = ['    ' + grupo];
+    meses.forEach(m => {
+      const v = sinal * (ctx.porGrupo[m][grupo] || 0);
+      const f = (sinal < 0 ? '-' : '') +
+        `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}")`;
+      cells.push(_pkNum(v, f));
+    });
+    const tot = meses.reduce((s, m) => s + sinal * (ctx.porGrupo[m][grupo] || 0), 0);
+    cells.push(_pkNum(tot, `SUM(B${row}:${cUltMes}${row})`));
+    A.push(cells);
+    return row;
+  };
+  const linhaTotal = (rot, rows) => {
+    const row = A.length + 1;
+    const cells = [rot];
+    for (let c = 1; c <= 1 + nM; c++) {
+      const L = _pkCol(c);
+      const v = rows.reduce((s, r) => s + ((A[r - 1][c] || {}).v || 0), 0);
+      cells.push(_pkNum(v, rows.length ? rows.map(r => `${L}${r}`).join('+') : '0'));
+    }
+    A.push(cells);
+    return row;
+  };
+
+  A.push(['ENTRADAS  (recebimentos)']);
+  const rowsE = _pkPresentes(p.razaoLinhas, true).map(g => linhaGrupo(g[0], 1));
+  const linEnt = linhaTotal('(=) TOTAL DE ENTRADAS', rowsE);
+  A.push([]);
+  A.push(['SAIDAS  (pagamentos)']);
+  const rowsS = _pkPresentes(p.razaoLinhas, false).map(g => linhaGrupo(g[0], -1));
+  const linSai = linhaTotal('(=) TOTAL DE SAIDAS', rowsS);
+  A.push([]);
+
+  const linRes = A.length + 1;
+  const cellsR = ['(=) RESULTADO DE CAIXA  (entradas - saidas)'];
+  for (let c = 1; c <= 1 + nM; c++) {
+    const L = _pkCol(c);
+    cellsR.push(_pkNum(((A[linEnt - 1][c] || {}).v || 0) - ((A[linSai - 1][c] || {}).v || 0),
+                       `${L}${linEnt}-${L}${linSai}`));
+  }
+  A.push(cellsR);
+
+  // coluna "% da receita"
+  const totEnt = (A[linEnt - 1][1 + nM] || {}).v || 0;
+  rowsE.concat(rowsS, [linEnt, linSai, linRes]).forEach(r => {
+    const v = (A[r - 1][1 + nM] || {}).v || 0;
+    A[r - 1][iPct] = _pkPct(totEnt ? v / totEnt : 0, `IFERROR(${cTot}${r}/${cTot}${linEnt},"")`);
+  });
+
+  A.push([]);
+  A.push(['MEMORIA - nao entra no resultado']);
+  [['    Transferencias recebidas de contas proprias', 'F', 1],
+   ['    Transferencias enviadas para contas proprias', 'G', -1]].forEach(function (spec) {
+    const rot = spec[0], col = spec[1], sinal = spec[2];
+    const row = A.length + 1;
+    const cells = [rot];
+    meses.forEach(m => {
+      const bruto = col === 'F' ? ctx.trMes[m].entrou : ctx.trMes[m].saiu;
+      const f = (sinal < 0 ? '-' : '') +
+        `SUMIFS(${_pkFxTr('E', ultTr)},${_pkFxTr('B', ultTr)},"${m}",${_pkFxTr(col, ultTr)},"Sim")`;
+      cells.push(_pkNum(sinal * bruto, f));
+    });
+    const tot = meses.reduce((s, m) => s + sinal * (col === 'F' ? ctx.trMes[m].entrou : ctx.trMes[m].saiu), 0);
+    cells.push(_pkNum(tot, `SUM(B${row}:${cUltMes}${row})`));
+    A.push(cells);
+  });
+
+  return _pkWs(A, [46].concat(meses.map(() => 15), [17, 13]));
+}
+
+function _pkAbaDetalhe(ctx, ehReceita) {
+  const p = ctx.p, meses = ctx.meses, ultRz = ctx.ultRz;
+  const nM = meses.length, cUltMes = _pkCol(nM), sinal = ehReceita ? 1 : -1;
+  const nome = ehReceita ? 'Receitas' : 'Despesas';
+  const A = [];
+  A.push([nome + ' por conta - ' + p.nome]);
+  A.push([(ehReceita ? 'Recebimentos' : 'Pagamentos') +
+          ' do plano de contas, mes a mes, pela data de pagamento. Valores positivos. ' +
+          'Estornos e devolucoes aparecem reduzindo a propria conta.']);
+  A.push([]);
+  A.push([]);
+  A.push(['Grupo / Conta'].concat(meses.map(pkRotuloMes), ['Total do periodo']));
+
+  const linhasGrupo = [];
+  _pkPresentes(p.razaoLinhas, ehReceita).forEach(function (par) {
+    const grupo = par[0], contas = par[1];
+    let row = A.length + 1;
+    let cells = [grupo];
+    meses.forEach(m => {
+      const v = sinal * (ctx.porGrupo[m][grupo] || 0);
+      const f = (sinal < 0 ? '-' : '') +
+        `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}")`;
+      cells.push(_pkNum(v, f));
+    });
+    cells.push(_pkNum(meses.reduce((s, m) => s + sinal * (ctx.porGrupo[m][grupo] || 0), 0),
+                      `SUM(B${row}:${cUltMes}${row})`));
+    A.push(cells); linhasGrupo.push(row);
+
+    contas.forEach(conta => {
+      row = A.length + 1;
+      cells = ['      ' + conta];
+      meses.forEach(m => {
+        const v = sinal * (ctx.porConta[m][grupo + '|' + conta] || 0);
+        const f = (sinal < 0 ? '-' : '') +
+          `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",` +
+          `${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}",${_pkFxRz('E', ultRz)},"${_pkAspas(conta)}")`;
+        cells.push(_pkNum(v, f));
+      });
+      cells.push(_pkNum(meses.reduce((s, m) => s + sinal * (ctx.porConta[m][grupo + '|' + conta] || 0), 0),
+                        `SUM(B${row}:${cUltMes}${row})`));
+      A.push(cells);
+    });
+    A.push([]);
+  });
+
+  const row = A.length + 1;
+  const cellsT = ['(=) TOTAL DE ' + nome.toUpperCase()];
+  for (let c = 1; c <= 1 + nM; c++) {
+    const L = _pkCol(c);
+    const v = linhasGrupo.reduce((s, r) => s + ((A[r - 1][c] || {}).v || 0), 0);
+    cellsT.push(_pkNum(v, linhasGrupo.length ? linhasGrupo.map(r => `${L}${r}`).join('+') : '0'));
+  }
+  A.push(cellsT);
+  return _pkWs(A, [46].concat(meses.map(() => 15), [17]));
+}
+
+function _pkAbaBancos(ctx) {
+  const p = ctx.p, meses = ctx.meses, ultRz = ctx.ultRz, ultTr = ctx.ultTr;
+  const nM = meses.length, cUltMes = _pkCol(nM);
+  const A = [];
+  A.push(['Movimento e saldo por conta bancaria - ' + p.nome]);
+  A.push(['Confira o "Saldo no fim do mes" com o extrato do banco. O saldo inicial e o cadastrado ' +
+          'no sistema: se ele estiver errado, todos os saldos seguintes ficam errados na mesma medida.']);
+  A.push([]);
+  A.push([]);
+  A.push(['Conta bancaria'].concat(meses.map(pkRotuloMes), ['Total do periodo']));
+
+  const usados = {};
+  p.razaoLinhas.forEach(r => { usados[r.banco] = (usados[r.banco] || 0) + 1; });
+  const meus = (p.bancosIds || []).map(id => (bancosCadastrados.find(b => b.id === id) || {}).nome).filter(Boolean);
+  const ordem = meus.filter(n => usados[n]).concat(Object.keys(usados).filter(n => meus.indexOf(n) < 0).sort());
+
+  ordem.forEach(bn => {
+    const info = bancosCadastrados.find(b => b.nome === bn) || null;
+    const rot = bn + (info && (info.agencia || info.conta)
+      ? '  (ag. ' + (info.agencia || '-') + ' c/c ' + (info.conta || '-') + ')' : '');
+    A.push([rot]);
+    let linSini = null;
+    if (info) {
+      linSini = A.length + 1;
+      A.push(['      Saldo inicial cadastrado no sistema', Number(info.saldo_inicial) || 0]);
+      A[linSini - 1][1] = _pkNum(Number(info.saldo_inicial) || 0);
+    } else {
+      A.push(['      NAO E UMA CONTA BANCARIA. Sao os lancamentos que nao informam em qual conta o ' +
+              'dinheiro passou. So ha movimento, nao ha saldo.']);
+    }
+    const blocos = [];
+    [['      Entradas (recebimentos)', 'Entrada', null],
+     ['      Saidas (pagamentos)',     'Saida',   null],
+     ['      Transferencias recebidas', null, 'D'],
+     ['      Transferencias enviadas',  null, 'C']].forEach(function (spec) {
+      const rotL = spec[0], tipo = spec[1], colT = spec[2];
+      const row = A.length + 1;
+      const cells = [rotL];
+      meses.forEach(m => {
+        let v, f;
+        if (tipo) {
+          const rotTipo = tipo === 'Entrada' ? 'Entrada' : 'Saída';
+          v = ctx.porBanco[m][bn + '|' + rotTipo] || 0;
+          f = `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",` +
+              `${_pkFxRz('J', ultRz)},"${_pkAspas(bn)}",${_pkFxRz('C', ultRz)},"${rotTipo}")`;
+        } else if (colT === 'D') {
+          v = ctx.trMes[m].bIn[bn] || 0;
+          f = `SUMIFS(${_pkFxTr('E', ultTr)},${_pkFxTr('B', ultTr)},"${m}",${_pkFxTr('D', ultTr)},"${_pkAspas(bn)}")`;
+        } else {
+          v = -(ctx.trMes[m].bOut[bn] || 0);
+          f = `-SUMIFS(${_pkFxTr('E', ultTr)},${_pkFxTr('B', ultTr)},"${m}",${_pkFxTr('C', ultTr)},"${_pkAspas(bn)}")`;
+        }
+        cells.push(_pkNum(v, f));
+      });
+      let somaLinha = 0;
+      for (let i = 1; i <= nM; i++) somaLinha += (cells[i] || {}).v || 0;
+      cells.push(_pkNum(somaLinha, `SUM(B${row}:${cUltMes}${row})`));
+      A.push(cells);
+      blocos.push(row);
+    });
+    if (linSini) {
+      const row = A.length + 1;
+      const cells = ['      (=) Saldo no fim do mes'];
+      let acum = Number(info.saldo_inicial) || 0;
+      meses.forEach((m, i) => {
+        const L = _pkCol(1 + i);
+        blocos.forEach(r => { acum += ((A[r - 1][1 + i] || {}).v || 0); });
+        const ant = i === 0 ? `B${linSini}` : `${_pkCol(i)}${row}`;
+        cells.push(_pkNum(acum, ant + '+' + blocos.map(r => `${L}${r}`).join('+')));
+      });
+      A.push(cells);
+    }
+    A.push([]);
+  });
+  return _pkWs(A, [46].concat(meses.map(() => 15), [17]));
+}
+
+function _pkAbaFornecedores(ctx) {
+  const p = ctx.p, meses = ctx.meses, ultRz = ctx.ultRz;
+  const nM = meses.length;
+  const A = [];
+  A.push(['Pagamentos por fornecedor - ' + p.nome]);
+  A.push(['Total pago a cada fornecedor, mes a mes. O CNPJ so aparece quando esta cadastrado na ficha do fornecedor.']);
+  A.push([]);
+  A.push([]);
+  A.push(['Fornecedor', 'CNPJ / CPF'].concat(meses.map(pkRotuloMes), ['Total do periodo']));
+
+  const tot = {};
+  meses.forEach(m => Object.keys(ctx.porForn[m]).forEach(f => { tot[f] = (tot[f] || 0) + ctx.porForn[m][f]; }));
+  const ordem = Object.keys(tot).sort((a, b) => tot[b] - tot[a] || a.localeCompare(b, 'pt-BR'));
+  const doc = {};
+  fornecedores.forEach(f => { doc[f.nome] = (f.cnpj_cpf || '').trim(); });
+
+  const prim = A.length + 1;
+  ordem.forEach(fn => {
+    const row = A.length + 1;
+    const cells = [fn, doc[fn] || '-'];
+    meses.forEach(m => {
+      const v = ctx.porForn[m][fn] || 0;
+      cells.push(_pkNum(v, `-SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",` +
+                           `${_pkFxRz('G', ultRz)},"${_pkAspas(fn)}",${_pkFxRz('C', ultRz)},"Saída")`));
+    });
+    cells.push(_pkNum(tot[fn], `SUM(C${row}:${_pkCol(1 + nM)}${row})`));
+    A.push(cells);
+  });
+  const row = A.length + 1;
+  const cellsT = ['(=) TOTAL PAGO', ''];
+  for (let c = 2; c <= 2 + nM; c++) {
+    const L = _pkCol(c);
+    let v = 0;
+    for (let r = prim; r < row; r++) v += ((A[r - 1][c] || {}).v || 0);
+    cellsT.push(_pkNum(v, ordem.length ? `SUM(${L}${prim}:${L}${row - 1})` : '0'));
+  }
+  A.push(cellsT);
+  return _pkWs(A, [44, 20].concat(meses.map(() => 15), [17]),
+               ordem.length ? `A5:${_pkCol(2 + nM)}${row - 1}` : null);
+}
+
+// ---------------------------------------------------------- download
+function _pkNomeArquivo(p) {
+  const limpo = String(p.nome).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'Empresa';
+  const per = _pkDados.per;
+  return `Pacote_Contabil_${limpo}_${per.meses[0]}_a_${per.meses[per.meses.length - 1]}.xlsx`;
+}
+
+function pkBaixar(i) {
+  if (!_pkDados) return;
+  const p = _pkDados.pacotes[i];
+  if (!p) return;
+  try {
+    XLSX.writeFile(pkMontarWorkbook(p), _pkNomeArquivo(p));
+    mostrarToast('Arquivo de ' + p.nome + ' baixado.', 'sucesso');
+  } catch (e) {
+    console.error(e);
+    mostrarToast('Nao consegui montar o arquivo de ' + p.nome + '.', 'erro');
+  }
+}
+
+function pkBaixarTodos() {
+  if (!_pkDados) return;
+  _pkDados.pacotes.forEach((p, i) => setTimeout(() => pkBaixar(i), i * 900));
 }

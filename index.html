@@ -165,6 +165,9 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('relatorios', this)">
               <i class="fas fa-chart-bar"></i><span>Contábil</span>
             </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('pacote-contabil', this)">
+              <i class="fas fa-file-contract"></i><span>Pacote Contábil</span>
+            </a>
           </div>
         </div>
 
@@ -1445,6 +1448,83 @@
         <div id="pc-conteudo"><p class="sem-dados">Selecione o mês e clique em <strong>Gerar</strong>.</p></div>
       </section>
 
+      <!-- ========== PACOTE CONTÁBIL ========== -->
+      <section id="pagina-pacote-contabil" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-file-contract" style="color:#2c3e50"></i> Pacote Contábil</h2>
+          <p style="color:#888;font-size:.9rem;margin-top:4px">
+            Gera os relatórios para enviar à contabilidade — um arquivo Excel por empresa.
+            Confira os avisos na tela antes de enviar.
+          </p>
+        </div>
+
+        <!-- ABAS -->
+        <div style="display:flex;gap:4px;margin-bottom:18px;border-bottom:2px solid #eee;">
+          <button id="pk-tab-gerar" class="pk-tab pk-tab-on" onclick="pkAba('gerar')">
+            <i class="fas fa-file-export"></i> Gerar pacote
+          </button>
+          <button id="pk-tab-empresas" class="pk-tab" onclick="pkAba('empresas')">
+            <i class="fas fa-building"></i> Empresas e CNPJ
+          </button>
+        </div>
+
+        <!-- ================= PAINEL: GERAR ================= -->
+        <div id="pk-painel-gerar">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:18px;padding:14px 16px;background:#f8f9fa;border-radius:10px;border:1px solid #eee;">
+            <div>
+              <div style="font-size:12px;color:#666;margin-bottom:4px;">Do mês</div>
+              <div style="display:flex;gap:6px;">
+                <select id="pk-mes-ini" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;"></select>
+                <select id="pk-ano-ini" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;"></select>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:12px;color:#666;margin-bottom:4px;">Até o mês</div>
+              <div style="display:flex;gap:6px;">
+                <select id="pk-mes-fim" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;"></select>
+                <select id="pk-ano-fim" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;"></select>
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="pkGerar()" id="pk-btn-gerar">
+              <i class="fas fa-search"></i> Gerar e conferir
+            </button>
+            <span style="font-size:12px;color:#999;display:flex;align-items:center;gap:5px;">
+              <i class="fas fa-lock"></i> Só leitura — não altera nenhum lançamento
+            </span>
+          </div>
+
+          <div id="pk-carregando" style="display:none;text-align:center;padding:50px 20px;color:#888;">
+            <i class="fas fa-spinner fa-spin" style="font-size:28px;color:#3498db;"></i>
+            <div style="margin-top:12px;font-size:14px;" id="pk-carregando-txt">Buscando os lançamentos…</div>
+          </div>
+
+          <div id="pk-vazio" style="text-align:center;padding:50px 20px;color:#aaa;">
+            <i class="fas fa-file-contract" style="font-size:38px;opacity:.35"></i>
+            <div style="margin-top:12px;font-size:14px;">Escolha o período e clique em <strong>Gerar e conferir</strong>.</div>
+          </div>
+
+          <div id="pk-resultado" style="display:none;"></div>
+        </div>
+
+        <!-- ================= PAINEL: EMPRESAS ================= -->
+        <div id="pk-painel-empresas" style="display:none;">
+          <div style="background:#fff8e1;border:1px solid #ffe0a3;border-radius:10px;padding:14px 16px;margin-bottom:18px;font-size:13px;color:#7a5c14;line-height:1.6;">
+            <strong>Como o sistema separa as empresas.</strong>
+            A <strong>conta bancária manda</strong>: o lançamento pertence à empresa dona da conta em que o dinheiro passou.
+            Se o lançamento não tiver conta bancária, vale a <strong>unidade</strong>; se não tiver unidade, vale o <strong>centro de custo</strong>.
+            O que não se encaixar em nenhuma empresa sai num arquivo separado, chamado “Não identificado”.
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px;flex-wrap:wrap;">
+            <h3 style="margin:0;font-size:16px;">Empresas cadastradas</h3>
+            <button class="btn btn-primary btn-sm" onclick="pkAbrirEmpresa(null)">
+              <i class="fas fa-plus"></i> Nova empresa
+            </button>
+          </div>
+          <div id="pk-empresas-lista"></div>
+          <div id="pk-empresas-orfaos" style="margin-top:18px;"></div>
+        </div>
+      </section>
+
       <section id="pagina-configuracoes" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-hdd"></i> Backup</h2>
@@ -1577,6 +1657,47 @@
     </main>
   </div>
 
+  <!-- ========== MODAL: EMPRESA DO PACOTE CONTÁBIL ========== -->
+  <div id="modal-pk-empresa" class="modal-fundo hidden">
+    <div class="modal" style="max-width:720px;">
+      <div class="modal-header">
+        <h3><i class="fas fa-building"></i> <span id="pk-emp-titulo">Empresa</span></h3>
+        <button class="btn-fechar" onclick="fecharModal('modal-pk-empresa')">&times;</button>
+      </div>
+      <div class="modal-corpo">
+        <input type="hidden" id="pk-emp-id" />
+        <div class="form-row">
+          <div class="form-group">
+            <label>Nome curto (aparece no nome do arquivo)</label>
+            <input type="text" id="pk-emp-nome" placeholder="Ex.: Valle e Valle" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Razão social</label>
+            <input type="text" id="pk-emp-razao" placeholder="Como está no cartão CNPJ" />
+          </div>
+          <div class="form-group">
+            <label>CNPJ</label>
+            <input type="text" id="pk-emp-cnpj" placeholder="00.000.000/0000-00" />
+          </div>
+        </div>
+        <p style="font-size:12.5px;color:#666;margin:14px 0 8px;line-height:1.6;">
+          Marque abaixo o que pertence a esta empresa. Um item só pode estar em <strong>uma</strong> empresa.
+        </p>
+        <div id="pk-emp-bancos"  class="pk-check-bloco"></div>
+        <div id="pk-emp-unids"   class="pk-check-bloco"></div>
+        <div id="pk-emp-centros" class="pk-check-bloco"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="pk-emp-excluir" onclick="pkExcluirEmpresa()" style="color:#e74c3c;border-color:#e74c3c;">
+          <i class="fas fa-trash"></i> Excluir
+        </button>
+        <button class="btn btn-outline" onclick="fecharModal('modal-pk-empresa')">Cancelar</button>
+        <button class="btn btn-primary" onclick="pkSalvarEmpresa()"><i class="fas fa-check"></i> Salvar</button>
+      </div>
+    </div>
+  </div>
   <!-- ========== MODAL: NOVA CONTA A PAGAR ========== -->
   <div id="modal-pagar" class="modal-fundo hidden">
     <div class="modal">

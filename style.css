@@ -1363,3 +1363,24 @@ body {
   .dre-tab, button { display: none !important; }
   .conteudo { margin-left: 0 !important; }
 }
+
+/* ===== Pacote Contábil ===== */
+.pk-tab {
+  background: none; border: none; border-bottom: 3px solid transparent;
+  padding: 10px 16px; font-size: 14px; color: #7f8c8d; cursor: pointer;
+  font-weight: 600; margin-bottom: -2px; transition: color .15s, border-color .15s;
+}
+.pk-tab:hover { color: #34495e; }
+.pk-tab-on { color: #2c3e50; border-bottom-color: #3498db; }
+.pk-check-bloco { margin-bottom: 14px; }
+.pk-check-bloco > .pk-check-titulo {
+  font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+  color: #95a5a6; font-weight: 700; margin-bottom: 6px;
+}
+.pk-check-bloco label {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+  background: #f8f9fa; border: 1px solid #e6e9ec; border-radius: 6px;
+  padding: 5px 10px; margin: 0 6px 6px 0; cursor: pointer; font-weight: 400;
+}
+.pk-check-bloco label.pk-usado { opacity: .5; }
+.pk-check-bloco input { margin: 0; }
