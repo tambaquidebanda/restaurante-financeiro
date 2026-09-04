@@ -4676,6 +4676,49 @@ function cxqBruto(c, despesas) {
   return Number(c.vendas_dinheiro || 0);
 }
 
+// Quanto vai para o Contas a Receber quando a gerente confirma o caixa.
+// Antes ia o faturado bruto, e a diferença de contagem (os centavos) ficava
+// para sempre no saldo do Caixa do sistema, acumulando mês a mês. Agora vai o
+// faturado corrigido pela diferença contada, de modo que
+//     recebimento − pagamentos em dinheiro = o que a gerente contou.
+// Somar a diferença ao bruto (em vez de usar o contado direto) é o que mantém
+// a conta certa nos caixas que tiveram pagamento saindo da gaveta: esse
+// pagamento já sai do Caixa como Conta a Pagar e não pode ser descontado duas
+// vezes. Quando não há pagamento nenhum, isto dá exatamente o valor contado.
+function cxqReceber(bruto, esperado, contado) {
+  const v = Number(bruto || 0) + (Number(contado || 0) - Number(esperado || 0));
+  return Math.round(v * 100) / 100;
+}
+
+function cxqPreviaHTML(bruto, esperado, contado) {
+  const receber = cxqReceber(bruto, esperado, contado);
+  const dif = Number(contado || 0) - Number(esperado || 0);
+  if (Math.abs(dif) < 0.005)
+    return `➜ vai para o Contas a Receber: <strong>${ccBRL(receber)}</strong>`;
+  const txt = dif < 0
+    ? `faturado ${ccBRL(bruto)} menos ${ccBRL(-dif)} que faltaram na gaveta`
+    : `faturado ${ccBRL(bruto)} mais ${ccBRL(dif)} que sobraram na gaveta`;
+  return `➜ vai para o Contas a Receber: <strong>${ccBRL(receber)}</strong>`
+       + ` <span style="color:#8e44ad">(${txt})</span>`;
+}
+
+// Recalcula a diferença e a prévia enquanto a gerente digita o contado.
+function cxqPrevia(confId) {
+  const inp = document.getElementById(`cxq-cont-${confId}`);
+  if (!inp) return;
+  const esperado = Number(inp.dataset.esp || 0);
+  const bruto    = Number(inp.dataset.bruto || 0);
+  const contado  = parseFloat(inp.value) || 0;
+  const dif      = contado - esperado;
+  const elDif = document.getElementById(`cxq-dif-${confId}`);
+  if (elDif) {
+    elDif.textContent = `dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}`;
+    elDif.style.color = Math.abs(dif) <= CXQ_TOL ? '#27ae60' : '#e74c3c';
+  }
+  const elPrev = document.getElementById(`cxq-prev-${confId}`);
+  if (elPrev) elPrev.innerHTML = cxqPreviaHTML(bruto, esperado, contado);
+}
+
 // A diferença deste caixa já está explicada pela troca de formas do PDV?
 // Se está, lançar despesa seria inventar uma saída de dinheiro que não houve —
 // o certo ali é adotar o fechamento da loja.
@@ -4938,11 +4981,14 @@ function cxqDetalheHTML(d, confs, movs) {
           ${linha('Esperado no caixa', ccBRL(esperado), { forte: true })}
           <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
             <span style="font-size:12px;color:#777">contado</span>
-            <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}" style="width:90px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-            <span style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
+            <input type="number" step="0.01" id="cxq-cont-${c.id}" value="${contado.toFixed(2)}"
+              data-esp="${esperado}" data-bruto="${bruto}" oninput="cxqPrevia('${c.id}')"
+              style="width:90px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            <span id="cxq-dif-${c.id}" style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
             ${(dif < -CXQ_TOL && ('dif_lancamento_id' in c) && !c.dif_lancamento_id && !cxqTrocaExplica(c)) ? `<button onclick="cxqLancarDif('${c.id}')" title="O dinheiro saiu da gaveta mas não foi registrado no PDV (ex.: devolução ao cliente). Cria a despesa e a diferença zera." style="font-size:11px;border:1px solid #8e44ad;background:#fff;color:#8e44ad;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ lançar falta como despesa</button>` : ''}
             <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
-          </div>`;
+          </div>
+          <div id="cxq-prev-${c.id}" style="font-size:11.5px;color:#16a085;margin-top:5px">${cxqPreviaHTML(bruto, esperado, contado)}</div>`;
       } else {
         card = `<div style="font-size:13px;font-weight:700;color:#2c3e50">Caixa ${ext}</div><div style="font-size:11px;color:#999;margin-bottom:4px">(sem conferência de dinheiro)</div>${pagList}`;
       }
@@ -5094,25 +5140,42 @@ async function cxqConfirmar(confId) {
   if (e0 || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
   let email = ''; try { const { data: { session } } = await db.auth.getSession(); email = (session && session.user && session.user.email) || ''; } catch (e) {}
   const caixaBanco = cxeCaixaBancoId();
-  const bruto = cxqBruto(c, await cxqDespesasDb(db, c));
+  const bruto    = cxqBruto(c, await cxqDespesasDb(db, c));
+  const esperado = cxqEsperado(c);
+  // Vai o valor CONTADO, não o faturado: senão a diferença de contagem fica
+  // para sempre no saldo do Caixa e vai acumulando. Ver cxqReceber().
+  const receber  = cxqReceber(bruto, esperado, contado);
+  const dif      = contado - esperado;
 
-  // 1) recebimento das vendas em dinheiro (BRUTO) no Caixa — cria ou atualiza
+  // 1) recebimento das vendas em dinheiro no Caixa — cria, atualiza ou remove
   let recId = c.recebimento_lancamento_id || null;
-  if (bruto > 0 && caixaBanco) {
+  if (receber > 0 && caixaBanco) {
+    const desc = `Vendas em dinheiro ${ccDT(c.data)} · Caixa ${c.caixa_ext}`;
+    const obs  = Math.abs(dif) >= 0.005
+      ? `Pelo dinheiro contado. Faturado em dinheiro no PDV: ${ccBRL(bruto)}; esperado na gaveta: ${ccBRL(esperado)}; contado: ${ccBRL(contado)}.`
+      : null;
     if (recId) {
-      const { error } = await db.from('lancamentos').update({ valor: bruto, unidade_id: c.unidade_id || null }).eq('id', recId);
+      const { error } = await db.from('lancamentos')
+        .update({ valor: receber, descricao: desc, observacoes: obs, unidade_id: c.unidade_id || null })
+        .eq('id', recId);
       if (error) { mostrarToast('Erro ao atualizar recebimento: ' + error.message, 'erro'); return; }
     } else {
       const { data: lanc, error } = await db.from('lancamentos').insert({
-        descricao: `Vendas em dinheiro ${ccDT(c.data)} · Caixa ${c.caixa_ext}`,
-        valor: bruto, tipo: 'receber', status: 'pago',
+        descricao: desc, observacoes: obs,
+        valor: receber, tipo: 'receber', status: 'pago',
         data_pagamento: c.data, vencimento: c.data,
         banco_id: caixaBanco, unidade_id: c.unidade_id || null
       }).select('id').single();
       if (error) { mostrarToast('Erro ao lançar recebimento: ' + error.message, 'erro'); return; }
       recId = lanc.id;
     }
-  } else if (bruto > 0 && !caixaBanco) {
+  } else if (receber <= 0 && recId) {
+    // Nada entrou (ex.: contaram zero num caixa que só teve estorno). Deixar um
+    // recebimento de valor zero ou negativo no Contas a Receber só confundiria.
+    const { error } = await db.from('lancamentos').delete().eq('id', recId);
+    if (error) { mostrarToast('Erro ao remover o recebimento antigo: ' + error.message, 'erro'); return; }
+    recId = null;
+  } else if (receber > 0 && !caixaBanco) {
     mostrarToast('Confirmado, mas o banco "Caixa/Dinheiro" não foi encontrado — recebimento não lançado.', 'erro');
   }
 
@@ -5122,7 +5185,9 @@ async function cxqConfirmar(confId) {
     confirmado_em: new Date().toISOString(), recebimento_lancamento_id: recId
   }).eq('id', confId);
   if (e2) { mostrarToast('Erro ao confirmar: ' + e2.message, 'erro'); return; }
-  mostrarToast(bruto > 0 && caixaBanco ? `Conferido ✔️ · recebimento ${ccBRL(bruto)} no Caixa` : 'Conferência confirmada ✔️', 'sucesso');
+  mostrarToast(receber > 0 && caixaBanco
+    ? `Conferido ✔️ · recebimento ${ccBRL(receber)} no Caixa (valor contado)`
+    : 'Conferência confirmada ✔️', 'sucesso');
   renderCaixaEspecie();
 }
 
