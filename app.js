@@ -5147,6 +5147,21 @@ async function cxqConfirmar(confId) {
   const receber  = cxqReceber(bruto, esperado, contado);
   const dif      = contado - esperado;
 
+  // Trava contra caixa não contado ou valor digitado errado. Como agora é o
+  // contado que vira receita, confirmar um caixa com o campo em zero (ou com
+  // um erro de digitação) apagaria a venda do dia sem ninguém perceber.
+  if (Math.abs(dif) > CXQ_TOL) {
+    const texto = contado === 0
+      ? `O caixa ${c.caixa_ext} espera ${ccBRL(esperado)} na gaveta, mas o contado está ZERADO.\n\n`
+        + `Confirmar assim vai lançar ${ccBRL(receber)} no Contas a Receber — ou seja, a venda em `
+        + `dinheiro deste caixa some.\n\nSe o caixa ainda não foi contado, cancele e conte primeiro.\n\nConfirmar mesmo assim?`
+      : `O caixa ${c.caixa_ext} tem diferença de ${ccBRL(dif)} (esperado ${ccBRL(esperado)}, contado ${ccBRL(contado)}).\n\n`
+        + `Vai para o Contas a Receber: ${ccBRL(receber)}, pelo dinheiro contado.\n\n`
+        + `Se a falta tem explicação (sangria não registrada, devolução ao cliente), o certo é cancelar e usar `
+        + `"lançar falta como despesa".\n\nConfirmar assim mesmo?`;
+    if (!confirm(texto)) return;
+  }
+
   // 1) recebimento das vendas em dinheiro no Caixa — cria, atualiza ou remove
   let recId = c.recebimento_lancamento_id || null;
   if (receber > 0 && caixaBanco) {
