@@ -12849,7 +12849,7 @@ async function renderDelivery() {
       <td>${sit}</td><td style="text-align:right">${acao}</td></tr>`;
   }).join('');
   box.innerHTML = `
-    <div class="tabela-box"><div style="overflow-x:auto"><table>
+    <div class="tabela-box"><div style="overflow-x:auto"><table class="tabela">
       <thead><tr><th>Dia do depósito</th><th>Vendas no cartão (Parque 10)</th>
         <th style="text-align:right">Cartão → Delivery</th><th style="text-align:right">Pix → Delivery</th>
         <th>Situação</th><th></th></tr></thead>
