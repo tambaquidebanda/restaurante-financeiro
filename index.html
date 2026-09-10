@@ -159,6 +159,9 @@
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('dre', this)">
               <i class="fas fa-file-invoice-dollar"></i><span>DRE</span>
             </a>
+            <a href="#" class="nav-item nav-subitem" onclick="return irPara('delivery', this)">
+              <i class="fas fa-motorcycle"></i><span>Painel Delivery</span>
+            </a>
             <a href="#" class="nav-item nav-subitem" onclick="return irPara('ponte-caixa', this)">
               <i class="fas fa-scale-balanced"></i><span>Resultado × Caixa</span>
             </a>
@@ -1467,6 +1470,29 @@
 
       <!-- ========== PACOTE CONTÁBIL ========== -->
       <!-- ===== CONTAS EXCLUÍDAS (log de exclusões) ===== -->
+      <section id="pagina-delivery" class="pagina">
+        <div class="pagina-header">
+          <h2><i class="fas fa-motorcycle" style="color:#c0392b"></i> Painel Delivery</h2>
+          <p style="color:#888;font-size:.9rem;margin-top:4px">
+            O que o Parque 10 vendeu (pelo PDV, no dia da venda) e o que entrou e saiu do caixa da unidade Delivery no mês.
+          </p>
+        </div>
+
+        <div class="filtros" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+          <div class="form-group" style="margin:0">
+            <label>Mês</label>
+            <select id="pdl-mes" onchange="pdlGerar()"></select>
+          </div>
+          <button class="btn btn-secundario" onclick="pdlGerar()">
+            <i class="fas fa-rotate"></i> Atualizar
+          </button>
+        </div>
+
+        <div id="pdl-aviso"></div>
+        <div id="pdl-cards"></div>
+        <div id="pdl-conteudo"></div>
+      </section>
+
       <section id="pagina-excluidos" class="pagina">
         <div class="pagina-header">
           <h2><i class="fas fa-trash-can-arrow-up" style="color:#c0392b"></i> Contas Excluídas</h2>

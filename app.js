@@ -414,6 +414,7 @@ function irPara(pagina, elemento) {
   if (pagina === 'pacote-contabil')   carregarPacoteContabil();
   if (pagina === 'excluidos')         carregarExcluidos();
   if (pagina === 'dre')              carregarDre();
+  if (pagina === 'delivery')         carregarPainelDelivery();
   if (pagina === 'ponte-caixa')      carregarPonteCaixa();
   if (pagina === 'usuarios')         carregarUsuarios();
   if (pagina === 'importar')         { preencherSelectBancoImportar(); carregarLancamentosPendentes(); }
@@ -430,7 +431,7 @@ function irPara(pagina, elemento) {
     'plano-contas': 'cadastros', 'unidades': 'cadastros', 'bancos': 'cadastros',
     'fornecedores': 'cadastros', 'centros-custo': 'cadastros', 'formas-pagamento': 'cadastros', 'taxas-cartao': 'cadastros',
     'dre': 'relatorios', 'ponte-caixa': 'relatorios', 'relatorios': 'relatorios',
-    'pacote-contabil': 'relatorios',
+    'pacote-contabil': 'relatorios', 'delivery': 'relatorios',
     'usuarios': 'configuracoes', 'configuracoes': 'configuracoes', 'excluidos': 'configuracoes'
   };
   if (grupoNavPorPagina[pagina]) expandirNavGrupo(grupoNavPorPagina[pagina]);
@@ -12856,4 +12857,274 @@ async function renderDelivery() {
       <tbody>${linhas}</tbody></table></div>
       ${semCredito ? `<div style="font-size:12.5px;color:#999;margin-top:8px">${semCredito} venda(s) mais recentes ainda sem dia de depósito — o arquivo da Getnet chega na manhã seguinte.</div>` : ''}
     </div>`;
+}
+
+// =========================================================
+// PAINEL DELIVERY — análise da unidade Delivery P10
+// =========================================================
+// Duas visões lado a lado, sem misturar:
+//  • VENDAS (PDV): o que o Parque 10 vendeu, em bruto, pelo dia da venda.
+//    O PDV só diz a loja de cada venda desde 10/08/2026 (PDL_LOJA_DESDE).
+//  • FINANCEIRO: o que entrou e saiu do caixa da unidade Delivery no mês — a
+//    mesma base da DRE por unidade (lançamentos pagos, pela data de pagamento).
+// Os dois não batem de propósito: o iFood paga uma semana depois e desconta a
+// comissão. O quadro "iFood semana a semana" mostra essa diferença.
+const PDL_LOJA_DESDE = '2026-08-10';
+const PDL_IFOOD_CNPJ = '28798646000185';   // os repasses do iFood chegam por Pix deste CNPJ
+const PDL_CANAIS = [
+  ['ifood', 'iFood'], ['cartao', 'Cartão (balcão)'], ['pix', 'Pix (balcão)'], ['dinheiro', 'Dinheiro'],
+  ['voucher', 'Vale-refeição'], ['conta_assinada', 'Conta assinada'], ['outro', 'Outros']
+];
+const PDL_MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+let _pdlChart = null;
+
+const pdlMesSeguinte = m => { const [a, b] = m.split('-').map(Number); return b === 12 ? `${a + 1}-01` : `${a}-${String(b + 1).padStart(2, '0')}`; };
+const pdlNomeMes = m => { const [a, b] = m.split('-').map(Number); return `${PDL_MESES[b - 1]}/${a}`; };
+const pdlDiaSemana = d => new Date(d + 'T12:00:00').getDay();   // 0 = domingo
+const pdlAviso = (cor, txt) => `<div style="border-left:4px solid ${cor};background:#fafbfc;border-radius:0 8px 8px 0;padding:12px 16px;font-size:13.5px;color:#555;margin-bottom:12px">${txt}</div>`;
+
+function carregarPainelDelivery() {
+  const sel = document.getElementById('pdl-mes');
+  if (sel && !sel.options.length) {
+    const meses = [];
+    for (let m = PDL_LOJA_DESDE.slice(0, 7); m <= dlvHoje().slice(0, 7); m = pdlMesSeguinte(m)) meses.push(m);
+    sel.innerHTML = meses.reverse().map(m => `<option value="${m}">${pdlNomeMes(m)}</option>`).join('');
+  }
+  pdlGerar();
+}
+
+async function pdlGerar() {
+  if (!(await garantirSessao())) return;
+  const mes = (document.getElementById('pdl-mes') || {}).value;
+  const box = document.getElementById('pdl-conteudo'), cards = document.getElementById('pdl-cards'), aviso = document.getElementById('pdl-aviso');
+  if (!mes || !box) return;
+  cards.innerHTML = ''; aviso.innerHTML = '';
+  const DEL = dlvUnidadeId();
+  if (!DEL) { box.innerHTML = pdlAviso('#e74c3c', 'Não encontrei a unidade Delivery P10 no cadastro de unidades.'); return; }
+
+  const [a, b] = mes.split('-').map(Number);
+  const ini = `${mes}-01`, fim = `${mes}-${String(new Date(a, b, 0).getDate()).padStart(2, '0')}`;
+  const hoje = dlvHoje();
+  // Semanas do iFood: as que começam (segunda) dentro do mês. A venda de cada uma é
+  // da semana inteira, mesmo que o domingo caia no mês seguinte. Fica de fora semana
+  // que ainda não começou e semana anterior a 10/08 (sem loja no PDV, a venda viria
+  // zerada e o repasse inteiro pareceria taxa do iFood).
+  const segundas = [];
+  for (let d = ini; d <= fim; d = dlvSomaDias(d, 1))
+    if (pdlDiaSemana(d) === 1 && d >= PDL_LOJA_DESDE && d <= hoje) segundas.push(d);
+  const ultDom = segundas.length ? dlvSomaDias(segundas[segundas.length - 1], 6) : fim;
+  const vFim = ultDom > fim ? ultDom : fim;
+
+  box.innerHTML = '<div class="sem-dados" style="padding:30px;color:#999"><i class="fas fa-spinner fa-spin"></i> Montando o painel…</div>';
+  let vendas, lanc, expandidos;
+  try {
+    const db = obterSupabase();
+    [vendas, lanc] = await Promise.all([
+      ccFetchPaginado(() => db.from('pdv_vendas').select('id,data_hora_utc,forma_pagamento,valor_bruto,raw')
+        .ilike('unidade_nome', '%Parque%')
+        .gte('data_hora_utc', ini + 'T00:00:00-04:00').lte('data_hora_utc', vFim + 'T23:59:59-04:00')),
+      ccFetchPaginado(() => db.from('lancamentos').select('id,tipo,valor,plano_conta_id,descricao,data_pagamento,tem_rateio,unidade_id')
+        .eq('status', 'pago').eq('unidade_id', DEL)
+        .gte('data_pagamento', ini).lte('data_pagamento', dlvSomaDias(vFim, 7)))
+    ]);
+    // Conta com rateio entra pelas categorias da divisão, como na DRE.
+    expandidos = await _expandirRateios(db, lanc.filter(l => (l.data_pagamento || '').slice(0, 10) <= fim));
+  } catch (e) {
+    console.error(e);
+    box.innerHTML = pdlAviso('#e74c3c', 'Não consegui ler os dados agora. Tente de novo em instantes.');
+    return;
+  }
+
+  // ---- vendas (PDV) ----
+  const diaManaus = iso => new Date(Date.parse(iso) - 4 * 3600000).toISOString().slice(0, 10);
+  const comandaDe = v => (v.raw && v.raw.comanda_id) ? 'c' + v.raw.comanda_id : 'v' + v.id;   // pedido = comanda
+  const canalDe = f => PDL_CANAIS.some(c => c[0] === f) ? f : 'outro';
+  const porCanal = {};
+  PDL_CANAIS.forEach(([k]) => { porCanal[k] = { valor: 0, cmd: new Set() }; });
+  const todas = new Set(), porDia = {}, ifoodSemana = {};
+  let total = 0;
+  vendas.forEach(v => {
+    if (v.forma_pagamento === 'cortesia') return;
+    const dia = diaManaus(v.data_hora_utc), val = Number(v.valor_bruto) || 0;
+    const c = canalDe(v.forma_pagamento), cmd = comandaDe(v);
+    if (c === 'ifood') {
+      const seg = dlvSomaDias(dia, -((pdlDiaSemana(dia) + 6) % 7));
+      const s = (ifoodSemana[seg] = ifoodSemana[seg] || { valor: 0, cmd: new Set() });
+      s.valor += val; s.cmd.add(cmd);
+    }
+    if (dia < ini || dia > fim) return;
+    porCanal[c].valor += val; porCanal[c].cmd.add(cmd);
+    todas.add(cmd); total += val;
+    const pd = (porDia[dia] = porDia[dia] || { ifood: 0, balcao: 0 });
+    if (c === 'ifood') pd.ifood += val; else pd.balcao += val;
+  });
+  const pedidos = todas.size, ticket = pedidos ? total / pedidos : 0;
+
+  // ---- financeiro da unidade no mês ----
+  const planoDe = id => planoContas.find(p => p.id === id) || null;
+  const nomePlano = id => (planoDe(id) || {}).nome || '(sem categoria)';
+  const grupoDe = id => { const p = planoDe(id); if (!p) return '(sem categoria)'; const g = planoDe(p.grupo_id); return g ? g.nome : p.nome; };
+  let entrou = 0, saiu = 0;
+  const entrouCat = {}, saiuGrupo = {};
+  expandidos.forEach(l => {
+    const v = Number(l.valor) || 0;
+    if (l.tipo === 'receber') { entrou += v; const k = nomePlano(l.plano_conta_id); entrouCat[k] = (entrouCat[k] || 0) + v; }
+    else {
+      saiu += v;
+      const G = (saiuGrupo[grupoDe(l.plano_conta_id)] = saiuGrupo[grupoDe(l.plano_conta_id)] || { total: 0, cats: {} });
+      G.total += v; G.cats[nomePlano(l.plano_conta_id)] = (G.cats[nomePlano(l.plano_conta_id)] || 0) + v;
+    }
+  });
+
+  // ---- iFood semana a semana: venda × repasse da quarta seguinte ----
+  const ehRepasse = l => l.tipo === 'receber' &&
+    (String(l.descricao || '').includes(PDL_IFOOD_CNPJ) || /ifood/i.test(nomePlano(l.plano_conta_id)));
+  const semanas = segundas.map(s => {
+    const dom = dlvSomaDias(s, 6), v = ifoodSemana[s] || { valor: 0, cmd: new Set() };
+    const reps = lanc.filter(l => ehRepasse(l) && l.data_pagamento >= dlvSomaDias(s, 7) && l.data_pagamento <= dlvSomaDias(s, 13));
+    return {
+      s, dom, venda: v.valor, pedidos: v.cmd.size,
+      rep: reps.reduce((x, l) => x + (Number(l.valor) || 0), 0),
+      dataRep: reps.length ? reps.map(l => l.data_pagamento.slice(0, 10)).sort()[0] : null,
+      aberta: dom >= hoje, esperando: dlvSomaDias(s, 9) >= hoje
+    };
+  });
+
+  // ---- tela ----
+  const brl = v => ccBRL(dlvR2(v));
+  const pct = (x, t) => t ? (x / t * 100).toFixed(1).replace('.', ',') + '%' : '—';
+  const num = 'text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums';
+  const pe  = 'padding:10px 14px;border-top:2px solid #eee;font-weight:700';
+  const vazio = n => `<tr><td colspan="${n}" style="color:#999;text-align:center">Nada neste mês.</td></tr>`;
+  const avisos = [];
+  if (ini < PDL_LOJA_DESDE)
+    avisos.push('O PDV só informa a loja de cada venda a partir de <strong>10/08/2026</strong>. As vendas de antes disso não aparecem aqui.');
+  if (ini < DLV_INICIO)
+    avisos.push('Até 31/08/2026, o cartão e o Pix do balcão do Parque 10 entraram no financeiro do <strong>Teatro</strong>. ' +
+                'A separação para o Delivery vale a partir de 01/09, então neste mês o "Entrou no financeiro" é praticamente só o iFood e o dinheiro.');
+  aviso.innerHTML = avisos.map(t => pdlAviso('#3498db', t)).join('');
+
+  const card = (rot, val, cor, sub) => `
+    <div style="flex:1;min-width:170px;background:#fff;border:1px solid #eee;border-radius:10px;padding:14px 16px;">
+      <div style="font-size:12px;color:#95a5a6;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">${rot}</div>
+      <div style="font-size:20px;font-weight:700;margin-top:4px;color:${cor};font-variant-numeric:tabular-nums;">${val}</div>
+      ${sub ? `<div style="font-size:12px;color:#999;margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+  const res = entrou - saiu;
+  cards.innerHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+    ${card('Vendido no PDV', brl(total), '#2c3e50', 'bruto, sem cortesias')}
+    ${card('Pedidos', pedidos.toLocaleString('pt-BR'), '#2c3e50', `ticket médio ${brl(ticket)}`)}
+    ${card('Entrou no financeiro', brl(entrou), '#1a7a3c', 'receitas pagas da unidade')}
+    ${card('Despesas pagas', brl(saiu), '#c0392b', entrou ? pct(saiu, entrou) + ' do que entrou' : '')}
+    ${card('Resultado de caixa', brl(res), res >= 0 ? '#1a7a3c' : '#c0392b', 'entrou − despesas')}
+  </div>`;
+
+  const secao = (titulo, sub, corpo) => `<div class="tabela-box" style="margin-bottom:18px;">
+    <h3 style="margin:0 0 4px;">${titulo}</h3>${sub ? `<div style="font-size:12.5px;color:#888;margin-bottom:10px">${sub}</div>` : ''}${corpo}</div>`;
+
+  const linhasCanal = PDL_CANAIS.filter(([k]) => porCanal[k].valor > 0.004)
+    .sort((x, y) => porCanal[y[0]].valor - porCanal[x[0]].valor)
+    .map(([k, rot]) => {
+      const c = porCanal[k], n = c.cmd.size;
+      return `<tr><td>${rot}</td><td style="${num}">${n.toLocaleString('pt-BR')}</td><td style="${num}">${brl(c.valor)}</td>
+        <td style="${num}">${pct(c.valor, total)}</td><td style="${num}">${brl(n ? c.valor / n : 0)}</td></tr>`;
+    }).join('');
+
+  const comRep = semanas.filter(w => w.rep > 0 && w.venda > 0);   // total só com as duas pontas
+  const sV = comRep.reduce((x, w) => x + w.venda, 0), sR = comRep.reduce((x, w) => x + w.rep, 0);
+  const linhasIfood = semanas.map(w => {
+    let repTxt, taxaTxt = '<span style="color:#ccc">—</span>', pctTxt = taxaTxt;
+    if (w.rep > 0) {
+      repTxt = `${brl(w.rep)}<div style="font-size:11.5px;color:#999">em ${ccDT(w.dataRep)}</div>`;
+      taxaTxt = brl(w.venda - w.rep); pctTxt = `<strong>${pct(w.venda - w.rep, w.venda)}</strong>`;
+    } else if (w.aberta)    repTxt = '<span style="color:#999">semana em andamento</span>';
+    else if (w.esperando)   repTxt = `<span style="color:#c9930a">⏳ cai em ${ccDT(dlvSomaDias(w.s, 9))}</span>`;
+    else repTxt = '<span style="color:#e67e22" title="Procure o Pix do iFood daquela quarta: pode ter sido lançado em outra unidade.">não achei na unidade Delivery</span>';
+    return `<tr><td style="white-space:nowrap">${ccDT(w.s).slice(0, 5)} a ${ccDT(w.dom).slice(0, 5)}</td>
+      <td style="${num}">${w.pedidos.toLocaleString('pt-BR')}</td><td style="${num}">${brl(w.venda)}</td>
+      <td style="${num}">${repTxt}</td><td style="${num}">${taxaTxt}</td><td style="${num}">${pctTxt}</td></tr>`;
+  }).join('');
+
+  const linhasEntrou = Object.entries(entrouCat).sort((x, y) => y[1] - x[1])
+    .map(([k, v]) => `<tr><td>${k}</td><td style="${num}">${brl(v)}</td><td style="${num}">${pct(v, entrou)}</td></tr>`).join('');
+  const linhasSaiu = Object.entries(saiuGrupo).sort((x, y) => y[1].total - x[1].total)
+    .map(([g, G]) => `<tr>
+      <td><details><summary style="cursor:pointer">${g}</summary>
+        <div style="margin:6px 0 2px 14px;font-size:12.5px;color:#666;line-height:1.7">
+          ${Object.entries(G.cats).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k}: ${brl(v)}`).join('<br>')}</div></details></td>
+      <td style="${num};vertical-align:top">${brl(G.total)}</td>
+      <td style="${num};vertical-align:top">${pct(G.total, saiu)}</td>
+      <td style="${num};vertical-align:top">${pct(G.total, total)}</td></tr>`).join('');
+
+  box.innerHTML =
+    secao('<i class="fas fa-store"></i> Vendas por canal',
+      'Pelo PDV, em bruto, no dia da venda. Um pedido pago em duas formas conta nas duas.',
+      `<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1 1 380px;overflow-x:auto"><table class="tabela">
+          <thead><tr><th>Canal</th><th style="text-align:right">Pedidos</th><th style="text-align:right">Vendido</th>
+            <th style="text-align:right">%</th><th style="text-align:right">Ticket médio</th></tr></thead>
+          <tbody>${linhasCanal || vazio(5)}</tbody>
+          <tfoot><tr><td style="${pe}">Total</td><td style="${pe};${num}">${pedidos.toLocaleString('pt-BR')}</td>
+            <td style="${pe};${num}">${brl(total)}</td><td style="${pe}"></td><td style="${pe};${num}">${brl(ticket)}</td></tr></tfoot>
+        </table></div>
+        <div style="flex:1 1 420px;min-width:280px;height:260px"><canvas id="pdl-chart"></canvas></div>
+      </div>`) +
+    secao('🛵 iFood semana a semana',
+      'Venda da semana (segunda a domingo) × repasse que o iFood deposita na quarta seguinte. A diferença é o que o iFood ficou: comissão, taxa de pagamento e promoções.',
+      `<div style="overflow-x:auto"><table class="tabela">
+        <thead><tr><th>Semana</th><th style="text-align:right">Pedidos</th><th style="text-align:right">Vendido no iFood</th>
+          <th style="text-align:right">Repasse</th><th style="text-align:right">iFood ficou com</th><th style="text-align:right">%</th></tr></thead>
+        <tbody>${linhasIfood || vazio(6)}</tbody>
+        ${comRep.length ? `<tfoot><tr><td style="${pe}">Semanas com repasse</td><td style="${pe}"></td>
+          <td style="${pe};${num}">${brl(sV)}</td><td style="${pe};${num}">${brl(sR)}</td>
+          <td style="${pe};${num}">${brl(sV - sR)}</td><td style="${pe};${num}">${pct(sV - sR, sV)}</td></tr></tfoot>` : ''}
+      </table></div>`) +
+    `<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1 1 340px">${secao('<i class="fas fa-arrow-circle-down" style="color:#1a7a3c"></i> Entrou no financeiro',
+        'Receitas pagas da unidade Delivery no mês, por categoria.',
+        `<table class="tabela"><thead><tr><th>Categoria</th><th style="text-align:right">Valor</th><th style="text-align:right">%</th></tr></thead>
+          <tbody>${linhasEntrou || vazio(3)}</tbody>
+          <tfoot><tr><td style="${pe}">Total</td><td style="${pe};${num}">${brl(entrou)}</td><td style="${pe}"></td></tr></tfoot></table>`)}</div>
+      <div style="flex:1.4 1 440px">${secao('<i class="fas fa-arrow-circle-up" style="color:#c0392b"></i> Despesas pagas',
+        'Por grupo do plano de contas. Clique no grupo para ver as categorias.',
+        `<div style="overflow-x:auto"><table class="tabela"><thead><tr><th>Grupo</th><th style="text-align:right">Valor</th>
+          <th style="text-align:right">% das despesas</th><th style="text-align:right">% do vendido</th></tr></thead>
+          <tbody>${linhasSaiu || vazio(4)}</tbody>
+          <tfoot><tr><td style="${pe}">Total</td><td style="${pe};${num}">${brl(saiu)}</td><td style="${pe}"></td>
+            <td style="${pe};${num}">${pct(saiu, total)}</td></tr></tfoot></table></div>`)}</div>
+    </div>
+    <div style="font-size:12.5px;color:#888;margin:2px 2px 0;line-height:1.6">
+      <strong>Por que "vendido" e "entrou" não batem:</strong> o vendido é o que o PDV registrou, em bruto, no dia da venda.
+      O que entrou é o dinheiro que chegou, já sem as taxas: o iFood deposita uma semana depois e desconta a parte dele,
+      e a Getnet desconta a taxa da maquininha.
+    </div>`;
+
+  if (typeof Chart !== 'undefined') {
+    if (_pdlChart) _pdlChart.destroy();
+    const dias = [];
+    for (let d = ini > PDL_LOJA_DESDE ? ini : PDL_LOJA_DESDE; d <= fim && d <= hoje; d = dlvSomaDias(d, 1)) dias.push(d);
+    _pdlChart = new Chart(document.getElementById('pdl-chart'), {
+      type: 'bar',
+      data: {
+        labels: dias.map(d => d.slice(8)),
+        datasets: [
+          { label: 'iFood',  data: dias.map(d => dlvR2((porDia[d] || {}).ifood || 0)),  backgroundColor: '#e74c3c', stack: 'v' },
+          { label: 'Balcão', data: dias.map(d => dlvR2((porDia[d] || {}).balcao || 0)), backgroundColor: '#34495e', stack: 'v' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+        plugins: {
+          legend: { position: 'top', labels: { color: '#444', font: { size: 11 } } },
+          tooltip: { callbacks: { title: it => ccDT(dias[it[0].dataIndex]) + ' · ' + ccDiaSemana(dias[it[0].dataIndex]),
+                                  label: c => ` ${c.dataset.label}: ${formatarMoeda(c.raw)}` } }
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false }, ticks: { color: '#999' } },
+          y: { stacked: true, grid: { color: 'rgba(0,0,0,.06)' },
+               ticks: { color: '#999', callback: v => 'R$ ' + Number(v).toLocaleString('pt-BR') } }
+        }
+      }
+    });
+  }
 }
