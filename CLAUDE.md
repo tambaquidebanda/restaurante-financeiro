@@ -46,6 +46,9 @@ repositório do estoque — zero ocorrências).
 - `card_transacoes` — vendas transacionais da Getnet
 - `card_lotes_pagamento` — lotes de liquidação
 - `card_taxas` — taxas por modalidade
+- `conc_delivery_dia` — separação da receita do balcão do Parque 10 para a
+  unidade Delivery (uma linha por dia de depósito; partes e Pix movidos, para
+  desfazer). Ver aba "Delivery P10" em Conciliação PDV.
 
 **PDV / Caixa (iComanda)**
 - `pdv_vendas` — vendas importadas do PDV

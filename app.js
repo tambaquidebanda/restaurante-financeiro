@@ -268,6 +268,10 @@ async function iniciarApp(usuario) {
   const paginaInicial = paginasValidas.includes(hashPagina) ? hashPagina : 'inicio';
   irPara(paginaInicial);
 
+  // Separa a receita do balcão do Parque 10 (Delivery) dos depósitos que já chegaram.
+  // Roda em segundo plano, depois que a tela inicial carregou; se falhar, só avisa no console.
+  setTimeout(() => { dlvSeparar().catch(e => console.warn('Separação Delivery P10:', e)); }, 10000);
+
   // Renova a sessão automaticamente a cada 4 minutos para evitar expiração por inatividade
   setInterval(async () => {
     const sessao = await obterSessao();
@@ -3835,13 +3839,14 @@ async function ccFetchPaginado(build, chave) {
 let ccTab = 'cartao';
 function ccRenderAtual() {
   if (ccTab === 'caixa') renderCaixaEspecie();
+  else if (ccTab === 'delivery') renderDelivery();
   else renderCartao();
 }
 function ccMudarTab(t) {
   ccTab = t;
-  const views = { cartao: 'cc-view-cartao', caixa: 'cc-view-caixa' };
+  const views = { cartao: 'cc-view-cartao', caixa: 'cc-view-caixa', delivery: 'cc-view-delivery' };
   Object.entries(views).forEach(([key, id]) => { const el = document.getElementById(id); if (el) el.style.display = t === key ? '' : 'none'; });
-  [['cc-tab-cartao', 'cartao'], ['cc-tab-caixa', 'caixa']].forEach(([id, key]) => {
+  [['cc-tab-cartao', 'cartao'], ['cc-tab-caixa', 'caixa'], ['cc-tab-delivery', 'delivery']].forEach(([id, key]) => {
     const el = document.getElementById(id); if (!el) return;
     el.style.borderBottomColor = t === key ? '#2c3e50' : 'transparent'; el.style.color = t === key ? '#2c3e50' : '#999';
   });
@@ -3880,7 +3885,7 @@ async function computeEtapaA(db, de, ate) {
 
   const dd = (s, off) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + off); return x.toISOString().slice(0, 10); };
   const gnet = await ccFetchPaginado(() => db.from('card_transacoes')
-    .select('id,data_venda,data_hora_utc,valor_bruto,bandeira,modalidade,terminal').eq('tipo_registro', 'venda')
+    .select('id,data_venda,data_hora_utc,valor_bruto,valor_liquido,bandeira,modalidade,terminal').eq('tipo_registro', 'venda')
     .gte('data_venda', dd(de, -1)).lte('data_venda', dd(ate, 1)));
 
   const manaus = iso => iso ? new Date(Date.parse(iso) - 4 * 3600000).toISOString() : '';
@@ -3915,6 +3920,7 @@ async function computeEtapaA(db, de, ate) {
     }
     if (best) {
       best.g.used = true;
+      p.gid = best.g.id;   // o par da Getnet (a separação do Delivery usa o líquido dele)
       if (best.g.term && p.caixa_ext) {
         const t = (termCaixa[best.g.data] = termCaixa[best.g.data] || {});
         const c = (t[best.g.term] = t[best.g.term] || {});
@@ -3983,7 +3989,8 @@ async function computeEtapaA(db, de, ate) {
   gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || novoD()); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
   // Soma o bruto de TODAS as vendas Getnet por dia (não só as sem par) para a coluna de valor.
   gnet.forEach(g => { if (!g.data_venda) return; const D = (dias[g.data_venda] = dias[g.data_venda] || novoD()); D.gnetBruto += (Number(g.valor_bruto) || 0); });
-  return { dias };
+  // pdv (com p.gid) e gnet vão junto para a separação do Delivery P10.
+  return { dias, pdv, gnet };
 }
 
 // ---- Caixa (quem registrou a venda no PDV) --------------------------------
@@ -4098,12 +4105,12 @@ async function computePix(db, de, ate) {
   let banco = [];
   try {
     banco = await ccFetchPaginado(() => db.from('lancamentos')
-      .select('valor,data_pagamento').eq('tipo', 'receber').ilike('descricao', '%PIX%')
+      .select('id,valor,data_pagamento').eq('tipo', 'receber').ilike('descricao', '%PIX%')
       .gte('data_pagamento', dd(de, -1)).lte('data_pagamento', dd(ate, 1)));
   } catch (e) {}
   // Pool de Pix recebidos no banco por valor (centavos)
   const pool = new Map();
-  banco.forEach(b => { const k = Math.round((Number(b.valor) || 0) * 100); const d = (b.data_pagamento || '').slice(0, 10); if (!d) return; (pool.get(k) || pool.set(k, []).get(k)).push({ data: d, used: false }); });
+  banco.forEach(b => { const k = Math.round((Number(b.valor) || 0) * 100); const d = (b.data_pagamento || '').slice(0, 10); if (!d) return; (pool.get(k) || pool.set(k, []).get(k)).push({ id: b.id, data: d, used: false }); });
   // Mesma regra da Etapa A: ordem fixa = resultado sempre igual.
   pool.forEach(arr => arr.sort((a, b) => a.data.localeCompare(b.data)));
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
@@ -4112,7 +4119,7 @@ async function computePix(db, de, ate) {
     const k = Math.round((p.valor_bruto || 0) * 100); const arr = pool.get(k); if (!arr) return false;
     let best = null;
     for (const b of arr) { if (b.used) continue; const gap = Math.abs(diaDiff(p.dia, b.data)); if (gap > 1) continue; if (!best || gap < best.gap) best = { b, gap }; }
-    if (best) { best.b.used = true; return true; }
+    if (best) { best.b.used = true; p.bid = best.b.id; return true; }   // bid = lançamento do banco
     return false;
   };
   const dias = {};
@@ -4141,7 +4148,7 @@ async function computePix(db, de, ate) {
     D.semBanco.forEach(p => { const r = resMap.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else still.push(p); });
     D.semBanco = still;
   });
-  return { dias };
+  return { dias, pdv };
 }
 
 let ccaDetalhe = {};
@@ -7071,20 +7078,28 @@ async function desfazerImportacaoOFX(fitId, i) {
     // para pendente, que é o que a pessoa espera de um "Desfazer".
     const temCol = await temColunaOfxCriado(db);
     const cols   = temCol ? 'id, descricao, ofx_criado' : 'id, descricao';
-    const { data: lanc } = await q(
-      db.from('lancamentos').select(cols).eq('ofx_id', fitId).maybeSingle()
+    // Um depósito pode ter virado VÁRIOS lançamentos com o mesmo ofx_id ("Dividir
+    // por unidade" na importação, ou a parte do Delivery P10). Antes isto era um
+    // maybeSingle(), que falha com mais de um: nada era desfeito, a tela dizia
+    // "Conciliação desfeita" e liberava a transação para ser importada de novo —
+    // duplicando o depósito. Agora trata todas as partes juntas.
+    const { data: lancs, error: eLanc } = await q(
+      db.from('lancamentos').select(cols).eq('ofx_id', fitId)
     );
-    if (lanc && lanc.ofx_criado === true) {
-      await q(db.from('lancamentos').delete().eq('id', lanc.id));
-      await marcarOrigemExclusao(db, lanc.id, 'Desfazer conciliação do extrato (lançamento criado pelo OFX)');
-    } else if (lanc) {
-      await q(db.from('lancamentos').update({
-        ofx_id:         null,
-        status:         'pendente',
-        data_pagamento: null,
-        valor_pago:     0
-      }).eq('id', lanc.id));
-      naoApagou = lanc.descricao || 'A conta';
+    if (eLanc) { mostrarToast('Não consegui desfazer: ' + eLanc.message, 'erro'); return; }
+    for (const lanc of (lancs || [])) {
+      if (lanc.ofx_criado === true) {
+        await q(db.from('lancamentos').delete().eq('id', lanc.id));
+        await marcarOrigemExclusao(db, lanc.id, 'Desfazer conciliação do extrato (lançamento criado pelo OFX)');
+      } else {
+        await q(db.from('lancamentos').update({
+          ofx_id:         null,
+          status:         'pendente',
+          data_pagamento: null,
+          valor_pago:     0
+        }).eq('id', lanc.id));
+        naoApagou = lanc.descricao || 'A conta';
+      }
     }
   }
 
@@ -12491,4 +12506,354 @@ function renderExcluidos() {
       <td style="font-size:.9em;color:#666">${txt(l.origem) || '<span style="color:#bbb">—</span>'}</td>
     </tr>`;
   }).join('');
+}
+
+// =========================================================
+// DELIVERY P10 — separa a receita do balcão do Parque 10
+// =========================================================
+// As maquininhas do Parque 10 depositam na mesma conta da loja do Centro, e o
+// depósito da Getnet era lançado inteiro no Teatro. Aqui, dia a dia:
+//  • Cartão: cada venda do Parque 10 no PDV é casada com a da Getnet pelo mesmo
+//    motor da Conciliação PDV (computeEtapaA). Vale o líquido exato daquela venda
+//    (taxa da maquininha); no crédito sai também a antecipação, que a Getnet só
+//    informa no total do dia. Venda sem par usa a taxa média do dia.
+//    O total vira um pedaço do depósito do dia: o depósito do Teatro diminui e
+//    nasce um lançamento com o mesmo ofx_id na unidade Delivery — o saldo do
+//    banco e a conciliação Getnet → Banco continuam batendo.
+//  • Pix: cada Pix do Parque 10 casado com o banco (computePix) troca de unidade.
+// Tudo fica registrado em conc_delivery_dia, com desfazer por dia.
+// Vale de DLV_INICIO em diante (decisão do usuário em 10/09/2026).
+const DLV_INICIO  = '2026-09-01';
+const DLV_ANTECIP = 0.0145;   // custo da antecipação no crédito (taxa contratada, confirmada pelo usuário)
+const DLV_SUFIXO  = ' — parte Delivery P10';
+const DLV_JANELA  = 35;       // quantos dias para trás a separação ainda confere
+const DLV_TOL_EXTRATO = 0.02; // o extrato do dia pode ter até 2% a menos que o arquivo da Getnet
+
+const dlvR2 = v => Math.round((Number(v) || 0) * 100) / 100;
+const dlvHoje = () => new Date(Date.now() - 4 * 3600000).toISOString().slice(0, 10);   // dia em Manaus
+const dlvSomaDias = (s, n) => { const x = new Date(s + 'T12:00:00'); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
+function dlvUnidadeId() {
+  const u = (unidades || []).find(x => /delivery|p10/i.test(x.nome || ''));
+  return u ? u.id : null;
+}
+async function dlvEmail(db) {
+  try { const { data: { session } } = await db.auth.getSession(); return (session && session.user && session.user.email) || ''; }
+  catch (_) { return ''; }
+}
+
+// Trava o dia por 5 minutos, para duas pessoas não separarem o mesmo dia juntas.
+// Devolve a linha (lida no momento da trava) ou null se outra pessoa está nele.
+async function dlvTravar(db, D) {
+  await db.from('conc_delivery_dia').upsert({ data: D }, { onConflict: 'data', ignoreDuplicates: true });
+  const agora = new Date().toISOString();
+  const { data, error } = await db.from('conc_delivery_dia')
+    .update({ trava_ate: new Date(Date.now() + 5 * 60000).toISOString() })
+    .eq('data', D).or(`trava_ate.is.null,trava_ate.lt."${agora}"`).select('*');
+  if (error || !data || !data.length) return null;
+  return data[0];
+}
+async function dlvSoltar(db, D, campos, email) {
+  await db.from('conc_delivery_dia')
+    .update({ ...(campos || {}), trava_ate: null, atualizado_por: email || null, atualizado_em: new Date().toISOString() })
+    .eq('data', D);
+}
+
+// Tira `v` do maior depósito da Getnet do dia D (do tipo certo) e cria a parte do Delivery.
+async function dlvCortar(db, D, modalidade, v, DEL) {
+  const temCol = await temColunaOfxCriado(db);
+  const { data: deps, error } = await q(db.from('lancamentos')
+    .select('id,descricao,valor,vencimento,plano_conta_id,banco_id,ofx_id,unidade_id,forma_pagamento_id,centro_custo_id' + (temCol ? ',ofx_criado' : ''))
+    .eq('tipo', 'receber').eq('status', 'pago').eq('data_pagamento', D).ilike('descricao', '%GETNET%'));
+  if (error) throw error;
+  const nomePlano = id => ((planoContas.find(p => p.id === id) || {}).nome || '').toLowerCase();
+  const livres = (deps || []).filter(l => l.unidade_id !== DEL && !String(l.descricao || '').includes('parte Delivery')
+                                          && Number(l.valor) - v >= 0.01);
+  const doTipo = l => modalidade === 'deb'
+    ? /d[ée]bito/.test(nomePlano(l.plano_conta_id)) || /DEBITO/i.test(l.descricao || '')
+    : /ANTECIPA/i.test(l.descricao || '') || /cr[ée]dito/.test(nomePlano(l.plano_conta_id));
+  const maior = (a, b) => Number(b.valor) - Number(a.valor);
+  const alvo = livres.filter(doTipo).sort(maior)[0] || livres.sort(maior)[0];
+  if (!alvo) throw new Error(`nenhum depósito da Getnet em ${ccDT(D)} comporta ${ccBRL(v)}`);
+
+  // .eq('valor', ...) = só corta se ninguém mexeu no depósito desde que eu li.
+  const { data: mudou, error: e1 } = await q(db.from('lancamentos')
+    .update({ valor: dlvR2(Number(alvo.valor) - v) }).eq('id', alvo.id).eq('valor', alvo.valor).select('id'));
+  if (e1 || !mudou || !mudou.length) throw new Error('o depósito mudou enquanto eu separava — tento de novo depois');
+
+  const parte = {
+    descricao: String(alvo.descricao || '').trim() + DLV_SUFIXO,
+    valor: v, vencimento: alvo.vencimento || D, data_pagamento: D, status: 'pago', tipo: 'receber',
+    plano_conta_id: alvo.plano_conta_id, banco_id: alvo.banco_id, ofx_id: alvo.ofx_id, unidade_id: DEL,
+    forma_pagamento_id: alvo.forma_pagamento_id, centro_custo_id: alvo.centro_custo_id,
+    observacoes: 'Parte do balcão do Parque 10, separada automaticamente (Conciliação PDV › Delivery P10). ' +
+                 (modalidade === 'cred' ? 'Crédito: líquido da taxa da Getnet e da antecipação.' : 'Débito: líquido da taxa da Getnet.')
+  };
+  if (temCol) parte.ofx_criado = alvo.ofx_criado === true;
+  const { data: nova, error: e2 } = await q(db.from('lancamentos').insert(parte).select('id').single());
+  if (e2 || !nova) {
+    await q(db.from('lancamentos').update({ valor: alvo.valor }).eq('id', alvo.id));   // devolve o corte
+    throw new Error('não consegui gravar a parte do Delivery' + (e2 ? ': ' + e2.message : ''));
+  }
+  return { id: nova.id, origem_id: alvo.id, valor: v, modalidade };
+}
+
+// Devolve a parte ao depósito de onde saiu e apaga a parte.
+// Parte já apagada por fora: só devolve o valor ao depósito.
+// Depósito que não existe mais (desfeito no extrato): não mexe — devolve false se a parte ficou sozinha.
+async function dlvJuntar(db, parte, motivo) {
+  const { data: pr } = await q(db.from('lancamentos').select('id,valor').eq('id', parte.id).maybeSingle());
+  const { data: pai } = await q(db.from('lancamentos').select('id,valor').eq('id', parte.origem_id).maybeSingle());
+  if (!pai) return !pr;
+  const volta = pr ? Number(pr.valor) : Number(parte.valor);
+  await q(db.from('lancamentos').update({ valor: dlvR2(Number(pai.valor) + volta) }).eq('id', pai.id));
+  if (pr) {
+    await q(db.from('lancamentos').delete().eq('id', pr.id));
+    await marcarOrigemExclusao(db, pr.id, motivo);
+  }
+  return true;
+}
+
+// Se alguém apagou uma parte (Excluir no Contas a Receber) ou desfez o depósito no
+// extrato, junta o que sobrou de volta e deixa o dia livre para separar de novo.
+async function dlvConferirPartes(db, linhas, email) {
+  const ativas = linhas.filter(r => r.status === 'ativo' && r.cartao_feito && (r.partes || []).length);
+  const ids = ativas.flatMap(r => r.partes.map(p => p.id));
+  if (!ids.length) return;
+  const existe = new Set();
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await q(db.from('lancamentos').select('id').in('id', ids.slice(i, i + 150)));
+    if (error) return;   // sem certeza, não mexe em nada
+    (data || []).forEach(x => existe.add(x.id));
+  }
+  for (const r of ativas) {
+    if (r.partes.every(p => existe.has(p.id))) continue;
+    const trava = await dlvTravar(db, r.data); if (!trava) continue;
+    let ok = true;
+    for (const p of trava.partes || []) ok = (await dlvJuntar(db, p, 'Separação Delivery refeita (uma parte tinha sido apagada)')) && ok;
+    await dlvSoltar(db, r.data, ok ? { cartao_feito: false, partes: [], cartao_liquido: 0 } : null, email);
+    if (ok) { r.cartao_feito = false; r.partes = []; }
+  }
+}
+
+let _dlvRodando = null;
+// Uma execução por vez nesta aba: quem chamar enquanto roda recebe o mesmo resultado.
+function dlvSeparar() {
+  if (!_dlvRodando) _dlvRodando = _dlvSeparar().finally(() => { _dlvRodando = null; });
+  return _dlvRodando;
+}
+
+async function _dlvSeparar() {
+  const db = obterSupabase();
+  const DEL = dlvUnidadeId();
+  if (!DEL) return { erro: 'Não encontrei a unidade Delivery P10 no cadastro de unidades.' };
+  const t0 = await db.from('conc_delivery_dia').select('*').gte('data', DLV_INICIO).order('data');
+  if (t0.error) return { semTabela: true };
+  const email = await dlvEmail(db);
+  await dlvConferirPartes(db, t0.data || [], email);
+  const reg = new Map((t0.data || []).map(r => [r.data, r]));
+
+  const hoje = dlvHoje();
+  let de = dlvSomaDias(hoje, -DLV_JANELA);
+  if (de < DLV_INICIO) de = DLV_INICIO;
+  const [A, B, P] = await Promise.all([computeEtapaA(db, de, hoje), computeEtapaB(db, de, hoje), computePix(db, de, hoje)]);
+  if (A.erro || B.erro) return { erro: 'Não consegui ler as vendas do PDV ou os arquivos da Getnet agora. Tente de novo em instantes.' };
+
+  // Em que dia cada venda cai no banco: a mesma regra da Conciliação PDV
+  // (próximo dia de pagamento da Getnet depois do dia da venda).
+  const credDates = B.creditDates || [];
+  const prox = sd => credDates.find(cd => cd > sd) || null;
+  const ant  = D => { let p = null; for (const cd of credDates) { if (cd >= D) break; p = cd; } return p; };
+
+  // Líquido de cada venda da Getnet, e a taxa média do dia para as vendas sem par.
+  const gPorId = new Map((A.gnet || []).map(g => [g.id, g]));
+  const modDe = g => String(g.modalidade || '').startsWith('credito') ? 'cred' : 'deb';
+  const taxaDia = {};
+  (A.gnet || []).forEach(g => {
+    const t = (taxaDia[g.data_venda] = taxaDia[g.data_venda] || { deb: [0, 0], cred: [0, 0] });
+    t[modDe(g)][0] += Number(g.valor_liquido) || 0; t[modDe(g)][1] += Number(g.valor_bruto) || 0;
+  });
+  const fatorMedio = (sd, m) => {
+    const t = taxaDia[sd] && taxaDia[sd][m];
+    return t && t[1] > 0 ? t[0] / t[1] : (m === 'cred' ? 0.975 : 0.99);
+  };
+
+  const dias = {};
+  const dia = D => (dias[D] = dias[D] || { data: D, cartao: null, pix: [] });
+  const doP10 = x => ccLojaCurta(x.unidade_nome) === 'Parque 10';
+  let semCredito = 0;
+  (A.pdv || []).filter(p => doP10(p) && p.dia >= DLV_INICIO).forEach(p => {
+    const D = prox(p.dia);
+    if (!D) { semCredito++; return; }
+    const c = (dia(D).cartao = dia(D).cartao || { bruto: 0, n: 0, exatas: 0, deb: 0, cred: 0, diasVenda: new Set() });
+    const g = p.ok && p.gid ? gPorId.get(p.gid) : null;
+    const bruto = Number(p.valor_bruto) || 0;
+    let m, liq;
+    if (g) { m = modDe(g); liq = Number(g.valor_liquido) || 0; c.exatas++; }
+    else   { m = p.mod === 'credito' ? 'cred' : 'deb'; liq = bruto * fatorMedio(p.dia, m); }
+    c[m] += m === 'cred' ? liq * (1 - DLV_ANTECIP) : liq;
+    c.bruto += bruto; c.n++; c.diasVenda.add(p.dia);
+  });
+
+  // Pix do Parque 10 que casaram com um Pix do banco (só os da categoria Pix).
+  const jaMovidos = new Set();
+  reg.forEach(r => (r.pix || []).forEach(x => jaMovidos.add(x.id)));
+  const planoPix = new Set(planoContas.filter(pc => (pc.nome || '').trim().toLowerCase() === 'pix').map(pc => pc.id));
+  const pixIds = [...new Set((P.pdv || []).filter(p => doP10(p) && p.dia >= DLV_INICIO && p.bid).map(p => p.bid))];
+  for (let i = 0; i < pixIds.length; i += 150) {
+    const { data } = await q(db.from('lancamentos').select('id,data_pagamento,valor,unidade_id,plano_conta_id').in('id', pixIds.slice(i, i + 150)));
+    (data || []).forEach(l => {
+      const D = (l.data_pagamento || '').slice(0, 10);
+      if (jaMovidos.has(l.id) || l.unidade_id === DEL || !planoPix.has(l.plano_conta_id) || D < DLV_INICIO) return;
+      dia(D).pix.push({ id: l.id, unidade_anterior: l.unidade_id || null, valor: Number(l.valor) || 0 });
+    });
+  }
+
+  const plano = [];
+  const datas = [...new Set([...Object.keys(dias), ...reg.keys()])].sort().reverse();
+  for (const D of datas) {
+    const r = reg.get(D), d = dias[D] || { data: D, cartao: null, pix: [] };
+    const item = { data: D, cartao: d.cartao, motivo: '' };
+    plano.push(item);
+    if (r && r.status === 'desfeito') continue;
+
+    let cartaoPronto = false;
+    if (d.cartao && !(r && r.cartao_feito)) {
+      const eb = B.dias && B.dias[D], p0 = ant(D);
+      if (de !== DLV_INICIO && !(p0 && p0 >= de)) item.motivo = 'dia antigo demais para conferir automaticamente';
+      else if (!eb || !(eb.rec > 0)) item.motivo = 'o extrato do banco deste dia ainda não foi importado';
+      else if (eb.esp > 0 && eb.esp - eb.rec > Math.max(1, eb.esp * DLV_TOL_EXTRATO)) item.motivo = 'o extrato do dia tem menos depósito da Getnet do que o arquivo dela';
+      else if ([...d.cartao.diasVenda].some(sd => !(A.dias[sd] && A.dias[sd].gnetBruto > 0))) item.motivo = 'o arquivo da Getnet dessas vendas ainda não chegou';
+      else cartaoPronto = true;
+    }
+    if (!cartaoPronto && !d.pix.length) continue;
+
+    const trava = await dlvTravar(db, D);
+    if (!trava) { item.motivo = 'outra pessoa está separando este dia agora'; continue; }
+    if (trava.status === 'desfeito') { await dlvSoltar(db, D, null, email); continue; }
+    const upd = { partes: trava.partes || [], pix: trava.pix || [] };
+    const feitas = [];
+    try {
+      if (cartaoPronto && !trava.cartao_feito) {
+        const c = d.cartao;
+        for (const [m, v] of [['deb', dlvR2(c.deb)], ['cred', dlvR2(c.cred)]]) {
+          if (v >= 0.01) feitas.push(await dlvCortar(db, D, m, v, DEL));
+        }
+        Object.assign(upd, {
+          cartao_feito: true, partes: upd.partes.concat(feitas),
+          cartao_bruto: dlvR2(c.bruto), cartao_liquido: dlvR2(feitas.reduce((s, x) => s + x.valor, 0)),
+          vendas_n: c.n, vendas_exatas: c.exatas
+        });
+      }
+    } catch (e) {
+      // Não deixa corte pela metade: o que já foi cortado volta para o depósito.
+      for (const f of feitas) await dlvJuntar(db, f, 'Separação Delivery interrompida por erro');
+      item.motivo = 'não consegui separar: ' + (e.message || e);
+      delete upd.cartao_feito; upd.partes = trava.partes || [];
+    }
+    const naLinha = new Set(upd.pix.map(x => x.id));
+    for (const px of d.pix) {
+      if (naLinha.has(px.id)) continue;
+      const { data: ok } = await q(db.from('lancamentos').update({ unidade_id: DEL }).eq('id', px.id).select('id'));
+      if (ok && ok.length) upd.pix = upd.pix.concat([px]);
+    }
+    upd.pix_n = upd.pix.length;
+    upd.pix_valor = dlvR2(upd.pix.reduce((s, x) => s + x.valor, 0));
+    await dlvSoltar(db, D, upd, email);
+  }
+
+  const t1 = await db.from('conc_delivery_dia').select('*').gte('data', DLV_INICIO);
+  const final = new Map(((t1 && t1.data) || []).map(r => [r.data, r]));
+  return { plano, final, semCredito };
+}
+
+async function dlvDesfazerDia(D) {
+  if (!confirm(`Desfazer a separação de ${ccDT(D)}?\n\nA parte do Delivery volta para o depósito do Teatro e os Pix voltam para a unidade de antes. ` +
+               'O sistema não separa este dia de novo até você clicar em "Refazer".')) return;
+  const db = obterSupabase(), email = await dlvEmail(db), DEL = dlvUnidadeId();
+  const r = await dlvTravar(db, D);
+  if (!r) { mostrarToast('Este dia está sendo separado agora. Tente de novo em alguns minutos.', 'erro'); return; }
+  const orfas = [];
+  for (const p of r.partes || []) if (!(await dlvJuntar(db, p, 'Separação Delivery desfeita pelo usuário'))) orfas.push(p);
+  for (const x of r.pix || []) await q(db.from('lancamentos').update({ unidade_id: x.unidade_anterior }).eq('id', x.id).eq('unidade_id', DEL));
+  await dlvSoltar(db, D, { status: 'desfeito', cartao_feito: false, partes: orfas, pix: [], cartao_liquido: 0, pix_n: 0, pix_valor: 0 }, email);
+  mostrarToast(orfas.length
+    ? `Desfeito, mas ${orfas.length} parte(s) ficaram porque o depósito original não existe mais.`
+    : `Separação de ${ccDT(D)} desfeita.`, orfas.length ? 'erro' : 'sucesso');
+  renderDelivery();
+}
+
+async function dlvRefazerDia(D) {
+  const db = obterSupabase();
+  const { error } = await db.from('conc_delivery_dia').update({ status: 'ativo' }).eq('data', D);
+  if (error) { mostrarToast('Não consegui: ' + error.message, 'erro'); return; }
+  renderDelivery();
+}
+
+async function renderDelivery() {
+  const box = document.getElementById('dlv-conteudo'), cards = document.getElementById('dlv-cards');
+  if (!box) return;
+  if (!(await garantirSessao())) return;
+  box.innerHTML = '<div class="sem-dados" style="padding:30px;color:#999"><i class="fas fa-spinner fa-spin"></i> Conferindo as vendas do Parque 10…</div>';
+  if (cards) cards.innerHTML = '';
+  let res;
+  try { res = await dlvSeparar(); } catch (e) { console.error(e); res = { erro: e.message || String(e) }; }
+  const aviso = (cor, txt) => `<div style="border-left:4px solid ${cor};background:#fafbfc;border-radius:0 8px 8px 0;padding:12px 16px;font-size:13.5px;color:#555">${txt}</div>`;
+  if (res.semTabela) { box.innerHTML = aviso('#e74c3c', '<strong>Falta rodar o SQL no Supabase</strong> (arquivo <code>SQL_DELIVERY_SEPARACAO.sql</code>). Enquanto isso, nada é separado.'); return; }
+  if (res.erro)      { box.innerHTML = aviso('#e74c3c', res.erro); return; }
+
+  const { plano, final, semCredito } = res;
+  const brl = v => ccBRL(dlvR2(v));   // ccBRL não limita a 2 casas: soma de centavos viraria "3.087,797"
+  let totCartao = 0, totPix = 0, nDias = 0;
+  final.forEach(r => { if (r.status === 'ativo') { totCartao += Number(r.cartao_liquido) || 0; totPix += Number(r.pix_valor) || 0; if (r.cartao_feito || r.pix_n) nDias++; } });
+  const card = (rot, val, cor, sub) => `
+    <div style="flex:1;min-width:170px;background:#fff;border:1px solid #eee;border-radius:10px;padding:14px 16px;">
+      <div style="font-size:12px;color:#95a5a6;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">${rot}</div>
+      <div style="font-size:20px;font-weight:700;margin-top:4px;color:${cor || '#2c3e50'};font-variant-numeric:tabular-nums;">${val}</div>
+      ${sub ? `<div style="font-size:12px;color:#999;margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+  if (cards) cards.innerHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 14px;">
+    ${card('Cartão → Delivery', brl(totCartao), '#1a7a3c', 'líquido, desde 01/09/2026')}
+    ${card('Pix → Delivery', brl(totPix), '#1a7a3c')}
+    ${card('Total separado', brl(totCartao + totPix), '#2c3e50', `${nDias} dia(s)`)}
+  </div>`;
+
+  if (!plano.length) {
+    box.innerHTML = aviso('#3498db', 'Ainda não há vendas do Parque 10 no cartão ou no Pix desde 01/09/2026 para separar.');
+    return;
+  }
+  const linhas = plano.map(it => {
+    const r = final.get(it.data) || null;
+    const feito = r && r.cartao_feito;
+    let sit, acao = '';
+    if (r && r.status === 'desfeito') {
+      sit = '<span style="color:#999">↩️ Desfeito</span>';
+      acao = `<button class="btn btn-outline btn-sm" onclick="dlvRefazerDia('${it.data}')">Refazer</button>`;
+    } else if (it.cartao && !feito) {
+      sit = `<span style="color:#c9930a">⏳ Aguardando</span><div style="font-size:11.5px;color:#999">${it.motivo || 'falta alguma informação do dia'}</div>`;
+    } else {
+      sit = '<span style="color:#1a7a3c">✅ Separado</span>';
+      if (r && ((r.partes || []).length || (r.pix || []).length))
+        acao = `<button class="btn btn-outline btn-sm" onclick="dlvDesfazerDia('${it.data}')">Desfazer</button>`;
+    }
+    const n = feito ? r.vendas_n : (it.cartao ? it.cartao.n : 0);
+    const ex = feito ? r.vendas_exatas : (it.cartao ? it.cartao.exatas : 0);
+    const bruto = feito ? r.cartao_bruto : (it.cartao ? it.cartao.bruto : 0);
+    const vendas = n ? `${n} venda(s) · ${brl(bruto)}<div style="font-size:11.5px;color:#999">${ex} casada(s) uma a uma${n - ex ? `, ${n - ex} pela taxa média` : ''}</div>` : '<span style="color:#ccc">—</span>';
+    const liq = feito ? `<strong>${brl(r.cartao_liquido)}</strong>`
+              : it.cartao ? `<span style="color:#999">previsto ${brl(it.cartao.deb + it.cartao.cred)}</span>` : '<span style="color:#ccc">—</span>';
+    const pix = r && r.pix_n ? `${r.pix_n} · ${brl(r.pix_valor)}` : '<span style="color:#ccc">—</span>';
+    return `<tr>
+      <td style="white-space:nowrap">${ccDT(it.data)}<div style="font-size:11.5px;color:#999">${ccDiaSemana(it.data)}</div></td>
+      <td>${vendas}</td><td style="text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums">${liq}</td>
+      <td style="text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums">${pix}</td>
+      <td>${sit}</td><td style="text-align:right">${acao}</td></tr>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="tabela-box"><div style="overflow-x:auto"><table>
+      <thead><tr><th>Dia do depósito</th><th>Vendas no cartão (Parque 10)</th>
+        <th style="text-align:right">Cartão → Delivery</th><th style="text-align:right">Pix → Delivery</th>
+        <th>Situação</th><th></th></tr></thead>
+      <tbody>${linhas}</tbody></table></div>
+      ${semCredito ? `<div style="font-size:12.5px;color:#999;margin-top:8px">${semCredito} venda(s) mais recentes ainda sem dia de depósito — o arquivo da Getnet chega na manhã seguinte.</div>` : ''}
+    </div>`;
 }

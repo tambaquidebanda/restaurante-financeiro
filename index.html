@@ -836,6 +836,7 @@
         <div style="display:flex;gap:4px;border-bottom:2px solid #eee;margin:4px 0 12px;">
           <button id="cc-tab-cartao" onclick="ccMudarTab('cartao')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid #2c3e50;color:#2c3e50;">💳 Cartão &amp; Pix</button>
           <button id="cc-tab-caixa" onclick="ccMudarTab('caixa')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">💵 Dinheiro</button>
+          <button id="cc-tab-delivery" onclick="ccMudarTab('delivery')" style="border:0;background:none;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#999;">🛵 Delivery P10</button>
         </div>
         <!-- seletor de período legado (oculto — a aba Cartão navega por mês no calendário) -->
         <div class="filtros" style="display:none">
@@ -859,6 +860,19 @@
               <div id="car-detalhe" style="border:1px solid #eee;border-radius:12px;padding:14px;background:#fdfdfd;min-height:200px"><div class="sem-dados" style="padding:20px;color:#999">Selecione um dia no calendário.</div></div>
             </div>
           </div>
+        </div>
+
+        <!-- ===== Aba: DELIVERY P10 — separa a receita do balcão do Parque 10 ===== -->
+        <div id="cc-view-delivery" style="display:none">
+          <div class="info-box">
+            <i class="fas fa-lightbulb"></i>
+            <strong>Receita do balcão do Parque 10.</strong> As maquininhas do Parque 10 depositam junto com a loja do Centro. Aqui o sistema separa, dia a dia, a parte do Delivery:
+            no <strong>cartão</strong>, o líquido de cada venda (taxa da Getnet e, no crédito, a antecipação de 1,45%) sai do depósito do dia e vira um lançamento na unidade Delivery;
+            no <strong>Pix</strong>, cada Pix do Parque 10 muda de unidade. O saldo do banco não muda.
+            <br><span style="font-size:12px;color:#888">Acontece sozinho quando alguém abre o financeiro, a partir de 01/09/2026. Um dia só é separado quando o extrato do banco e o arquivo da Getnet daquele dia já chegaram.</span>
+          </div>
+          <div id="dlv-cards"></div>
+          <div id="dlv-conteudo"><div class="sem-dados" style="padding:30px;color:#999">Carregando…</div></div>
         </div>
 
         <!-- ===== Aba: CAIXA (espécie) — confere o dinheiro do dia → recebimento ===== -->
