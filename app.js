@@ -11512,21 +11512,28 @@ function pkAvisos(per, pacotes) {
   }
 
   const semCat = todas.filter(r => r._semCategoria);
-  if (semCat.length)
+  if (semCat.length) {
+    const rec  = semCat.filter(r => r.tipo === 'Entrada').reduce((s, r) => s + r.valor, 0);
+    const desp = semCat.filter(r => r.tipo !== 'Entrada').reduce((s, r) => s - r.valor, 0);
     add('atencao', 'sem-cat', 'Lançamento pago sem categoria',
-        `${semCat.length} lançamento(s) não têm categoria do plano de contas. ` +
-        'Eles entram nos totais, mas caem num grupo “sem categoria” na DRE — a contabilidade vai perguntar o que são.',
+        `${semCat.length} lançamento(s) não têm categoria do plano de contas — total de <strong>${formatarMoeda(rec + desp)}</strong> ` +
+        `(receitas: ${formatarMoeda(rec)} | despesas: ${formatarMoeda(desp)}). ` +
+        'Eles entram nos totais deste pacote e, no Excel, caem num grupo “sem categoria” — a contabilidade vai perguntar o que são. ' +
+        'A DRE do sistema deixa esses valores de fora; por isso o resultado dela é diferente do deste pacote.',
         semCat, { acao: 'categorizar' });
+  }
 
   const ratDif = todas.filter(r => r._rateioDif !== null);
   if (ratDif.length) {
     const dif = ratDif.reduce((s, r) => s + r._rateioDif, 0);
-    add('atencao', 'rateio-dif', 'Rateio que não bate com o valor pago',
+    // Mesma cor, ícone e título do card da DRE. Continua 'atencao' por dentro:
+    // não entra na contagem de pontos graves, porque não muda os totais do pacote.
+    add('atencao', 'rateio-dif', 'Rateio inconsistente — soma das categorias ≠ valor pago',
         `${ratDif.length} lançamento(s) divididos em categorias cuja soma é diferente do valor pago ` +
         `(diferença total no rateio: ${dif >= 0 ? '+' : ''}${formatarMoeda(dif)}). ` +
         'Não muda os totais deste pacote, mas deixa a divisão por categoria errada na DRE. ' +
         'O ideal é corrigir a divisão para somar o valor pago.',
-        ratDif, { layout: 'rateio' });
+        ratDif, { layout: 'rateio', tom: 'grave', ico: 'scale-unbalanced' });
   }
 
   const viaRat = todas.filter(r => r._viaRateio);
@@ -11675,11 +11682,11 @@ const PK_ACAO = {   // ícone, texto do botão, texto de "abrir a lista"
 };
 
 function pkCardAviso(a, abertos) {
-  const t = PK_TOM[a.nivel] || PK_TOM.info;
+  const t = PK_TOM[a.tom || a.nivel] || PK_TOM.info;   // `tom` muda só a cor, não o nível
   const rotLista = a.acao ? PK_ACAO[a.acao][2] : 'Ver';
   return `<div style="background:${t.fundo};border:1px solid ${t.borda};border-radius:10px;padding:14px 16px;margin-bottom:12px;">
     <div style="display:flex;align-items:flex-start;gap:12px;">
-      <i class="fas fa-${t.ico}" style="color:${t.borda};font-size:20px;flex-shrink:0;margin-top:2px;"></i>
+      <i class="fas fa-${a.ico || t.ico}" style="color:${t.borda};font-size:20px;flex-shrink:0;margin-top:2px;"></i>
       <div style="flex:1;">
         <strong style="color:${t.texto};font-size:13px;">${a.titulo}</strong>
         <p style="margin:4px 0 0;font-size:13px;color:#555;line-height:1.55;">${a.texto}</p>
@@ -11701,7 +11708,7 @@ function pkVerItens(idAviso) {
   const det = document.getElementById(idAviso);
   if (!av || !det || !det.open) return;
   const box = det.querySelector('.pk-itens');
-  const t   = PK_TOM[av.nivel] || PK_TOM.info;
+  const t   = PK_TOM[av.tom || av.nivel] || PK_TOM.info;
   const LIM = 300;
   const rateio = av.layout === 'rateio';
 
