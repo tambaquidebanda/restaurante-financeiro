@@ -11357,9 +11357,9 @@ function pkMontar(per, pagos, pendentes, transf, rateios) {
     const v   = Number(l.valor) || 0;
     const pc  = pcPorId.get(l.plano_conta_id);
     // Lançamento com rateio guarda a categoria nos itens da divisão, não nele mesmo.
-    const rat = l.tem_rateio ? (rateios[l.id] || { soma: 0, n: 0 }) : null;
-    const viaRateio = !l.plano_conta_id && !!(rat && rat.n);
-    return {
+    const rat = l.tem_rateio ? (rateios[l.id] || { soma: 0, n: 0, itens: [] }) : null;
+    const viaRateio = !!(rat && rat.n && rat.soma > 0.01);
+    const o = {
       data: dt, mes: dt.slice(0,7), tipo: ent ? 'Entrada' : 'Saída',
       grupo: grupoDe(l.plano_conta_id) || (ent ? 'Receitas sem categoria' : 'Despesas sem categoria'),
       conta: pc ? pc.nome : '(sem categoria)',
@@ -11380,6 +11380,24 @@ function pkMontar(per, pagos, pendentes, transf, rateios) {
       _semBanco: !l.banco_id,
       _semUnidade: !l.unidade_id, _negativo: v < 0
     };
+    // No Excel, conta com rateio sai em uma linha por categoria da divisão, como na DRE.
+    // O total fica ancorado no valor pago; o centavo do arredondamento vai na última linha.
+    if (viaRateio) {
+      const fator = v / rat.soma, n = rat.itens.length;
+      let acum = 0;
+      o._partes = rat.itens.map((it, i) => {
+        const val = i < n - 1 ? Math.round(it.valor * fator * 100) / 100
+                              : Math.round((v - acum) * 100) / 100;
+        acum += val;
+        const pcI = pcPorId.get(it.plano_conta_id);
+        return { ...o,
+          grupo: grupoDe(it.plano_conta_id) || (ent ? 'Receitas sem categoria' : 'Despesas sem categoria'),
+          conta: pcI ? pcI.nome : '(sem categoria)',
+          hist:  `${o.hist} [rateio ${i + 1} de ${n}]`,
+          valor: ent ? val : -val };
+      });
+    }
+    return o;
   };
 
   const emp = new Map();   // id da empresa -> pacote
@@ -11403,7 +11421,6 @@ function pkMontar(per, pagos, pendentes, transf, rateios) {
     if (origem === 'banco' && unidEmp && unidEmp !== id)
       p.diverg.push([r, 'A conta bancária é de ' + p.nome + ', mas a unidade é de outra empresa']);
     else if (r._semCategoria) p.diverg.push([r, 'Lançamento pago sem categoria no plano de contas']);
-    else if (r._viaRateio) p.diverg.push([r, 'Dividido em várias categorias (rateio) — aqui sai sem categoria']);
     else if (id === PK_NAO_IDENT) p.diverg.push([r, 'Sem conta bancária, sem unidade e sem centro de custo']);
     else if (r._rateioDif !== null) p.diverg.push([r, 'Rateio não bate com o valor pago']);
     else if (r._negativo) p.diverg.push([r, 'Valor negativo (estorno ou devolução) — confira o histórico']);
@@ -11515,8 +11532,9 @@ function pkAvisos(per, pacotes) {
   const viaRat = todas.filter(r => r._viaRateio);
   if (viaRat.length)
     add('info', 'rateio-info', 'Contas divididas em várias categorias (rateio)',
-        `${viaRat.length} lançamento(s) têm a categoria na divisão (rateio), e não no próprio lançamento. ` +
-        'Estão categorizados e entram certo na DRE do sistema, mas no Excel deste pacote saem no grupo “sem categoria”.',
+        `${viaRat.length} lançamento(s) estão divididos entre várias categorias (rateio). ` +
+        'Na aba Razao do Excel, cada um sai em uma linha por categoria, com o mesmo ID e a marca ' +
+        '“[rateio 1 de N]” no histórico. A soma das linhas é o valor pago.',
         viaRat, { acao: null });
 
   const divergUnid = pacotes.flatMap(p => p.diverg.filter(d => d[1].startsWith('A conta bancária')).map(d => d[0]));
@@ -11754,12 +11772,13 @@ function pkVerItens(idAviso) {
 async function pkBuscarRateios(db, ids) {
   const mapa = {};
   for (let i = 0; i < ids.length; i += 150) {
-    const { data, error } = await q(db.from('rateio_itens').select('lancamento_id, valor')
+    const { data, error } = await q(db.from('rateio_itens').select('lancamento_id, plano_conta_id, valor')
       .in('lancamento_id', ids.slice(i, i + 150)));
     if (error) throw error;   // sem isso, todo rateio apareceria como "sem itens"
     (data || []).forEach(r => {
-      const m = mapa[r.lancamento_id] || (mapa[r.lancamento_id] = { soma: 0, n: 0 });
+      const m = mapa[r.lancamento_id] || (mapa[r.lancamento_id] = { soma: 0, n: 0, itens: [] });
       m.soma += Number(r.valor) || 0; m.n++;
+      m.itens.push({ plano_conta_id: r.plano_conta_id, valor: Number(r.valor) || 0 });
     });
   }
   return mapa;
@@ -11846,7 +11865,8 @@ function _pkPresentes(linhas, ehReceita) {
 
 function pkMontarWorkbook(p) {
   const meses = _pkDados.per.meses;
-  const L = p.razaoLinhas, T = p.transf;
+  // Linhas do Excel: a conta com rateio vira uma linha por categoria (ver pkMontar).
+  const L = p.razaoLinhas.flatMap(r => r._partes || [r]), T = p.transf;
   const ultRz = Math.max(PK_RZ_INI, PK_RZ_INI + L.length - 1);
   const ultTr = Math.max(PK_TR_INI, PK_TR_INI + T.length - 1);
 
@@ -11858,8 +11878,11 @@ function pkMontarWorkbook(p) {
   });
   L.forEach(r => {
     if (!(r.mes in porGrupo)) return;
-    porGrupo[r.mes][r.grupo] = (porGrupo[r.mes][r.grupo] || 0) + r.valor;
-    const k = r.grupo + '|' + r.conta;
+    // A chave leva o tipo: grupo que tem entrada e saída (ex.: estorno lançado numa
+    // conta de receita) não pode misturar as duas, senão entra nas duas seções da DRE.
+    const g = r.tipo + '|' + r.grupo;
+    porGrupo[r.mes][g] = (porGrupo[r.mes][g] || 0) + r.valor;
+    const k = g + '|' + r.conta;
     porConta[r.mes][k] = (porConta[r.mes][k] || 0) + r.valor;
     const b = r.banco + '|' + r.tipo;
     porBanco[r.mes][b] = (porBanco[r.mes][b] || 0) + r.valor;
@@ -11873,7 +11896,7 @@ function pkMontarWorkbook(p) {
       trMes[t.mes].bOut[t.origem] = (trMes[t.mes].bOut[t.origem] || 0) + t.valor; }
   });
 
-  const ctx = { p, meses, ultRz, ultTr, porGrupo, porConta, porBanco, porForn, trMes };
+  const ctx = { p, L, meses, ultRz, ultTr, porGrupo, porConta, porBanco, porForn, trMes };
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, _pkAbaCapa(ctx),          'Capa');
   XLSX.utils.book_append_sheet(wb, _pkAbaDre(ctx),           'DRE');
@@ -11905,7 +11928,7 @@ function _pkAbaRazao(ctx) {
     ['Data','Mes','Tipo','Grupo','Conta','Historico','Fornecedor','Unidade','Centro de Custo',
      'Conta Bancaria','Forma de Pagamento','Documento','Valor (R$)','Origem','Observacoes','ID do lancamento']
   ];
-  p.razaoLinhas.forEach(r => A.push([
+  ctx.L.forEach(r => A.push([
     _pkData(r.data), r.mes, r.tipo, r.grupo, r.conta, r.hist, r.forn, r.unid, r.cc,
     r.banco, r.forma, r.doc, _pkNum(r.valor), r.origem, r.obs, r.id
   ]));
@@ -12019,6 +12042,9 @@ function _pkAbaCapa(ctx) {
   A.push([]);
   A.push(['NUMEROS DESTE PACOTE']);
   A.push(['Lancamentos no razao', p.razaoLinhas.length]);
+  const temRateio = ctx.L.length !== p.razaoLinhas.length;
+  if (temRateio)
+    A.push(['Linhas no razao', ctx.L.length + ' (conta dividida em categorias ocupa uma linha por categoria)']);
   A.push(['Total de entradas', _pkNum(p.entradas)]);
   A.push(['Total de saidas',   _pkNum(p.saidas)]);
   A.push(['Resultado de caixa',_pkNum(p.entradas - p.saidas)]);
@@ -12035,9 +12061,14 @@ function _pkAbaCapa(ctx) {
                'Reduzem a propria conta de despesa, em vez de virar receita.']);
   A.push(['4', 'TRANSFERENCIAS ENTRE CONTAS PROPRIAS nao sao receita nem despesa. Ficam em aba separada ' +
                'e aparecem na DRE apenas como memoria, fora do resultado.']);
-  ((_pkDados && _pkDados.avisos) || []).forEach((av, i) => {
+  let nRes = 5;
+  if (temRateio)
+    A.push([String(nRes++), 'RATEIO. Conta dividida entre varias categorias aparece na aba Razao em uma linha ' +
+               'por categoria, com o mesmo ID do lancamento e a marca [rateio 1 de N] no historico. ' +
+               'A soma dessas linhas e o valor pago.']);
+  ((_pkDados && _pkDados.avisos) || []).forEach(av => {
     const marca = av.nivel === 'grave' ? 'ATENCAO: ' : '';
-    A.push([String(5 + i), marca + av.titulo.toUpperCase() + '. ' + av.texto.replace(/<[^>]*>/g, '')]);
+    A.push([String(nRes++), marca + av.titulo.toUpperCase() + '. ' + av.texto.replace(/<[^>]*>/g, '')]);
   });
   return _pkWs(A, [30, 100]);
 }
@@ -12057,13 +12088,15 @@ function _pkAbaDre(ctx) {
   const linhaGrupo = (grupo, sinal) => {
     const row = A.length + 1;
     const cells = ['    ' + grupo];
+    const tipo = sinal > 0 ? 'Entrada' : 'Saída', chave = tipo + '|' + grupo;
     meses.forEach(m => {
-      const v = sinal * (ctx.porGrupo[m][grupo] || 0);
+      const v = sinal * (ctx.porGrupo[m][chave] || 0);
       const f = (sinal < 0 ? '-' : '') +
-        `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}")`;
+        `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}",` +
+        `${_pkFxRz('C', ultRz)},"${tipo}")`;
       cells.push(_pkNum(v, f));
     });
-    const tot = meses.reduce((s, m) => s + sinal * (ctx.porGrupo[m][grupo] || 0), 0);
+    const tot = meses.reduce((s, m) => s + sinal * (ctx.porGrupo[m][chave] || 0), 0);
     cells.push(_pkNum(tot, `SUM(B${row}:${cUltMes}${row})`));
     A.push(cells);
     return row;
@@ -12081,11 +12114,11 @@ function _pkAbaDre(ctx) {
   };
 
   A.push(['ENTRADAS  (recebimentos)']);
-  const rowsE = _pkPresentes(p.razaoLinhas, true).map(g => linhaGrupo(g[0], 1));
+  const rowsE = _pkPresentes(ctx.L, true).map(g => linhaGrupo(g[0], 1));
   const linEnt = linhaTotal('(=) TOTAL DE ENTRADAS', rowsE);
   A.push([]);
   A.push(['SAIDAS  (pagamentos)']);
-  const rowsS = _pkPresentes(p.razaoLinhas, false).map(g => linhaGrupo(g[0], -1));
+  const rowsS = _pkPresentes(ctx.L, false).map(g => linhaGrupo(g[0], -1));
   const linSai = linhaTotal('(=) TOTAL DE SAIDAS', rowsS);
   A.push([]);
 
@@ -12140,17 +12173,19 @@ function _pkAbaDetalhe(ctx, ehReceita) {
   A.push(['Grupo / Conta'].concat(meses.map(pkRotuloMes), ['Total do periodo']));
 
   const linhasGrupo = [];
-  _pkPresentes(p.razaoLinhas, ehReceita).forEach(function (par) {
-    const grupo = par[0], contas = par[1];
+  const tipo = ehReceita ? 'Entrada' : 'Saída';
+  const critTipo = `,${_pkFxRz('C', ultRz)},"${tipo}"`;
+  _pkPresentes(ctx.L, ehReceita).forEach(function (par) {
+    const grupo = par[0], contas = par[1], chave = tipo + '|' + grupo;
     let row = A.length + 1;
     let cells = [grupo];
     meses.forEach(m => {
-      const v = sinal * (ctx.porGrupo[m][grupo] || 0);
+      const v = sinal * (ctx.porGrupo[m][chave] || 0);
       const f = (sinal < 0 ? '-' : '') +
-        `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}")`;
+        `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}"${critTipo})`;
       cells.push(_pkNum(v, f));
     });
-    cells.push(_pkNum(meses.reduce((s, m) => s + sinal * (ctx.porGrupo[m][grupo] || 0), 0),
+    cells.push(_pkNum(meses.reduce((s, m) => s + sinal * (ctx.porGrupo[m][chave] || 0), 0),
                       `SUM(B${row}:${cUltMes}${row})`));
     A.push(cells); linhasGrupo.push(row);
 
@@ -12158,13 +12193,13 @@ function _pkAbaDetalhe(ctx, ehReceita) {
       row = A.length + 1;
       cells = ['      ' + conta];
       meses.forEach(m => {
-        const v = sinal * (ctx.porConta[m][grupo + '|' + conta] || 0);
+        const v = sinal * (ctx.porConta[m][chave + '|' + conta] || 0);
         const f = (sinal < 0 ? '-' : '') +
           `SUMIFS(${_pkFxRz('M', ultRz)},${_pkFxRz('B', ultRz)},"${m}",` +
-          `${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}",${_pkFxRz('E', ultRz)},"${_pkAspas(conta)}")`;
+          `${_pkFxRz('D', ultRz)},"${_pkAspas(grupo)}",${_pkFxRz('E', ultRz)},"${_pkAspas(conta)}"${critTipo})`;
         cells.push(_pkNum(v, f));
       });
-      cells.push(_pkNum(meses.reduce((s, m) => s + sinal * (ctx.porConta[m][grupo + '|' + conta] || 0), 0),
+      cells.push(_pkNum(meses.reduce((s, m) => s + sinal * (ctx.porConta[m][chave + '|' + conta] || 0), 0),
                         `SUM(B${row}:${cUltMes}${row})`));
       A.push(cells);
     });
@@ -12194,7 +12229,7 @@ function _pkAbaBancos(ctx) {
   A.push(['Conta bancaria'].concat(meses.map(pkRotuloMes), ['Total do periodo']));
 
   const usados = {};
-  p.razaoLinhas.forEach(r => { usados[r.banco] = (usados[r.banco] || 0) + 1; });
+  ctx.L.forEach(r => { usados[r.banco] = (usados[r.banco] || 0) + 1; });
   const meus = (p.bancosIds || []).map(id => (bancosCadastrados.find(b => b.id === id) || {}).nome).filter(Boolean);
   const ordem = meus.filter(n => usados[n]).concat(Object.keys(usados).filter(n => meus.indexOf(n) < 0).sort());
 
