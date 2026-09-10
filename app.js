@@ -2500,6 +2500,7 @@ async function salvarLancamento(tipo, btnEl) {
   fecharModal(`modal-${tipo}`);
   carregarLancamentos(tipo);
   carregarDashboard();
+  pkAposSalvar(lancamentoId);   // se veio da conferência do Pacote Contábil, atualiza a lista
   } catch (err) {
     restaurarComTimeout();
     mostrarToast('Erro ao salvar. Verifique sua conexão e tente novamente.', 'erro');
@@ -11067,9 +11068,13 @@ async function verificarIntegracoesPendentes() {
 // =========================================================
 let _pkEmpresas = [];     // cont_empresas
 let _pkDados    = null;   // resultado da última geração
+let _pkBruto    = null;   // o que veio do banco na última geração (para atualizar sem buscar tudo)
 let _pkTabelaOk = true;   // false = a tabela cont_empresas ainda não existe
 
 const PK_NAO_IDENT = '__nao_ident__';
+const PK_CAMPOS = 'id,descricao,valor,tipo,status,vencimento,data_pagamento,banco_id,unidade_id,' +
+                  'centro_custo_id,plano_conta_id,fornecedor_id,forma_pagamento_id,tipo_documento,' +
+                  'numero_pedido,observacoes,tem_rateio';
 const PK_MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
                        'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const PK_MES_CURTO  = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
@@ -11291,9 +11296,7 @@ async function pkGerar() {
 
   try {
     const db = obterSupabase();
-    const campos = 'id,descricao,valor,tipo,status,vencimento,data_pagamento,banco_id,unidade_id,' +
-                   'centro_custo_id,plano_conta_id,fornecedor_id,forma_pagamento_id,tipo_documento,' +
-                   'numero_pedido,observacoes';
+    const campos = PK_CAMPOS;
 
     document.getElementById('pk-carregando-txt').textContent = 'Buscando os lançamentos pagos…';
     const pagos = await fetchTodosPag((de, ate) => db.from('lancamentos').select(campos)
@@ -11310,8 +11313,12 @@ async function pkGerar() {
       .select('id,data,valor,descricao,banco_origem_id,banco_destino_id')
       .gte('data', per.ini).lte('data', per.fim).order('id').range(de, ate));
 
+    document.getElementById('pk-carregando-txt').textContent = 'Conferindo os rateios…';
+    const rateios = await pkBuscarRateios(db, pagos.filter(l => l.tem_rateio).map(l => l.id));
+
     document.getElementById('pk-carregando-txt').textContent = 'Organizando por empresa…';
-    _pkDados = pkMontar(per, pagos, pendentes, transf);
+    _pkBruto = { per, pagos, pendentes, transf, rateios };
+    _pkDados = pkMontar(per, pagos, pendentes, transf, rateios);
     pkRenderResultado();
   } catch (e) {
     console.error(e);
@@ -11323,7 +11330,8 @@ async function pkGerar() {
 }
 
 // Monta a estrutura de dados do pacote. Não toca no banco.
-function pkMontar(per, pagos, pendentes, transf) {
+function pkMontar(per, pagos, pendentes, transf, rateios) {
+  rateios = rateios || {};
   const mapaBanco = new Map(), mapaUnid = new Map(), mapaCentro = new Map();
   _pkEmpresas.forEach(e => {
     (e.bancos_ids   || []).forEach(id => mapaBanco.set(id, e.id));
@@ -11348,6 +11356,9 @@ function pkMontar(per, pagos, pendentes, transf) {
     const ent = l.tipo === 'receber';
     const v   = Number(l.valor) || 0;
     const pc  = pcPorId.get(l.plano_conta_id);
+    // Lançamento com rateio guarda a categoria nos itens da divisão, não nele mesmo.
+    const rat = l.tem_rateio ? (rateios[l.id] || { soma: 0, n: 0 }) : null;
+    const viaRateio = !l.plano_conta_id && !!(rat && rat.n);
     return {
       data: dt, mes: dt.slice(0,7), tipo: ent ? 'Entrada' : 'Saída',
       grupo: grupoDe(l.plano_conta_id) || (ent ? 'Receitas sem categoria' : 'Despesas sem categoria'),
@@ -11362,8 +11373,11 @@ function pkMontar(per, pagos, pendentes, transf) {
       valor: ent ? v : -v,
       origem: l.banco_id ? 'Com conta bancária' : 'Sem conta bancária',
       obs:   (l.observacoes || '').trim(),
-      id:    l.id,
-      _semCategoria: !l.plano_conta_id, _semBanco: !l.banco_id,
+      id:    l.id, tipoLanc: l.tipo,
+      _semCategoria: !l.plano_conta_id && !viaRateio, _viaRateio: viaRateio,
+      _rateioSoma: rat ? rat.soma : null,
+      _rateioDif: rat && (!rat.n || Math.abs(rat.soma - v) > 0.01) ? rat.soma - v : null,
+      _semBanco: !l.banco_id,
       _semUnidade: !l.unidade_id, _negativo: v < 0
     };
   };
@@ -11389,7 +11403,9 @@ function pkMontar(per, pagos, pendentes, transf) {
     if (origem === 'banco' && unidEmp && unidEmp !== id)
       p.diverg.push([r, 'A conta bancária é de ' + p.nome + ', mas a unidade é de outra empresa']);
     else if (r._semCategoria) p.diverg.push([r, 'Lançamento pago sem categoria no plano de contas']);
+    else if (r._viaRateio) p.diverg.push([r, 'Dividido em várias categorias (rateio) — aqui sai sem categoria']);
     else if (id === PK_NAO_IDENT) p.diverg.push([r, 'Sem conta bancária, sem unidade e sem centro de custo']);
+    else if (r._rateioDif !== null) p.diverg.push([r, 'Rateio não bate com o valor pago']);
     else if (r._negativo) p.diverg.push([r, 'Valor negativo (estorno ou devolução) — confira o histórico']);
   });
 
@@ -11425,23 +11441,24 @@ function pkMontar(per, pagos, pendentes, transf) {
 function pkAvisos(per, pacotes) {
   const av = [];
   const todas = pacotes.flatMap(p => p.razaoLinhas);
-  const add = (nivel, titulo, texto, itens) =>
-    av.push({ nivel, titulo, texto, itens: itens || [], id: 'pkav' + av.length });
+  // chave fixa por tipo de aviso: mantém a lista aberta quando a tela se atualiza
+  const add = (nivel, chave, titulo, texto, itens, opts) =>
+    av.push({ nivel, titulo, texto, itens: itens || [], id: 'pkav-' + chave, acao: 'corrigir', ...(opts || {}) });
 
   if (!_pkEmpresas.length)
-    add('grave', 'Nenhuma empresa cadastrada',
+    add('grave', 'sem-empresa', 'Nenhuma empresa cadastrada',
         'Sem empresa cadastrada, tudo sai num único arquivo chamado “Não identificado”, sem CNPJ. ' +
         'Vá na aba “Empresas e CNPJ” e cadastre pelo menos uma.');
 
   const semCnpj = _pkEmpresas.filter(e => !e.cnpj || !String(e.cnpj).trim());
   if (semCnpj.length)
-    add('grave', 'Empresa sem CNPJ preenchido',
+    add('grave', 'sem-cnpj', 'Empresa sem CNPJ preenchido',
         'A contabilidade precisa do CNPJ para saber de qual empresa é cada arquivo. ' +
         'Falta em: ' + semCnpj.map(e => e.nome).join(', ') + '.');
 
   const naoIdent = pacotes.find(p => p.id === PK_NAO_IDENT);
   if (naoIdent && naoIdent.razaoLinhas.length)
-    add('grave', 'Lançamentos que não pertencem a nenhuma empresa',
+    add('grave', 'nao-ident', 'Lançamentos que não pertencem a nenhuma empresa',
         `${naoIdent.razaoLinhas.length} lançamento(s) sem conta bancária, sem unidade e sem centro de custo. ` +
         'Eles saem num arquivo à parte. O ideal é corrigir cada um antes de enviar.',
         naoIdent.razaoLinhas);
@@ -11455,7 +11472,7 @@ function pkAvisos(per, pacotes) {
   if (mediana >= 20) {
     const fracos = per.meses.filter(m => porMes[m] < mediana * 0.45);
     if (fracos.length)
-      add('grave', 'Mês com muito menos lançamento que os outros',
+      add('grave', 'mes-fraco', 'Mês com muito menos lançamento que os outros',
           fracos.map(m => `${pkRotuloMes(m)} tem ${porMes[m]}`).join(' · ') +
           `, contra cerca de ${mediana} nos demais meses. ` +
           'Um mês assim quase sempre está incompleto — não deve ser usado para apuração de imposto ' +
@@ -11469,7 +11486,7 @@ function pkAvisos(per, pacotes) {
       const t = todas.filter(r => r.mes === m).length;
       return t >= 10 && todas.filter(r => r.mes === m && r._semBanco).length > t * 0.5;
     });
-    add(mesesRuins.length ? 'atencao' : 'info', 'Lançamentos sem conta bancária',
+    add(mesesRuins.length ? 'atencao' : 'info', 'sem-banco', 'Lançamentos sem conta bancária',
         `${semBanco.length} lançamento(s) pagos não dizem em qual conta o dinheiro passou` +
         (mesesRuins.length
           ? `, concentrados em ${mesesRuins.map(pkRotuloMes).join(', ')}. Nesses meses não há conciliação com extrato e a aba Bancos fica sem saldo.`
@@ -11479,45 +11496,63 @@ function pkAvisos(per, pacotes) {
 
   const semCat = todas.filter(r => r._semCategoria);
   if (semCat.length)
-    add('atencao', 'Lançamento pago sem categoria',
+    add('atencao', 'sem-cat', 'Lançamento pago sem categoria',
         `${semCat.length} lançamento(s) não têm categoria do plano de contas. ` +
         'Eles entram nos totais, mas caem num grupo “sem categoria” na DRE — a contabilidade vai perguntar o que são.',
-        semCat);
+        semCat, { acao: 'categorizar' });
+
+  const ratDif = todas.filter(r => r._rateioDif !== null);
+  if (ratDif.length) {
+    const dif = ratDif.reduce((s, r) => s + r._rateioDif, 0);
+    add('atencao', 'rateio-dif', 'Rateio que não bate com o valor pago',
+        `${ratDif.length} lançamento(s) divididos em categorias cuja soma é diferente do valor pago ` +
+        `(diferença total no rateio: ${dif >= 0 ? '+' : ''}${formatarMoeda(dif)}). ` +
+        'Não muda os totais deste pacote, mas deixa a divisão por categoria errada na DRE. ' +
+        'O ideal é corrigir a divisão para somar o valor pago.',
+        ratDif, { layout: 'rateio' });
+  }
+
+  const viaRat = todas.filter(r => r._viaRateio);
+  if (viaRat.length)
+    add('info', 'rateio-info', 'Contas divididas em várias categorias (rateio)',
+        `${viaRat.length} lançamento(s) têm a categoria na divisão (rateio), e não no próprio lançamento. ` +
+        'Estão categorizados e entram certo na DRE do sistema, mas no Excel deste pacote saem no grupo “sem categoria”.',
+        viaRat, { acao: null });
 
   const divergUnid = pacotes.flatMap(p => p.diverg.filter(d => d[1].startsWith('A conta bancária')).map(d => d[0]));
   if (divergUnid.length)
-    add('atencao', 'Conta bancária de uma empresa e unidade de outra',
+    add('atencao', 'diverg-unid', 'Conta bancária de uma empresa e unidade de outra',
         `${divergUnid.length} lançamento(s) pagos pela conta de uma empresa mas marcados com a unidade de outra. ` +
         'O pacote seguiu a conta bancária. Se estiver errado, corrija a unidade do lançamento.',
         divergUnid);
 
   const semUnid = todas.filter(r => r._semUnidade);
   if (semUnid.length)
-    add('info', 'Lançamento sem unidade',
+    add('info', 'sem-unid', 'Lançamento sem unidade',
         `${semUnid.length} lançamento(s) pagos sem unidade preenchida. ` +
         'Não atrapalha a contabilidade, mas atrapalha a análise por loja.',
         semUnid);
 
   const negativos = todas.filter(r => r._negativo);
   if (negativos.length)
-    add('info', 'Valores negativos (estornos e devoluções)',
+    add('info', 'negativos', 'Valores negativos (estornos e devoluções)',
         `${negativos.length} lançamento(s) com valor negativo. É o normal para devolução de compra ou ` +
         'crédito de fatura: reduz a despesa em vez de virar receita. Só confira se o histórico faz sentido.',
-        negativos);
+        negativos, { acao: 'conferir' });
 
   return av;
 }
 
 // ---------------------------------------------------------- tela
-function pkRenderResultado() {
+function pkRenderResultado(manterAbertos) {
   const d = _pkDados; if (!d) return;
   const alvo = document.getElementById('pk-resultado');
+  const abertos = new Set(manterAbertos
+    ? [...alvo.querySelectorAll('details[open]')].map(x => x.id) : []);
   const totEnt = d.pacotes.reduce((s,p) => s + p.entradas, 0);
   const totSai = d.pacotes.reduce((s,p) => s + p.saidas, 0);
   const totLan = d.pacotes.reduce((s,p) => s + p.razaoLinhas.length, 0);
 
-  const cor = { grave:'#e74c3c', atencao:'#e67e22', info:'#3498db' };
-  const ico = { grave:'circle-exclamation', atencao:'triangle-exclamation', info:'circle-info' };
   const graves = d.avisos.filter(a => a.nivel === 'grave').length;
 
   const card = (rot, val, cr) => `
@@ -11553,18 +11588,7 @@ function pkRenderResultado() {
           ${graves ? `${graves} ponto(s) grave(s) para resolver` : 'Nenhum ponto grave'}
         </span>
       </div>
-      ${d.avisos.length ? d.avisos.map(a => `
-        <div style="border-left:4px solid ${cor[a.nivel]};background:#fafbfc;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:8px;">
-          <div style="font-weight:700;font-size:14px;color:${cor[a.nivel]};">
-            <i class="fas fa-${ico[a.nivel]}"></i> ${a.titulo}
-          </div>
-          <div style="font-size:13px;color:#555;margin-top:4px;line-height:1.6;">${a.texto}</div>
-          ${a.itens.length ? `
-            <button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="pkVerItens('${a.id}')">
-              <i class="fas fa-list"></i> Ver os ${a.itens.length} lançamentos
-            </button>
-            <div id="${a.id}" style="display:none;margin-top:10px;"></div>` : ''}
-        </div>`).join('')
+      ${d.avisos.length ? d.avisos.map(a => pkCardAviso(a, abertos)).join('')
       : '<div style="font-size:13.5px;color:#27ae60;padding:8px 0;"><i class="fas fa-check"></i> Nada a conferir. Pode enviar.</div>'}
     </div>
 
@@ -11616,29 +11640,153 @@ function pkRenderResultado() {
         </tbody></table></div>
     </div>`;
   alvo.style.display = '';
+  abertos.forEach(pkVerItens);
 }
 
-function pkVerItens(idAviso) {
-  const av = (_pkDados?.avisos || []).find(a => a.id === idAviso);
-  const box = document.getElementById(idAviso);
-  if (!av || !box) return;
-  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
-  const LIM = 300;
-  const itens = av.itens.slice(0, LIM);
-  box.innerHTML = `
-    <div style="max-height:340px;overflow:auto;border:1px solid #eee;border-radius:8px;">
-      <table style="font-size:12.5px;">
-        <thead><tr><th>Data</th><th>Tipo</th><th>Histórico</th><th>Categoria</th>
-          <th>Conta bancária</th><th style="text-align:right">Valor</th></tr></thead>
-        <tbody>${itens.map(r => `<tr>
-          <td>${r.data.split('-').reverse().join('/')}</td><td>${r.tipo}</td>
-          <td>${(r.hist || '').slice(0,70)}</td><td>${r.conta}</td><td>${r.banco}</td>
-          <td style="text-align:right">${formatarMoeda(r.valor)}</td></tr>`).join('')}
-        </tbody></table>
+// Mesmo desenho dos avisos da DRE: fundo na cor do nível e, ao abrir a lista,
+// um botão em cada lançamento para corrigir sem sair da tela.
+const PK_TOM = {
+  grave:   { fundo:'#fdecea', borda:'#e74c3c', texto:'#c0392b', cab:'#fbe4e2', cabTxt:'#a5281c', linha:'#f3d6d3', ico:'circle-exclamation' },
+  atencao: { fundo:'#fff8e1', borda:'#f39c12', texto:'#b7770d', cab:'#fdf3e0', cabTxt:'#8a6d00', linha:'#f0e6cc', ico:'triangle-exclamation' },
+  info:    { fundo:'#eaf4fb', borda:'#3498db', texto:'#1f6fa8', cab:'#dcecf8', cabTxt:'#1f5f8b', linha:'#cfe3f3', ico:'circle-info' }
+};
+const PK_ACAO = {   // ícone, texto do botão, texto de "abrir a lista"
+  categorizar: ['fa-tag',              'Categorizar', 'Ver e categorizar'],
+  corrigir:    ['fa-wrench',           'Corrigir',    'Ver e corrigir'],
+  conferir:    ['fa-magnifying-glass', 'Conferir',    'Ver e conferir']
+};
+
+function pkCardAviso(a, abertos) {
+  const t = PK_TOM[a.nivel] || PK_TOM.info;
+  const rotLista = a.acao ? PK_ACAO[a.acao][2] : 'Ver';
+  return `<div style="background:${t.fundo};border:1px solid ${t.borda};border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+    <div style="display:flex;align-items:flex-start;gap:12px;">
+      <i class="fas fa-${t.ico}" style="color:${t.borda};font-size:20px;flex-shrink:0;margin-top:2px;"></i>
+      <div style="flex:1;">
+        <strong style="color:${t.texto};font-size:13px;">${a.titulo}</strong>
+        <p style="margin:4px 0 0;font-size:13px;color:#555;line-height:1.55;">${a.texto}</p>
+      </div>
     </div>
-    ${av.itens.length > LIM ? `<div style="font-size:12px;color:#888;margin-top:6px;">
-      Mostrando os ${LIM} primeiros de ${av.itens.length}. O restante está no Excel, na aba Divergencias.</div>` : ''}`;
-  box.style.display = '';
+    ${a.itens.length ? `
+    <details id="${a.id}" style="margin-top:10px;" ontoggle="pkVerItens('${a.id}')" ${abertos.has(a.id) ? 'open' : ''}>
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:${t.texto};user-select:none;">
+        <i class="fas fa-list"></i> ${rotLista} ${a.itens.length === 1 ? 'o lançamento' : `os ${a.itens.length} lançamentos`}
+      </summary>
+      <div class="pk-itens"></div>
+    </details>` : ''}
+  </div>`;
+}
+
+// Preenche a lista só quando ela é aberta (algumas têm milhares de linhas).
+function pkVerItens(idAviso) {
+  const av  = (_pkDados?.avisos || []).find(a => a.id === idAviso);
+  const det = document.getElementById(idAviso);
+  if (!av || !det || !det.open) return;
+  const box = det.querySelector('.pk-itens');
+  const t   = PK_TOM[av.nivel] || PK_TOM.info;
+  const LIM = 300;
+  const rateio = av.layout === 'rateio';
+
+  const esc   = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const falta = txt => `<em style="color:#c0392b;">${txt}</em>`;
+  const num   = 'text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;';
+  const th    = (txt, dir) => `<th style="position:sticky;top:0;background:${t.cab};padding:7px 8px;font-size:11px;color:${t.cabTxt};text-transform:uppercase;letter-spacing:.03em;${dir ? 'text-align:right;' : ''}">${txt}</th>`;
+  const td    = (html, estilo) => `<td style="padding:6px 8px;${estilo || ''}">${html}</td>`;
+  const valorOrig = r => r.tipo === 'Entrada' ? r.valor : -r.valor;   // o valor como está no lançamento
+
+  const itens = [...av.itens].sort(rateio
+    ? (a, b) => Math.abs(b._rateioDif) - Math.abs(a._rateioDif)
+    : (a, b) => Math.abs(b.valor) - Math.abs(a.valor)).slice(0, LIM);
+
+  const botao = r => {
+    if (!av.acao) return '';
+    const [ic, rot] = PK_ACAO[av.acao];
+    return `<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 10px;white-space:nowrap;"
+      onclick="editarLancamento('${r.id}','${r.tipoLanc}')"><i class="fas ${ic}"></i> ${rot}</button>`;
+  };
+  const unid = r => r._semUnidade ? falta('sem unidade') : esc(r.unid);
+
+  const cab = rateio
+    ? th('Data') + th('Descrição') + th('Unidade') + th('Valor pago', 1) + th('Soma rateio', 1) + th('Diferença', 1)
+    : th('Data') + th('Descrição') + th('Unidade') + th('Categoria') + th('Conta bancária') + th('Tipo') + th('Valor', 1);
+
+  const linhas = itens.map(r => {
+    const data = td(r.data.split('-').reverse().join('/'), 'white-space:nowrap;color:#666;font-size:12px;');
+    const desc = td(esc(r.hist) || '(sem descrição)', 'font-size:13px;');
+    let meio;
+    if (rateio) {
+      meio = td(unid(r), 'font-size:12px;color:#666;')
+           + td(formatarMoeda(valorOrig(r)), num)
+           + td(r._rateioSoma ? formatarMoeda(r._rateioSoma) : falta('sem itens'), num)
+           + td(`${r._rateioDif >= 0 ? '+' : ''}${formatarMoeda(r._rateioDif)}`, num + 'font-weight:600;color:#c0392b;');
+    } else {
+      const ent  = r.tipo === 'Entrada';
+      const chip = ent
+        ? '<span style="font-size:11px;color:#1a7a3c;background:#e8f6ee;padding:1px 6px;border-radius:4px;">Entrada</span>'
+        : '<span style="font-size:11px;color:#b7770d;background:#fdf3e0;padding:1px 6px;border-radius:4px;">Saída</span>';
+      const cat  = r._viaRateio ? '<em style="color:#2980b9;">Rateio</em>'
+                 : r._semCategoria ? falta('sem categoria') : esc(r.conta);
+      meio = td(unid(r), 'font-size:12px;color:#666;')
+           + td(cat, 'font-size:12px;color:#666;')
+           + td(r._semBanco ? falta('sem conta bancária') : esc(r.banco), 'font-size:12px;color:#666;')
+           + td(chip)
+           + td(formatarMoeda(valorOrig(r)), num + `font-weight:600;color:${ent ? '#1a7a3c' : '#b7770d'};`);
+    }
+    return `<tr style="border-bottom:1px solid ${t.linha};">${data}${desc}${meio}${td(botao(r), 'text-align:right;')}</tr>`;
+  }).join('');
+
+  const dica = !av.acao
+    ? 'Não há o que corrigir aqui: é só um aviso de como essas contas saem no Excel.'
+    : `Clique em <strong>${PK_ACAO[av.acao][1]}</strong>, ajuste e salve. A lista se atualiza sozinha — não precisa gerar de novo.`;
+
+  box.innerHTML = `
+    <div style="overflow:auto;max-height:420px;margin-top:10px;background:#fff;border:1px solid ${t.linha};border-radius:8px;">
+      <table style="width:100%;border-collapse:collapse;min-width:${rateio ? 680 : 860}px;">
+        <thead><tr style="text-align:left;">${cab}${th('')}</tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+    </div>
+    <p style="margin:8px 2px 0;font-size:12px;color:#888;">${dica}
+      ${av.itens.length > LIM ? `<br>Mostrando os ${LIM} maiores de ${av.itens.length}. O restante está no Excel, na aba Divergencias.` : ''}</p>`;
+}
+
+// Soma e quantidade de itens de rateio por lançamento, para a conferência.
+async function pkBuscarRateios(db, ids) {
+  const mapa = {};
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await q(db.from('rateio_itens').select('lancamento_id, valor')
+      .in('lancamento_id', ids.slice(i, i + 150)));
+    if (error) throw error;   // sem isso, todo rateio apareceria como "sem itens"
+    (data || []).forEach(r => {
+      const m = mapa[r.lancamento_id] || (mapa[r.lancamento_id] = { soma: 0, n: 0 });
+      m.soma += Number(r.valor) || 0; m.n++;
+    });
+  }
+  return mapa;
+}
+
+// Chamada depois de salvar um lançamento. Se a correção foi aberta daqui, atualiza
+// a conferência buscando só esse lançamento — sem gerar o pacote inteiro de novo.
+async function pkAposSalvar(id) {
+  if (!_pkBruto || !id) return;
+  if (document.querySelector('.pagina.ativa')?.id !== 'pagina-pacote-contabil') return;
+  try {
+    const db = obterSupabase();
+    const { data: l, error } = await q(db.from('lancamentos').select(PK_CAMPOS).eq('id', id).maybeSingle());
+    if (error) return;
+    const b = _pkBruto, per = b.per;
+    b.pagos     = b.pagos.filter(x => x.id !== id);
+    b.pendentes = b.pendentes.filter(x => x.id !== id);
+    delete b.rateios[id];
+    if (l) {
+      const dp = (l.data_pagamento || '').slice(0, 10);
+      if (l.status === 'pago' && dp >= per.ini && dp <= per.fim) b.pagos.push(l);
+      else if (l.status === 'pendente' && (l.vencimento || '') >= per.ini) b.pendentes.push(l);
+      if (l.tem_rateio) Object.assign(b.rateios, await pkBuscarRateios(db, [l.id]));
+    }
+    _pkDados = pkMontar(per, b.pagos, b.pendentes, b.transf, b.rateios);
+    pkRenderResultado(true);
+  } catch (e) { console.error(e); }
 }
 
 // ---------------------------------------------------------- Excel
