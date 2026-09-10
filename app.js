@@ -12524,10 +12524,12 @@ function renderExcluidos() {
 //  • Pix: cada Pix do Parque 10 casado com o banco (computePix) troca de unidade.
 // Tudo fica registrado em conc_delivery_dia, com desfazer por dia.
 // Vale de DLV_INICIO em diante (decisão do usuário em 10/09/2026).
-const DLV_INICIO  = '2026-09-01';
+// Agosto entrou depois (10/09/2026): a loja das vendas de 01–09/08 veio do relatório
+// "Conciliação de Pagamento" do PDV, porque o iComanda só guarda os últimos 30 dias.
+const DLV_INICIO  = '2026-08-01';
 const DLV_ANTECIP = 0.0145;   // custo da antecipação no crédito (taxa contratada, confirmada pelo usuário)
 const DLV_SUFIXO  = ' — parte Delivery P10';
-const DLV_JANELA  = 35;       // quantos dias para trás a separação ainda confere
+const DLV_JANELA  = 60;       // quantos dias para trás a separação ainda confere (60 = alcança agosto até 30/09)
 const DLV_TOL_EXTRATO = 0.02; // o extrato do dia pode ter até 2% a menos que o arquivo da Getnet
 
 const dlvR2 = v => Math.round((Number(v) || 0) * 100) / 100;
@@ -12813,13 +12815,13 @@ async function renderDelivery() {
       ${sub ? `<div style="font-size:12px;color:#999;margin-top:2px">${sub}</div>` : ''}
     </div>`;
   if (cards) cards.innerHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 14px;">
-    ${card('Cartão → Delivery', brl(totCartao), '#1a7a3c', 'líquido, desde 01/09/2026')}
+    ${card('Cartão → Delivery', brl(totCartao), '#1a7a3c', `líquido, desde ${ccDT(DLV_INICIO)}`)}
     ${card('Pix → Delivery', brl(totPix), '#1a7a3c')}
     ${card('Total separado', brl(totCartao + totPix), '#2c3e50', `${nDias} dia(s)`)}
   </div>`;
 
   if (!plano.length) {
-    box.innerHTML = aviso('#3498db', 'Ainda não há vendas do Parque 10 no cartão ou no Pix desde 01/09/2026 para separar.');
+    box.innerHTML = aviso('#3498db', `Ainda não há vendas do Parque 10 no cartão ou no Pix desde ${ccDT(DLV_INICIO)} para separar.`);
     return;
   }
   const linhas = plano.map(it => {
@@ -12869,7 +12871,8 @@ async function renderDelivery() {
 //    mesma base da DRE por unidade (lançamentos pagos, pela data de pagamento).
 // Os dois não batem de propósito: o iFood paga uma semana depois e desconta a
 // comissão. O quadro "iFood semana a semana" mostra essa diferença.
-const PDL_LOJA_DESDE = '2026-08-10';
+// 10/08 em diante veio do robô; 01–09/08 foi marcado depois pelo relatório "Conciliação de Pagamento" do PDV.
+const PDL_LOJA_DESDE = '2026-08-01';
 const PDL_IFOOD_CNPJ = '28798646000185';   // os repasses do iFood chegam por Pix deste CNPJ
 const PDL_CANAIS = [
   ['ifood', 'iFood'], ['cartao', 'Cartão (balcão)'], ['pix', 'Pix (balcão)'], ['dinheiro', 'Dinheiro'],
@@ -12998,10 +13001,10 @@ async function pdlGerar() {
   const vazio = n => `<tr><td colspan="${n}" style="color:#999;text-align:center">Nada neste mês.</td></tr>`;
   const avisos = [];
   if (ini < PDL_LOJA_DESDE)
-    avisos.push('O PDV só informa a loja de cada venda a partir de <strong>10/08/2026</strong>. As vendas de antes disso não aparecem aqui.');
+    avisos.push(`O PDV só informa a loja de cada venda a partir de <strong>${ccDT(PDL_LOJA_DESDE)}</strong>. As vendas de antes disso não aparecem aqui.`);
   if (ini < DLV_INICIO)
-    avisos.push('Até 31/08/2026, o cartão e o Pix do balcão do Parque 10 entraram no financeiro do <strong>Teatro</strong>. ' +
-                'A separação para o Delivery vale a partir de 01/09, então neste mês o "Entrou no financeiro" é praticamente só o iFood e o dinheiro.');
+    avisos.push(`Até ${ccDT(dlvSomaDias(DLV_INICIO, -1))}, o cartão e o Pix do balcão do Parque 10 entraram no financeiro do <strong>Teatro</strong>. ` +
+                `A separação para o Delivery vale a partir de ${ccDT(DLV_INICIO)}, então neste mês o "Entrou no financeiro" é praticamente só o iFood e o dinheiro.`);
   aviso.innerHTML = avisos.map(t => pdlAviso('#3498db', t)).join('');
 
   const card = (rot, val, cor, sub) => `
