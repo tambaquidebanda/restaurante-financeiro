@@ -4612,6 +4612,7 @@ function cxqContado(c) { return c.contado_ajuste != null ? Number(c.contado_ajus
 // O botão só aparece se a coluna dif_lancamento_id existir (select('*') não a
 // traz antes do SQL) — assim a tela não oferece um botão que iria falhar.
 let cxqDifValor = {};
+let cxqRecPlano = {};   // recebimento do caixa → categoria (plano_conta_id) atual
 
 // Diferença de caixa já lançada como despesa. Caso típico: cliente pagou no
 // cartão, pediu para tirar o serviço e o gerente devolveu em espécie sem
@@ -4785,6 +4786,16 @@ async function renderCaixaEspecie() {
       const ls = await ccFetchPaginado(() => db.from('lancamentos').select('id,valor').in('id', difIds));
       ls.forEach(l => { cxqDifValor[l.id] = Number(l.valor) || 0; });
     } catch (e) { /* coluna nova ainda sem SQL — segue sem abater */ }
+  }
+
+  // Categoria atual de cada recebimento já lançado, para o seletor do card.
+  cxqRecPlano = {};
+  const recIds = confs.map(c => c.recebimento_lancamento_id).filter(Boolean);
+  if (recIds.length) {
+    try {
+      const ls = await ccFetchPaginado(() => db.from('lancamentos').select('id,plano_conta_id').in('id', recIds));
+      ls.forEach(l => { cxqRecPlano[l.id] = l.plano_conta_id || ''; });
+    } catch (e) { /* sem a categoria atual — o seletor mostra o padrão */ }
   }
 
   const dias = {};
@@ -4999,6 +5010,7 @@ function cxqDetalheHTML(d, confs, movs) {
             ${(dif < -CXQ_TOL && ('dif_lancamento_id' in c) && !c.dif_lancamento_id && !cxqTrocaExplica(c)) ? `<button onclick="cxqLancarDif('${c.id}')" title="O dinheiro saiu da gaveta mas não foi registrado no PDV (ex.: devolução ao cliente). Cria a despesa e a diferença zera." style="font-size:11px;border:1px solid #8e44ad;background:#fff;color:#8e44ad;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ lançar falta como despesa</button>` : ''}
             <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
           </div>
+          ${cxqCategoriaHTML(c)}
           <div id="cxq-prev-${c.id}" style="font-size:11.5px;color:#16a085;margin-top:5px">${cxqPreviaHTML(bruto, esperado, contado)}</div>`;
       } else {
         card = `<div style="font-size:13px;font-weight:700;color:#2c3e50">Caixa ${ext}</div><div style="font-size:11px;color:#999;margin-bottom:4px">(sem conferência de dinheiro)</div>${pagList}`;
@@ -5007,6 +5019,58 @@ function cxqDetalheHTML(d, confs, movs) {
     });
   });
   return html;
+}
+
+// Categoria (receita) do recebimento que o caixa gera no Contas a Receber.
+// Antes o recebimento nascia sem categoria e era preciso ir ao Contas a Receber
+// colocar "Dinheiro" um por um. Caixa novo já vem com "Dinheiro" marcado; caixa
+// já confirmado mostra a categoria gravada e salva na hora em que ela muda.
+function cxqPlanoPadrao() {
+  const p = (planoContas || []).find(p => p.tipo === 'receber' && p.grupo_id
+    && (p.nome || '').trim().toLowerCase() === 'dinheiro');
+  return p ? p.id : '';
+}
+
+function cxqCategoriaHTML(c) {
+  const recId = c.recebimento_lancamento_id;
+  const temAtual = recId && (recId in cxqRecPlano);
+  const atual = temAtual ? cxqRecPlano[recId] : cxqPlanoPadrao();
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const grupos = (planoContas || []).filter(p => p.tipo === 'receber' && !p.grupo_id);
+  let opts = `<option value="">— sem categoria —</option>`;
+  grupos.forEach(g => {
+    const subs = planoContas.filter(s => s.tipo === 'receber' && s.grupo_id === g.id);
+    if (!subs.length) return;
+    opts += `<optgroup label="${esc(g.nome)}">`
+      + subs.map(s => `<option value="${s.id}"${s.id === atual ? ' selected' : ''}>${esc(s.nome)}</option>`).join('')
+      + `</optgroup>`;
+  });
+  const falta = temAtual && !atual;   // já lançado, mas sem categoria
+  return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#777">categoria</span>
+    <select id="cxq-cat-${c.id}" onchange="cxqMudarCat('${c.id}')"
+      style="flex:1;min-width:150px;max-width:260px;padding:4px 6px;border:1px solid ${falta ? '#e67e22' : '#ddd'};border-radius:6px;font-size:12px;background:#fff">${opts}</select>
+    ${falta ? `<span style="font-size:11px;color:#e67e22">escolha para gravar no Contas a Receber</span>` : ''}
+  </div>`;
+}
+
+// Caixa já confirmado: grava a categoria no recebimento na hora. Caixa ainda
+// não confirmado: a escolha fica no seletor e vai junto no Confirmar.
+async function cxqMudarCat(confId) {
+  const sel = document.getElementById(`cxq-cat-${confId}`);
+  if (!sel) return;
+  const db = obterSupabase();
+  const { data: c } = await db.from('caixa_dia_conf').select('recebimento_lancamento_id').eq('id', confId).single();
+  const recId = c && c.recebimento_lancamento_id;
+  if (!recId) return;
+  if (!(await garantirSessao())) return;
+  const { error } = await db.from('lancamentos').update({ plano_conta_id: sel.value || null }).eq('id', recId);
+  if (error) { mostrarToast('Erro ao gravar a categoria: ' + error.message, 'erro'); return; }
+  cxqRecPlano[recId] = sel.value || '';
+  sel.style.borderColor = sel.value ? '#ddd' : '#e67e22';
+  const aviso = sel.nextElementSibling;
+  if (aviso && sel.value) aviso.remove();
+  mostrarToast(sel.value ? 'Categoria gravada no Contas a Receber ✔️' : 'Categoria removida', 'sucesso');
 }
 
 // Aviso de "a nuvem do PDV trocou a forma de pagamento" + tabela nuvem × loja.
@@ -5175,6 +5239,8 @@ async function cxqConfirmar(confId) {
 
   // 1) recebimento das vendas em dinheiro no Caixa — cria, atualiza ou remove
   let recId = c.recebimento_lancamento_id || null;
+  const selCat = document.getElementById(`cxq-cat-${confId}`);
+  const plano  = selCat ? (selCat.value || null) : (cxqPlanoPadrao() || null);
   if (receber > 0 && caixaBanco) {
     const desc = `Vendas em dinheiro ${ccDT(c.data)} · Caixa ${c.caixa_ext}`;
     const obs  = Math.abs(dif) >= 0.005
@@ -5182,7 +5248,7 @@ async function cxqConfirmar(confId) {
       : null;
     if (recId) {
       const { error } = await db.from('lancamentos')
-        .update({ valor: receber, descricao: desc, observacoes: obs, unidade_id: c.unidade_id || null })
+        .update({ valor: receber, descricao: desc, observacoes: obs, unidade_id: c.unidade_id || null, plano_conta_id: plano })
         .eq('id', recId);
       if (error) { mostrarToast('Erro ao atualizar recebimento: ' + error.message, 'erro'); return; }
     } else {
@@ -5190,7 +5256,7 @@ async function cxqConfirmar(confId) {
         descricao: desc, observacoes: obs,
         valor: receber, tipo: 'receber', status: 'pago',
         data_pagamento: c.data, vencimento: c.data,
-        banco_id: caixaBanco, unidade_id: c.unidade_id || null
+        banco_id: caixaBanco, unidade_id: c.unidade_id || null, plano_conta_id: plano
       }).select('id').single();
       if (error) { mostrarToast('Erro ao lançar recebimento: ' + error.message, 'erro'); return; }
       recId = lanc.id;
