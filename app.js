@@ -752,6 +752,41 @@ function setBIPeriodo(periodo, btn) {
   carregarDashboard();
 }
 
+// Lista que aparece ao passar o mouse nos cards de Contas a Pagar do Início:
+// as contas em aberto que formam o número do card, da mais antiga para a mais
+// nova. Clicar numa conta abre a edição dela. `hoje` só vem no card de atraso,
+// para mostrar há quantos dias cada conta venceu.
+function inicioListaContas(elId, titulo, lista, hoje) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const nomeForn = id => { const f = (fornecedores || []).find(f => f.id === id); return f ? f.nome : ''; };
+  const dataBR = d => d ? d.split('-').reverse().join('/').replace(/\/20(\d\d)$/, '/$1') : '—';
+  const ord = lista.slice().sort((a, b) =>
+    (a.vencimento || '').localeCompare(b.vencimento || '') || Number(b.valor) - Number(a.valor));
+  const total = ord.reduce((s, l) => s + Number(l.valor || 0), 0);
+  const itens = ord.map(l => {
+    let atraso = '';
+    if (hoje && l.vencimento) {
+      const dias = Math.round((new Date(hoje + 'T12:00:00') - new Date(l.vencimento + 'T12:00:00')) / 864e5);
+      atraso = `<small>há ${dias} dia${dias !== 1 ? 's' : ''}</small>`;
+    }
+    // Sem fornecedor (impostos da planilha antiga), a categoria diz o que é.
+    const forn = nomeForn(l.fornecedor_id)
+      || ((planoContas || []).find(p => p.id === l.plano_conta_id) || {}).nome || '';
+    return `<button type="button" class="bi-tc-item" onclick="editarLancamento('${l.id}','pagar')">
+      <span class="bi-tc-data">${dataBR(l.vencimento)}${atraso}</span>
+      <span class="bi-tc-desc" title="${esc(l.descricao)}">${esc(l.descricao) || '(sem descrição)'}${forn ? `<small>${esc(forn)}</small>` : ''}</span>
+      <span class="bi-tc-valor">${formatarMoeda(Number(l.valor || 0))}</span>
+    </button>`;
+  }).join('');
+  el.innerHTML = `<div class="bi-tc-caixa">
+    <div class="bi-tc-topo"><span>${titulo} · ${ord.length} conta${ord.length !== 1 ? 's' : ''}</span><span>${formatarMoeda(total)}</span></div>
+    ${ord.length ? `<div class="bi-tc-lista">${itens}</div><div class="bi-tc-rodape">Clique numa conta para abrir</div>`
+                 : '<div class="bi-tc-vazio">Nenhuma conta em aberto.</div>'}
+  </div>`;
+}
+
 async function carregarInicio() {
   if (!(await garantirSessao())) return;
   const db   = obterSupabase();
@@ -826,18 +861,21 @@ async function carregarInicio() {
     const dom = new Date(agora); dom.setDate(agora.getDate() - 1);
     datasHoje.push(toStr(sab), toStr(dom));
   }
-  const { data: pagarHoje } = await q(db.from('lancamentos').select('vencimento, valor')
+  const camposConta = 'id, descricao, vencimento, valor, fornecedor_id, plano_conta_id';
+  const { data: pagarHoje } = await q(db.from('lancamentos').select(camposConta)
     .eq('tipo','pagar').eq('status','pendente').in('vencimento', datasHoje));
   const efHoje  = proximoDiaUtil(hoje);
   const listaHoje = (pagarHoje||[]).filter(l => proximoDiaUtil(l.vencimento) === efHoje);
   set('inicio-pagar-hoje', soma(listaHoje));
   setEl('inicio-pagar-hoje-qtd', `${listaHoje.length} conta${listaHoje.length !== 1 ? 's' : ''}`);
+  inicioListaContas('inicio-tooltip-hoje', 'A pagar hoje', listaHoje);
 
   // ── Linha 2: Contas em Atraso ─────────────────────────────────────────────
-  const { data: atrasados } = await q(db.from('lancamentos').select('valor')
+  const { data: atrasados } = await q(db.from('lancamentos').select(camposConta)
     .eq('tipo','pagar').eq('status','pendente').lt('vencimento', hoje));
   set('inicio-atraso-valor', soma(atrasados));
   setEl('inicio-atraso-qtd', `${(atrasados||[]).length} conta${(atrasados||[]).length !== 1 ? 's' : ''}`);
+  inicioListaContas('inicio-tooltip-atraso', 'Em atraso', atrasados || [], hoje);
 
   // ── Linha 3: Previsão Semanal ─────────────────────────────────────────────
   const ultimoDomingo = new Date(agora);
@@ -858,7 +896,7 @@ async function carregarInicio() {
 
   const seg = new Date(agora); seg.setDate(agora.getDate() - ((diaSemHoje + 6) % 7));
   const domSem = new Date(seg); domSem.setDate(seg.getDate() + 6);
-  const { data: pagarSem } = await q(db.from('lancamentos').select('vencimento, valor')
+  const { data: pagarSem } = await q(db.from('lancamentos').select(camposConta)
     .eq('tipo','pagar').eq('status','pendente')
     .gte('vencimento', toStr(seg)).lte('vencimento', toStr(domSem)));
   const listaSem = (pagarSem||[]).filter(l => {
@@ -867,6 +905,7 @@ async function carregarInicio() {
   });
   set('inicio-pagar-semana', soma(listaSem));
   setEl('inicio-pagar-semana-qtd', `${listaSem.length} conta${listaSem.length !== 1 ? 's' : ''}`);
+  inicioListaContas('inicio-tooltip-semana', 'A pagar nesta semana', listaSem);
 
   // ── Linha 4: Receita por Unidade (mês atual) ──────────────────────────────
   const mesIni = `${agora.getFullYear()}-${String(agora.getMonth()+1).padStart(2,'0')}-01`;
