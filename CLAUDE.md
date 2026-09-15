@@ -133,15 +133,21 @@ Em **modo produção** o estoque pula o rascunho e insere direto em `lancamentos
 ### 4.2 Financeiro → Estoque: escritas de volta em tabelas `cmp_`
 O `app.js` daqui grava nestas tabelas do estoque (só nestes casos):
 
-- `cmp_contas_pagar` — `update` de `lancamento_id` e
+- `cmp_contas_pagar` — só `update` de `lancamento_id` e
   `adiantamento_lancamento_id` (marca "já enviado ao financeiro", o que bloqueia
-  segunda geração lá); `delete` ao desfazer um pedido.
-- `cmp_compras` — `select` e `update` de `status_receb` (volta para `'pendente'`
-  quando o pedido é desfeito).
-- `cmp_recebimentos` / `cmp_recebimento_itens` — `select` e `delete` no
-  desfazimento do pedido.
+  segunda geração lá). Nunca `delete`.
+- `cmp_compras` — só `select` (itens do pedido no card de Integrações).
 
-Referências: `app.js:7360`, `9451`, `9688`, `9823–9956`.
+**O financeiro NÃO desfaz recebimento.** Desde 15/09/2026 o botão Rejeitar das
+Integrações Pendentes só apaga o rascunho. Antes ele apagava
+`cmp_recebimento_itens`/`cmp_contas_pagar` e voltava `cmp_compras` para
+`'pendente'` sem estornar `est_saldo_local` — o pedido #00990 entrou 3 vezes no
+estoque. Recebimento se desfaz pelo botão ↩️ **Devolver** na tela de Compras do
+estoque (`devolverPedidoAoEstoque`), que estorna o saldo e apaga o lançamento.
+O Excluir do Contas a Pagar avisa isso quando o lançamento tem `numero_pedido`.
+
+Referências: `aprovarIntegracao`, `aprovarComoTransferencia`,
+`aprovarComoDinheiro`, `rejeitarIntegracao` e o Dividir Pedido da conciliação.
 
 ### 4.3 Contrato de colunas criadas pelo estoque
 Definidas em `SQL_INTEGRACAO_FINANCEIRO.sql` e `SQL_RASCUNHO_FINANCEIRO.sql`

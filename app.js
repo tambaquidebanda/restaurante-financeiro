@@ -2634,7 +2634,28 @@ async function marcarComoPago(id, tipo) {
   carregarDashboard();
 }
 
-function excluirLancamento(id) {
+// O modal de exclusão é um só para tudo; quem abre escreve o texto dele
+// (antes o texto de "excluir usuário" ficava preso para as exclusões seguintes).
+function textoModalExcluir(texto) {
+  const p = document.querySelector('#modal-excluir .modal-corpo p');
+  if (!p) return;
+  p.textContent = texto || 'Tem certeza que deseja excluir este registro?';
+  p.style.whiteSpace = 'pre-line';
+}
+
+async function excluirLancamento(id) {
+  // Conta que veio de pedido do estoque: excluir aqui não desfaz o recebimento nem o saldo.
+  let texto = '';
+  try {
+    const { data: l } = await q(obterSupabase().from('lancamentos')
+      .select('tipo, status, numero_pedido').eq('id', id).maybeSingle());
+    if (l && l.tipo === 'pagar' && l.numero_pedido) {
+      texto = `Este lançamento veio do pedido ${l.numero_pedido} do estoque. Excluir aqui NÃO desfaz o recebimento nem o saldo. Para devolver o pedido, use o botão ↩️ Devolver na tela de Compras do estoque, que apaga este lançamento junto.`;
+      if (l.status === 'pago') texto += '\n\nAtenção: este lançamento já está pago. O Devolver só aceita depois que o pagamento for estornado.';
+      texto += '\n\nExcluir mesmo assim?';
+    }
+  } catch (_) { /* sem a consulta, segue com o texto padrão */ }
+  textoModalExcluir(texto);
   idParaExcluir = id;
   fnExcluirAtual = async () => {
     const db = obterSupabase();
@@ -5751,6 +5772,7 @@ async function salvarTransferencia() {
 }
 
 async function excluirTransferencia(id) {
+  textoModalExcluir();
   idParaExcluir = id;
   fnExcluirAtual = async () => {
     const db = obterSupabase();
@@ -11143,29 +11165,23 @@ async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixa
   carregarIntegracoes();
 }
 
+// Rejeitar só apaga o rascunho. NÃO mexe em nenhuma tabela do estoque.
+// Antes ele também desfazia o recebimento (apagava cmp_recebimento_itens, tentava
+// apagar cmp_recebimentos antes de cmp_contas_pagar — que falhava calado pela FK —
+// e voltava cmp_compras para 'pendente'), mas sem estornar est_saldo_local. O
+// estoque passava a ver o pedido como "nunca recebido", liberava a lixeira e a
+// nota entrava de novo: foi assim que o #00990 ficou 3 vezes no estoque (15/09/2026).
+// Quem desfaz recebimento é o botão ↩️ Devolver, na tela de Compras do estoque,
+// que estorna o saldo. Depois do Rejeitar o pedido continua "Recebido" lá, com os
+// botões "Gerar Conta" (reenviar) e "Devolver" (desfazer).
 async function rejeitarIntegracao(rascunhoId, pedidoNum) {
-  if (!confirm(`Rejeitar a integração do pedido ${pedidoNum}?\n\nO rascunho será excluído. Se o pedido ainda não tiver lançamento, o recebimento no estoque também será DESFEITO (itens voltam para pendente), para o estoquista receber de novo com os valores corretos — evitando valores acumulados.`)) return;
+  const oQueFazer = 'Se o recebimento estiver errado, desfaça pelo botão ↩️ Devolver na tela de Compras do estoque, que estorna o saldo. Depois o estoque reenvia ao financeiro.';
+  if (!confirm(`Rejeitar a integração do pedido ${pedidoNum || '(sem número)'}?\n\nSó o rascunho será excluído. ${oQueFazer}`)) return;
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
-  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
-
-  // Desfaz o recebimento no estoque para permitir novo recebimento limpo (evita acúmulo).
-  // Exceção: se o pedido já tem lançamento (caso de duplicata), NÃO desfaz — só apaga o rascunho.
-  if (pedidoNum) {
-    const { data: lancNum }  = await q(db.from('lancamentos').select('id').eq('numero_pedido', pedidoNum).limit(1));
-    const { data: lancDesc } = await q(db.from('lancamentos').select('id').ilike('descricao', `Pedido ${pedidoNum}%`).limit(1));
-    if (!(lancNum?.length || lancDesc?.length)) {
-      const { data: recs } = await q(db.from('cmp_recebimentos').select('id').eq('pedido_num', pedidoNum));
-      if (recs?.length) {
-        const ids = recs.map(r => r.id);
-        await q(db.from('cmp_recebimento_itens').delete().in('recebimento_id', ids));
-        await q(db.from('cmp_recebimentos').delete().in('id', ids));
-      }
-      await q(db.from('cmp_contas_pagar').delete().eq('pedido_num', pedidoNum));
-      await q(db.from('cmp_compras').update({ status_receb: 'pendente' }).eq('pedido_num', pedidoNum));
-    }
-  }
-  mostrarToast('Rascunho rejeitado. Recebimento desfeito no estoque para novo recebimento.', 'sucesso');
+  const { error } = await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+  if (error) { mostrarToast('Não consegui excluir o rascunho: ' + error.message, 'erro'); return; }
+  mostrarToast('Rascunho rejeitado — só o rascunho foi excluído. ' + oQueFazer, 'sucesso');
   carregarIntegracoes();
 }
 
