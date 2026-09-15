@@ -6407,10 +6407,26 @@ async function gravarClassificacaoHistorica(transacoes) {
   registros.forEach(r => classificacaoHistorica.set(r.descricao_norm, r.plano_conta_id));
 }
 
+// Motivo, quando a conferência do "já importado" não terminou (erro ou demora).
+let _ofxConferenciaFalhou = null;
+
 async function verificarDuplicatasComTimeout(transacoes) {
-  const TIMEOUT_MS = 12000;
-  const timeout = new Promise(resolve => setTimeout(resolve, TIMEOUT_MS));
-  await Promise.race([verificarDuplicatas(transacoes), timeout]);
+  // Antes: 12 s e seguia calado — a prévia abria com TUDO marcado para importar,
+  // e um erro de consulta era engolido do mesmo jeito. Agora avisa e não marca nada.
+  _ofxConferenciaFalhou = null;
+  let timer;
+  const tempo = new Promise(resolve => { timer = setTimeout(() => resolve('tempo'), 60000); });
+  let res;
+  try {
+    res = await Promise.race([verificarDuplicatas(transacoes).then(() => 'ok'), tempo]);
+  } catch (e) {
+    res = (e && e.message) || String(e);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res === 'ok') return;
+  _ofxConferenciaFalhou = res === 'tempo' ? 'a conferência passou de 1 minuto' : res;
+  transacoes.forEach(t => { if (!t.jaImportado) t.selecionado = false; });
 }
 
 // Expande uma transação do extrato nos seus débitos constituintes.
@@ -6429,156 +6445,146 @@ function debitosDaTransacaoOFX(t) {
   return [{ fitId: t.fitId || null, valor: Number(t.valor) || 0 }];
 }
 
+// Marca o que o extrato traz e o sistema JÁ TEM, para não conciliar duas vezes.
+//
+// O FITID do Santander muda a cada download (leva a hora em que o arquivo foi
+// gerado), então lá quase nada casa pelo código e o reconhecimento é por
+// banco + dia + tipo + valor. Até 15/09/2026 isso falhava em quatro casos, e a
+// linha conciliada de manhã voltava "para conciliar" à tarde:
+//  - a consulta parava em 1.000 lançamentos (extrato de 01 a 15/09: 307 linhas);
+//  - depósito repartido em vários lançamentos com o mesmo ofx_id (separação
+//    Delivery P10, Dividir por unidade, Múltiplos com desconto): nenhum
+//    lançamento sozinho tem o valor da linha;
+//  - lotes do Agrupar: cada lote vem solto no extrato novo, e só o pagamento
+//    gravado de cada lote tem o valor dele;
+//  - pagamento parcial (conta ainda pendente) não era olhado.
+// Os depósitos da Getnet de 10 e 11/09/2026 entraram duas vezes por isso.
+//
+// Agora cada coisa já gravada vira UMA evidência de linha do extrato (grupo por
+// ofx_id + dia, lançamento pago sem ofx_id, transferência) e cada linha do
+// arquivo consome no máximo uma: três Pix de R$ 80 no extrato com dois já
+// lançados, o terceiro continua para conciliar.
 async function verificarDuplicatas(transacoes) {
   const db = obterSupabase();
   const bancoId = document.getElementById('banco-importar')?.value || null;
+  const dia = s => (s || '').substring(0, 10);
+  const igual = (a, b) => Math.abs(Number(a) - Number(b)) < 0.01;
+  const marcar = (t, ofxId) => { t.jaImportado = true; t.selecionado = false; t.ofxIdExistente = ofxId || null; };
 
-  // 1. Por fitId — checa tanto lancamentos.ofx_id (1 por lançamento) quanto
-  //    pagamentos.ofx_id (1 por débito do extrato). Conciliações com vários
-  //    débitos guardam os FITIDs extras SÓ em pagamentos; sem olhar os dois,
-  //    débitos agrupados reaparecem como não conciliados no reimport.
-  const fitIds = transacoes.map(t => t.fitId).filter(f => f);
-  if (fitIds.length) {
+  // 1. Mesmo FITID em lancamentos.ofx_id ou pagamentos.ofx_id (bancos de código
+  //    estável: Nubank, Itaú, Cora). Em lotes de 100, porque a lista vai na URL.
+  const fitIds = [...new Set(transacoes.map(t => t.fitId).filter(Boolean))];
+  const conhecidos = new Set();
+  for (let i = 0; i < fitIds.length; i += 100) {
+    const lote = fitIds.slice(i, i + 100);
     const [rLanc, rPag] = await Promise.all([
-      db.from('lancamentos').select('ofx_id').in('ofx_id', fitIds),
-      db.from('pagamentos').select('ofx_id').in('ofx_id', fitIds)
+      q(db.from('lancamentos').select('ofx_id').in('ofx_id', lote)),
+      q(db.from('pagamentos').select('ofx_id').in('ofx_id', lote))
     ]);
-    const idsExistentes = new Set([
-      ...((rLanc.data || []).map(l => l.ofx_id)),
-      ...((rPag.data || []).map(p => p.ofx_id))
-    ].filter(Boolean));
-    if (idsExistentes.size) {
-      transacoes.forEach(t => {
-        if (t.fitId && idsExistentes.has(t.fitId)) {
-          t.jaImportado = true;
-          t.selecionado = false;
-        }
-      });
-    }
+    if (rLanc.error) throw rLanc.error;
+    if (rPag.error) throw rPag.error;
+    [...(rLanc.data || []), ...(rPag.data || [])].forEach(r => { if (r.ofx_id) conhecidos.add(r.ofx_id); });
   }
+  transacoes.forEach(t => { if (t.fitId && conhecidos.has(t.fitId)) marcar(t, t.fitId); });
 
-  // 2. Fallback principal: banco + data_pagamento + valor + tipo + status=pago
-  //    Não depende da coluna ofx_id existir. Cobre lançamentos criados ou conciliados.
-  const semMatch = transacoes.filter(t => !t.jaImportado);
+  // 2. Banco + dia + tipo + valor, contra tudo que já está gravado no período do arquivo.
+  const semMatch = transacoes.filter(t => !t.jaImportado && t.data);
   if (semMatch.length && bancoId) {
-    const minData = semMatch.reduce((min, t) => t.data < min ? t.data : min, '9999-12-31');
-    const maxData = semMatch.reduce((max, t) => t.data > max ? t.data : max, '0000-01-01');
-    const { data: pagos } = await db.from('lancamentos')
-      .select('id, valor, valor_pago, data_pagamento, tipo')
-      .eq('status', 'pago')
-      .eq('banco_id', bancoId)
-      .gte('data_pagamento', minData)
-      .lte('data_pagamento', maxData);
+    const datas = semMatch.map(t => t.data).sort();
+    const de = datas[0], ate = datas[datas.length - 1];
+    const [pagos, pags, transfs] = await Promise.all([
+      ccFetchPaginado(() => db.from('lancamentos')
+        .select('id, valor, valor_pago, data_pagamento, tipo, ofx_id')
+        .eq('status', 'pago').eq('banco_id', bancoId)
+        .gte('data_pagamento', de).lte('data_pagamento', ate)),
+      ccFetchPaginado(() => db.from('pagamentos')
+        .select('id, lancamento_id, valor, data, ofx_id')
+        .eq('origem', 'ofx').eq('banco_id', bancoId)
+        .gte('data', de).lte('data', ate)),
+      ccFetchPaginado(() => db.from('transferencias')
+        .select('id, banco_origem_id, banco_destino_id, valor, data')
+        .or(`banco_origem_id.eq.${bancoId},banco_destino_id.eq.${bancoId}`)
+        .gte('data', de).lte('data', ate))
+    ]);
 
-    if (pagos && pagos.length) {
-      const usados = new Set();
-      const atualizarOFXId = [];
-      semMatch.forEach(t => {
-        const match = pagos.find(p =>
-          !usados.has(p.id) &&
-          p.tipo === t.tipo &&
-          (Math.abs(Number(p.valor) - t.valor) < 0.01 ||
-           Math.abs(Number(p.valor_pago || p.valor) - t.valor) < 0.01) &&
-          (p.data_pagamento || '').substring(0, 10) === t.data
-        );
-        if (match) {
-          t.jaImportado = true;
-          t.selecionado = false;
-          usados.add(match.id);
-          if (t.fitId) atualizarOFXId.push({ id: match.id, ofx_id: t.fitId });
-        }
-      });
-      // Salva ofx_id retroativamente (best-effort, não bloqueia se coluna não existir)
-      for (const item of atualizarOFXId) {
-        db.from('lancamentos').update({ ofx_id: item.ofx_id }).eq('id', item.id);
+    // Tipo das contas com pagamento no período que ainda não estão pagas (parcial).
+    const tipoDe = new Map(pagos.map(l => [l.id, l.tipo]));
+    const faltam = [...new Set(pags.map(p => p.lancamento_id).filter(id => id && !tipoDe.has(id)))];
+    for (let i = 0; i < faltam.length; i += 150) {
+      const { data, error } = await q(db.from('lancamentos').select('id, tipo').in('id', faltam.slice(i, i + 150)));
+      if (error) throw error;
+      (data || []).forEach(l => tipoDe.set(l.id, l.tipo));
+    }
+
+    const evidencias = [];
+    const grupos = new Map();   // `${dia}|${ofx_id}` → evidência
+    const grupo = (d, ofx, tipo) => {
+      const k = `${d}|${ofx}`;
+      if (!grupos.has(k)) {
+        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx };
+        grupos.set(k, e);
+        evidencias.push(e);
+      }
+      return grupos.get(k);
+    };
+    // Pagamentos do extrato: 1 por débito (lotes do Agrupar, parcial, Múltiplos).
+    const lancComPag = new Set();
+    for (const p of pags) {
+      lancComPag.add(p.lancamento_id);
+      const tipo = tipoDe.get(p.lancamento_id);
+      if (!p.ofx_id || !tipo) continue;
+      const e = grupo(dia(p.data), p.ofx_id, tipo);
+      e.soma += Number(p.valor) || 0;
+      e.membros.push(Number(p.valor) || 0);
+    }
+    for (const l of pagos) {
+      const d = dia(l.data_pagamento);
+      if (l.ofx_id && !lancComPag.has(l.id)) {
+        // Nasceu do extrato, ou é parte de um depósito repartido: soma no grupo do código.
+        const e = grupo(d, l.ofx_id, l.tipo);
+        e.soma += Number(l.valor) || 0;
+        e.membros.push(Number(l.valor) || 0);
+      } else if (!l.ofx_id) {
+        // Pago à mão, sem vínculo com extrato.
+        evidencias.push({ data: d, tipo: l.tipo, valores: [l.valor, Number(l.valor_pago) || l.valor], membros: [], ofxId: null });
+      } else {
+        // Já entrou pelo pagamento; o valor cheio da conta só serve de "parte".
+        const e = grupos.get(`${d}|${l.ofx_id}`);
+        if (e) e.membros.push(Number(l.valor) || 0);
+      }
+    }
+    grupos.forEach(e => { e.valores = [e.soma]; });
+    for (const tr of transfs) {
+      const sai = tr.banco_origem_id === bancoId, entra = tr.banco_destino_id === bancoId;
+      evidencias.push({ data: dia(tr.data), tipo: sai && !entra ? 'pagar' : entra && !sai ? 'receber' : null,
+                        valores: [tr.valor], membros: [], ofxId: null });
+    }
+
+    // 1ª volta pelo valor inteiro da evidência; 2ª por uma parte dela (o que o
+    // passo antigo fazia: conta sozinha com o valor da linha), só com o que sobrou.
+    const usadas = new Set();
+    for (const campo of ['valores', 'membros']) {
+      for (const t of semMatch) {
+        if (t.jaImportado) continue;
+        const e = evidencias.find(e => !usadas.has(e) && e.data === t.data &&
+          (!e.tipo || e.tipo === t.tipo) && e[campo].some(v => igual(v, t.valor)));
+        if (e) { usadas.add(e); marcar(t, e.ofxId); }
       }
     }
   }
 
-  // 2b. Fallback por SOMA (conciliação "múltiplos"): 1 linha do extrato paga
-  //     VÁRIOS lançamentos (ex.: boleto de fatura de cartão). Nesse caso nenhum
-  //     lançamento isolado tem o valor da linha, então o passo 2 não pega — e o
-  //     FITID do Santander muda a cada download, então o passo 1 também não pega.
-  //     Aqui agrupamos os pagamentos OFX já gravados por (data, ofx_id) e, se a
-  //     SOMA de um grupo (2+ pagamentos) bater com o valor da linha, é duplicata.
-  const semMatch2 = transacoes.filter(t => !t.jaImportado && t.fitId);
-  if (semMatch2.length && bancoId) {
-    const minData = semMatch2.reduce((min, t) => t.data < min ? t.data : min, '9999-12-31');
-    const maxData = semMatch2.reduce((max, t) => t.data > max ? t.data : max, '0000-01-01');
-    const { data: pagosOfx } = await db.from('pagamentos')
-      .select('valor, data, ofx_id')
-      .eq('origem', 'ofx')
-      .eq('banco_id', bancoId)
-      .gte('data', minData)
-      .lte('data', maxData);
-
-    if (pagosOfx && pagosOfx.length) {
-      // Agrupa por (data, ofx_id) — cada conciliação múltipla compartilha o mesmo ofx_id.
-      const grupos = new Map();
-      for (const p of pagosOfx) {
-        if (!p.ofx_id) continue; // sem id não dá pra agrupar com segurança
-        const dia = (p.data || '').substring(0, 10);
-        const chave = `${dia}|${p.ofx_id}`;
-        const g = grupos.get(chave) || { data: dia, soma: 0, n: 0 };
-        g.soma += Number(p.valor) || 0;
-        g.n += 1;
-        grupos.set(chave, g);
-      }
-      // Só grupos com 2+ pagamentos são "múltiplos" (1 pagamento já foi coberto no passo 2).
-      const gruposMulti = [...grupos.values()].filter(g => g.n >= 2);
-      const usados = new Set();
-      semMatch2.forEach(t => {
-        const g = gruposMulti.find(g =>
-          !usados.has(g) &&
-          g.data === t.data &&
-          Math.abs(g.soma - t.valor) < 0.01
-        );
-        if (g) {
-          t.jaImportado = true;
-          t.selecionado = false;
-          usados.add(g);
-        }
-      });
-    }
-  }
-
-  // 3. Excel (sem fitId): verifica por valor + data + tipo já pagos
+  // 3. Planilha (sem fitId): verifica por valor + data + tipo já pagos
   const semFitId = transacoes.filter(t => !t.fitId && !t.jaImportado);
   if (semFitId.length) {
     const datas = [...new Set(semFitId.map(t => t.data))];
-    const { data: jaExistem } = await db.from('lancamentos')
-      .select('valor, vencimento, tipo')
+    const jaExistem = await ccFetchPaginado(() => db.from('lancamentos')
+      .select('id, valor, vencimento, tipo')
       .eq('status', 'pago')
-      .in('vencimento', datas);
-    const existentes = (jaExistem || []).map(l =>
-      `${Number(l.valor).toFixed(2)}|${l.vencimento}|${l.tipo}`
-    );
+      .in('vencimento', datas));
+    const existentes = new Set(jaExistem.map(l => `${Number(l.valor).toFixed(2)}|${l.vencimento}|${l.tipo}`));
     semFitId.forEach(t => {
-      const chave = `${t.valor.toFixed(2)}|${t.data}|${t.tipo}`;
-      if (existentes.includes(chave)) {
-        t.jaImportado = true;
-        t.selecionado = false;
-      }
+      if (existentes.has(`${t.valor.toFixed(2)}|${t.data}|${t.tipo}`)) marcar(t, null);
     });
-  }
-
-  // Verifica transferências já registradas para este banco
-  const semImportar = transacoes.filter(t => !t.jaImportado);
-  if (semImportar.length && bancoId) {
-    const datas = [...new Set(semImportar.map(t => t.data))];
-    const { data: transfs } = await db.from('transferencias')
-      .select('banco_origem_id, banco_destino_id, valor, data')
-      .in('data', datas);
-    if (transfs?.length) {
-      semImportar.forEach(t => {
-        const match = transfs.find(tr =>
-          Math.abs(Number(tr.valor) - t.valor) < 0.01 &&
-          tr.data === t.data &&
-          (tr.banco_origem_id === bancoId || tr.banco_destino_id === bancoId)
-        );
-        if (match) { t.jaImportado = true; t.selecionado = false; }
-      });
-    }
   }
 
   // 5. Cobranca "re-cotada" pelo banco. Juros que correm por dia (MORA, por ex.)
@@ -6595,12 +6601,12 @@ async function verificarDuplicatas(transacoes) {
     const marcos = semAviso.map(t => +new Date(t.data)).filter(n => !isNaN(n));
     if (marcos.length) {
       const iso = ms => new Date(ms).toISOString().substring(0, 10);
-      const { data: pagos } = await db.from('lancamentos')
+      const pagos = await ccFetchPaginado(() => db.from('lancamentos')
         .select('id, descricao, valor, data_pagamento, tipo')
         .eq('status', 'pago')
         .eq('banco_id', bancoId)
         .gte('data_pagamento', iso(Math.min(...marcos) - 10 * DIA))
-        .lte('data_pagamento', iso(Math.max(...marcos) + 10 * DIA));
+        .lte('data_pagamento', iso(Math.max(...marcos) + 10 * DIA)));
       semAviso.forEach(t => {
         const nt = norm(t.descricao);
         if (!nt) return;
@@ -7050,8 +7056,15 @@ function renderizarCelulaConciliacao(i) {
 
 function renderizarPreviewOFX(transacoes) {
   document.getElementById('preview-importar').classList.remove('hidden');
-  document.getElementById('resumo-ofx').textContent =
-    `${transacoes.length} transação(ões) encontrada(s) no arquivo`;
+  const resumoOFX = document.getElementById('resumo-ofx');
+  resumoOFX.textContent = `${transacoes.length} transação(ões) encontrada(s) no arquivo`;
+  if (_ofxConferenciaFalhou) {
+    const aviso = document.createElement('span');
+    aviso.style.cssText = 'display:block;margin-top:6px;padding:8px 10px;background:#fdecea;border:1px solid #e74c3c;border-radius:6px;color:#c0392b;font-weight:600;';
+    aviso.textContent = `⚠️ Não consegui conferir o que já foi importado (${_ofxConferenciaFalhou}). ` +
+      'Por isso nenhuma linha veio marcada. Carregue o arquivo de novo antes de importar, para não lançar em dobro.';
+    resumoOFX.appendChild(aviso);
+  }
 
   const tbody = document.getElementById('tbody-importar');
   tbody.innerHTML = transacoes.map((t, i) => {
@@ -7076,9 +7089,12 @@ function renderizarPreviewOFX(transacoes) {
       + unidades.map(u => `<option value="${u.id}" ${t.unidade_id === u.id ? 'selected' : ''}>${u.nome}</option>`).join('');
 
     if (t.jaImportado) {
-      const btnDesfazer = t.fitId
+      // Desfazer usa o código GRAVADO no sistema, não o do arquivo: no Santander o
+      // FITID muda a cada download e o do arquivo novo não acha nada. Linha
+      // reconhecida por conta paga à mão ou transferência não tem o que desfazer aqui.
+      const btnDesfazer = t.ofxIdExistente
         ? `<button class="btn btn-sm" style="margin-left:10px;background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer;"
-             onclick="desfazerImportacaoOFX('${t.fitId}', ${i})">
+             onclick="desfazerImportacaoOFX('${t.ofxIdExistente}', ${i})">
              <i class="fas fa-undo"></i> Desfazer
            </button>`
         : '';
@@ -7215,6 +7231,12 @@ async function desfazerImportacaoOFX(fitId, i) {
       db.from('lancamentos').select(cols).eq('ofx_id', fitId)
     );
     if (eLanc) { mostrarToast('Não consegui desfazer: ' + eLanc.message, 'erro'); return; }
+    // Nada gravado com esse código: antes dizia "Conciliação desfeita" e liberava a
+    // linha para importar de novo — duplicando o que já estava lançado.
+    if (!(lancs || []).length) {
+      mostrarToast('Não encontrei nada gravado com o código desta linha, então não desfiz nada. Ela continua como já importada.', 'erro');
+      return;
+    }
     for (const lanc of (lancs || [])) {
       if (lanc.ofx_criado === true) {
         await q(db.from('lancamentos').delete().eq('id', lanc.id));
