@@ -6483,6 +6483,28 @@ function repartirDebitos(debitos, alvos) {
   return linhas;
 }
 
+// Palavras do favorecido, para não confundir dois movimentos de mesmo valor no
+// mesmo dia. Em 18/09/2026 o extrato tinha 3 Pix de R$ 100 (Willian, Márcia e
+// Cecília) e o sistema só tinha 2 lançados: a conferência marcava a linha do
+// Willian como "já importada" e a conta dele (Pedido #01399) ficava pendente
+// sem conseguir ser conciliada.
+const OFX_PALAVRAS_GENERICAS = new Set(['PIX', 'ENVIADO', 'ENVIADA', 'RECEBIDO', 'RECEBIDA', 'PAGAMENTO', 'PAGTO',
+  'BOLETO', 'OUTROS', 'BANCOS', 'BANCO', 'TRANSF', 'TRANSFERENCIA', 'VALOR', 'CONTA', 'DEBITO', 'CREDITO',
+  'TITULAR', 'TARIFA', 'AVULSA', 'PEDIDO', 'SERVICO', 'MENSAL', 'COMPRA', 'CARTAO', 'LTDA', 'EIRELI',
+  'MATRIZ', 'FILIAL', 'COMERCIO', 'DISTRIBUIDORA', 'PRODUTOS', 'ALIMENTOS']);
+function ofxPalavrasChave(txt) {
+  const fora = new Set();
+  String(txt || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/)
+    .forEach(p => { if (p.length >= 4 && !OFX_PALAVRAS_GENERICAS.has(p) && !/^\d+$/.test(p)) fora.add(p); });
+  return fora;
+}
+function ofxMesmoFavorecido(a, b) {
+  if (!a || !b || !a.size || !b.size) return false;
+  for (const p of a) if (b.has(p)) return true;
+  return false;
+}
+
 // Marca o que o extrato traz e o sistema JÁ TEM, para não conciliar duas vezes.
 //
 // O FITID do Santander muda a cada download (leva a hora em que o arquivo foi
@@ -6532,7 +6554,7 @@ async function verificarDuplicatas(transacoes) {
     const de = datas[0], ate = datas[datas.length - 1];
     const [pagos, pags, transfs] = await Promise.all([
       ccFetchPaginado(() => db.from('lancamentos')
-        .select('id, valor, valor_pago, data_pagamento, tipo, ofx_id')
+        .select('id, descricao, valor, valor_pago, data_pagamento, tipo, ofx_id, fornecedor_id')
         .eq('status', 'pago').eq('banco_id', bancoId)
         .gte('data_pagamento', de).lte('data_pagamento', ate)),
       ccFetchPaginado(() => db.from('pagamentos')
@@ -6554,24 +6576,28 @@ async function verificarDuplicatas(transacoes) {
       (data || []).forEach(l => tipoDe.set(l.id, l.tipo));
     }
 
+    const nomeForn = id => (fornecedores || []).find(f => f.id === id)?.nome || '';
+    const chavesDe = l => ofxPalavrasChave(`${l.descricao || ''} ${nomeForn(l.fornecedor_id)}`);
     const evidencias = [];
     const grupos = new Map();   // `${dia}|${ofx_id}` → evidência
-    const grupo = (d, ofx, tipo) => {
+    const grupo = (d, ofx, tipo, chaves) => {
       const k = `${d}|${ofx}`;
       if (!grupos.has(k)) {
-        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx };
+        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx, chaves: new Set(chaves || []) };
         grupos.set(k, e);
         evidencias.push(e);
       }
       return grupos.get(k);
     };
+    const LancPorId = new Map(pagos.map(l => [l.id, l]));
     // Pagamentos do extrato: 1 por débito (lotes do Agrupar, parcial, Múltiplos).
     const lancComPag = new Set();
     for (const p of pags) {
       lancComPag.add(p.lancamento_id);
       const tipo = tipoDe.get(p.lancamento_id);
       if (!p.ofx_id || !tipo) continue;
-      const e = grupo(dia(p.data), p.ofx_id, tipo);
+      const e = grupo(dia(p.data), p.ofx_id, tipo, chavesDe(LancPorId.get(p.lancamento_id) || {}));
+      chavesDe(LancPorId.get(p.lancamento_id) || {}).forEach(x => e.chaves.add(x));
       e.soma += Number(p.valor) || 0;
       e.membros.push(Number(p.valor) || 0);
     }
@@ -6581,12 +6607,13 @@ async function verificarDuplicatas(transacoes) {
       if (Number(l.valor) < 0) continue;
       if (l.ofx_id && !lancComPag.has(l.id)) {
         // Nasceu do extrato, ou é parte de um depósito repartido: soma no grupo do código.
-        const e = grupo(d, l.ofx_id, l.tipo);
+        const e = grupo(d, l.ofx_id, l.tipo, chavesDe(l));
+        chavesDe(l).forEach(x => e.chaves.add(x));
         e.soma += Number(l.valor) || 0;
         e.membros.push(Number(l.valor) || 0);
       } else if (!l.ofx_id) {
         // Pago à mão, sem vínculo com extrato.
-        evidencias.push({ data: d, tipo: l.tipo, valores: [l.valor, Number(l.valor_pago) || l.valor], membros: [], ofxId: null });
+        evidencias.push({ data: d, tipo: l.tipo, valores: [l.valor, Number(l.valor_pago) || l.valor], membros: [], ofxId: null, chaves: chavesDe(l) });
       } else {
         // Já entrou pelo pagamento; o valor cheio da conta só serve de "parte".
         const e = grupos.get(`${d}|${l.ofx_id}`);
@@ -6597,20 +6624,32 @@ async function verificarDuplicatas(transacoes) {
     for (const tr of transfs) {
       const sai = tr.banco_origem_id === bancoId, entra = tr.banco_destino_id === bancoId;
       evidencias.push({ data: dia(tr.data), tipo: sai && !entra ? 'pagar' : entra && !sai ? 'receber' : null,
-                        valores: [tr.valor], membros: [], ofxId: null });
+                        valores: [tr.valor], membros: [], ofxId: null, chaves: new Set() });
     }
 
-    // 1ª volta pelo valor inteiro da evidência; 2ª por uma parte dela (o que o
-    // passo antigo fazia: conta sozinha com o valor da linha), só com o que sobrou.
+    // Casa primeiro as linhas que batem TAMBÉM no favorecido: com três Pix de
+    // R$ 100 no mesmo dia e duas contas lançadas, a linha que sobra tem de ser a
+    // que ninguém lançou, não uma qualquer. Depois casa pelo valor inteiro da
+    // evidência e, por último, por uma parte dela (o que o passo antigo fazia).
     const usadas = new Set();
-    for (const campo of ['valores', 'membros']) {
+    // Evidência de linha já reconhecida pelo código (passo 1) fica reservada:
+    // senão outra linha do arquivo, de mesmo valor e dia, se aproveita dela.
+    const jaPeloCodigo = new Set(transacoes.filter(t => t.jaImportado && t.fitId).map(t => t.fitId));
+    evidencias.forEach(e => { if (e.ofxId && jaPeloCodigo.has(e.ofxId)) usadas.add(e); });
+    const casar = (campo, porNome) => {
       for (const t of semMatch) {
         if (t.jaImportado) continue;
+        const chaves = porNome ? ofxPalavrasChave(t.descricao) : null;
         const e = evidencias.find(e => !usadas.has(e) && e.data === t.data &&
-          (!e.tipo || e.tipo === t.tipo) && e[campo].some(v => igual(v, t.valor)));
+          (!e.tipo || e.tipo === t.tipo) && e[campo].some(v => igual(v, t.valor)) &&
+          (!porNome || ofxMesmoFavorecido(chaves, e.chaves)));
         if (e) { usadas.add(e); marcar(t, e.ofxId); }
       }
-    }
+    };
+    casar('valores', true);
+    casar('membros', true);
+    casar('valores', false);
+    casar('membros', false);
   }
 
   // 3. Planilha (sem fitId): verifica por valor + data + tipo já pagos
