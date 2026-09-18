@@ -6445,6 +6445,44 @@ function debitosDaTransacaoOFX(t) {
   return [{ fitId: t.fitId || null, valor: Number(t.valor) || 0 }];
 }
 
+// Reparte os débitos do extrato entre os lançamentos conciliados: cada débito
+// vira um ou mais pagamentos, sempre com O SEU ofx_id e somando O SEU valor.
+// Antes o Múltiplos gravava 1 pagamento por LANÇAMENTO, com os FITIDs
+// distribuídos em round-robin. Na folha de 18/09/2026 o extrato tinha 6 débitos
+// (3 lotes PAGSAL + transferência de titular + Fabiano + Gabriela) contra 4
+// lançamentos (SALÁRIO, ROTEROS, GERÊNCIA, DELIVERY): 2 débitos não ficavam
+// registrados em lugar nenhum e voltavam "para conciliar" no extrato seguinte.
+// Sobra de conta (o banco debitou menos, caso do desconto) fica sem ofx_id — não
+// é linha de extrato nenhuma, e a conferência de duplicata ignora esses.
+function repartirDebitos(debitos, alvos) {
+  const cent = v => Math.round((Number(v) || 0) * 100) / 100;
+  const linhas = [];
+  const fila = debitos.map(d => ({ fitId: d.fitId || null, resta: Number(d.valor) || 0 }));
+  let i = 0;
+  for (const alvo of alvos) {
+    let falta = Number(alvo.valor) || 0;
+    while (falta > 0.009 && i < fila.length) {
+      if (fila[i].resta <= 0.009) { i++; continue; }
+      const usa = Math.min(falta, fila[i].resta);
+      linhas.push({ lancamento_id: alvo.id, valor: cent(usa), ofx_id: fila[i].fitId, plano_conta_id: alvo.plano_conta_id || null });
+      fila[i].resta -= usa;
+      falta -= usa;
+    }
+    if (falta > 0.009) {
+      linhas.push({ lancamento_id: alvo.id, valor: cent(falta), ofx_id: null, plano_conta_id: alvo.plano_conta_id || null });
+    }
+  }
+  // Débito que sobrou (o banco debitou mais do que as contas somam): registra no
+  // último lançamento, para nenhum código do extrato ficar sem registro.
+  const ultimo = alvos[alvos.length - 1];
+  for (; i < fila.length && ultimo; i++) {
+    if (fila[i].resta > 0.009) {
+      linhas.push({ lancamento_id: ultimo.id, valor: cent(fila[i].resta), ofx_id: fila[i].fitId, plano_conta_id: ultimo.plano_conta_id || null });
+    }
+  }
+  return linhas;
+}
+
 // Marca o que o extrato traz e o sistema JÁ TEM, para não conciliar duas vezes.
 //
 // O FITID do Santander muda a cada download (leva a hora em que o arquivo foi
@@ -6539,6 +6577,8 @@ async function verificarDuplicatas(transacoes) {
     }
     for (const l of pagos) {
       const d = dia(l.data_pagamento);
+      // Ajuste do desconto (valor negativo) não é linha do extrato.
+      if (Number(l.valor) < 0) continue;
       if (l.ofx_id && !lancComPag.has(l.id)) {
         // Nasceu do extrato, ou é parte de um depósito repartido: soma no grupo do código.
         const e = grupo(d, l.ofx_id, l.tipo);
@@ -8331,37 +8371,22 @@ async function importarTransacoes() {
         .eq('id', lancIds[j]);
       if (error) erros++;
     }
-    if (lancIds.length === 1 && debitos.length > 1) {
-      // 1 lançamento pago por VÁRIOS débitos (grupo de lotes): grava 1 pagamento
-      // por débito, cada um com seu ofx_id. Antes só o 1º FITID era gravado e os
-      // demais reapareciam soltos no reimport.
-      const lancId  = lancIds[0];
-      const planoId = lancamentosPendentes.find(l => l.id === lancId)?.plano_conta_id || null;
-      for (const d of debitos) {
-        await q(db.from('pagamentos').insert({
-          lancamento_id:  lancId,
-          valor:          d.valor,
-          data:           t.data,
-          banco_id:       bancoId,
-          plano_conta_id: planoId,
-          origem:         'ofx',
-          ofx_id:         d.fitId
-        }));
-      }
-    } else {
-      // Demais casos: 1 pagamento por lançamento (comportamento original).
-      for (let j = 0; j < lancIds.length; j++) {
-        const lancRef = lancamentosPendentes.find(l => l.id === lancIds[j]);
-        await q(db.from('pagamentos').insert({
-          lancamento_id:  lancIds[j],
-          valor:          Number(lancRef?.valor || 0),
-          data:           t.data,
-          banco_id:       bancoId,
-          plano_conta_id: lancRef?.plano_conta_id || null,
-          origem:         'ofx',
-          ofx_id:         fitIdsRef.length ? fitIdsRef[j % fitIdsRef.length] : null
-        }));
-      }
+    // 1 pagamento por DÉBITO do extrato (repartido entre os lançamentos), para
+    // todo código do extrato ficar registrado e ser reconhecido no reimport.
+    const alvos = lancIds.map(lid => {
+      const ref = lancamentosPendentes.find(l => l.id === lid);
+      return { id: lid, valor: Number(ref?.valor || 0), plano_conta_id: ref?.plano_conta_id || null };
+    });
+    for (const linha of repartirDebitos(debitos, alvos)) {
+      await q(db.from('pagamentos').insert({
+        lancamento_id:  linha.lancamento_id,
+        valor:          linha.valor,
+        data:           t.data,
+        banco_id:       bancoId,
+        plano_conta_id: linha.plano_conta_id,
+        origem:         'ofx',
+        ofx_id:         linha.ofx_id
+      }));
     }
 
     // Desconto/ajuste: a soma dos lançamentos é maior do que o banco debitou
