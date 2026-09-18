@@ -6716,11 +6716,16 @@ async function verificarDuplicatas(transacoes) {
 
 function autoMatchConciliacao(transacoes) {
   const usados = new Set();
+  const chavesConta = l => ofxPalavrasChave(`${l.descricao || ''} ${l.fornecedores?.nome || ''}`);
   transacoes.forEach(t => {
-    t.lancamento_id           = null;
-    t.lancamentos_ids         = [];
+    t.lancamento_id            = null;
+    t.lancamentos_ids          = [];
     t.transferencia_destino_id = null;
+  });
+  // exigirNome: só sugere conta cujo nome aparece na linha do extrato.
+  const tentar = (t, exigirNome) => {
     const dataTransacao = new Date(t.data + 'T00:00:00');
+    const chavesLinha = ofxPalavrasChave(t.descricao);
     const candidatos = lancamentosPendentes.filter(l => {
       if (usados.has(l.id)) return false;
       if (l.tipo !== t.tipo) return false;
@@ -6729,10 +6734,14 @@ function autoMatchConciliacao(transacoes) {
       // o sistema não pode presumir que o usuário está pagando antecipado.
       const dataVenc = new Date(l.vencimento + 'T00:00:00');
       if (dataVenc > dataTransacao) return false;
+      if (exigirNome && !ofxMesmoFavorecido(chavesLinha, chavesConta(l))) return false;
       return true;
     });
     if (!candidatos.length) return;
     candidatos.sort((a, b) => {
+      const na = ofxMesmoFavorecido(chavesLinha, chavesConta(a)) ? 0 : 1;
+      const nb = ofxMesmoFavorecido(chavesLinha, chavesConta(b)) ? 0 : 1;
+      if (na !== nb) return na - nb;
       const da = Math.abs(new Date(a.vencimento + 'T00:00:00') - dataTransacao);
       const db = Math.abs(new Date(b.vencimento + 'T00:00:00') - dataTransacao);
       return da - db;
@@ -6743,7 +6752,13 @@ function autoMatchConciliacao(transacoes) {
       t.lancamento_id = melhor.id;
       usados.add(melhor.id);
     }
-  });
+  };
+  // Duas voltas, porque cada conta só pode ser sugerida uma vez: primeiro as
+  // linhas que batem TAMBÉM no nome do favorecido, depois o resto por valor e
+  // data. Sem isso a ordem do arquivo decide, e em 18/09/2026 o Pix do Luciano
+  // (R$ 450) ficou com o Pedido #01219 da Lasmar e Costa, do mesmo valor.
+  transacoes.forEach(t => tentar(t, true));
+  transacoes.forEach(t => { if (!t.lancamento_id) tentar(t, false); });
 }
 
 function parsearOFX(conteudo) {
@@ -8482,6 +8497,9 @@ async function importarTransacoes() {
       });
     }
     const entry = concilPorLanc.get(t.lancamento_id);
+    entry.descricaoConta = lancRef.descricao || '(sem descrição)';
+    entry.linhas = (entry.linhas || 0) + 1;
+    (entry.descricoesLinhas = entry.descricoesLinhas || []).push(t.descricao || '');
     entry.somaOFX += t.valor;
     entry.ofxId    = t.fitId || null;
     (entry.debitos = entry.debitos || []).push(...debitosDaTransacaoOFX(t));
@@ -8491,6 +8509,24 @@ async function importarTransacoes() {
       entry.ajuste_tipo  = t.ajuste_tipo;
       entry.ajuste_valor = t.ajuste_valor;
     }
+  }
+  // Duas linhas do extrato na MESMA conta, somando mais do que ela vale: em
+  // geral é uma linha vinculada à conta errada. Em 18/09/2026 o Pix do Luciano e
+  // o boleto da Lasmar e Costa, os dois de R$ 450, foram para o Pedido #01219 e
+  // a conta ficou com R$ 900 pagos.
+  const excedentes = [...concilPorLanc.values()].filter(e =>
+    (e.linhas || 0) > 1 && e.valorPagoAtual + e.somaOFX > e.valorTotal + 0.01);
+  if (excedentes.length) {
+    const lista = excedentes.slice(0, 6).map(e =>
+      `• "${e.descricaoConta}" vale ${formatarMoeda(e.valorTotal)} e recebeu ${e.linhas} linhas ` +
+      `(${formatarMoeda(e.valorPagoAtual + e.somaOFX)}):\n   ${e.descricoesLinhas.map(d => d.substring(0, 34)).join('\n   ')}`
+    ).join('\n\n');
+    const ok = confirm(
+      `Atenção: ${excedentes.length} conta(s) receberam linhas do extrato somando MAIS do que o valor delas:\n\n` +
+      `${lista}\n\nNormalmente isso é uma linha ligada à conta errada. Cancele e confira na tela, ` +
+      `ou clique OK para gravar assim mesmo.`
+    );
+    if (!ok) { restaurarBtn(); mostrarToast('Importação pausada. Confira as linhas destacadas.'); return; }
   }
   for (const [lancId, entry] of concilPorLanc) {
     const desconto  = entry.ajuste_tipo === 'desconto'  ? (entry.ajuste_valor || 0) : 0;
