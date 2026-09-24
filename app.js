@@ -6504,6 +6504,13 @@ function ofxMesmoFavorecido(a, b) {
   for (const p of a) if (b.has(p)) return true;
   return false;
 }
+// Os dois lados dizem um nome e nenhum pedaco bate: e outra pessoa/empresa.
+// Quando um dos lados nao diz nome nenhum (boleto do Santander vem so
+// "PAGAMENTO DE BOLETO OUTROS BANCOS"), nao da para afirmar nada e devolve false.
+function ofxNomesDiferentes(a, b) {
+  if (!a || !b || !a.size || !b.size) return false;
+  return !ofxMesmoFavorecido(a, b);
+}
 
 // Marca o que o extrato traz e o sistema JÁ TEM, para não conciliar duas vezes.
 //
@@ -6735,6 +6742,11 @@ function autoMatchConciliacao(transacoes) {
       const dataVenc = new Date(l.vencimento + 'T00:00:00');
       if (dataVenc > dataTransacao) return false;
       if (exigirNome && !ofxMesmoFavorecido(chavesLinha, chavesConta(l))) return false;
+      // Na 2a volta o nome nao e exigido, mas nome DIFERENTE dos dois lados
+      // barra: em 22/09/2026 o Pix de R$ 130 de um seguranca deu baixa sozinho
+      // no "Pedido #01457 - COMPRADOR EXTERNO", que tinha o mesmo valor e a
+      // vespera como vencimento. Essas contas viram so sugestao na tela.
+      if (!exigirNome && ofxNomesDiferentes(chavesLinha, chavesConta(l))) return false;
       return true;
     });
     if (!candidatos.length) return;
@@ -6757,6 +6769,8 @@ function autoMatchConciliacao(transacoes) {
   // linhas que batem TAMBÉM no nome do favorecido, depois o resto por valor e
   // data. Sem isso a ordem do arquivo decide, e em 18/09/2026 o Pix do Luciano
   // (R$ 450) ficou com o Pedido #01219 da Lasmar e Costa, do mesmo valor.
+  // A 2ª volta só vale quando um dos lados não diz nome (boleto, tarifa, DARF):
+  // nome contra nome diferente não vincula mais sozinho, vira sugestão na tela.
   transacoes.forEach(t => tentar(t, true));
   transacoes.forEach(t => { if (!t.lancamento_id) tentar(t, false); });
 }
@@ -7047,17 +7061,31 @@ function htmlConciliacaoCell(t, i) {
     const candidatos = lancamentosPendentes.filter(l =>
       l.tipo === t.tipo && Math.abs(Number(l.valor) - t.valor) < 0.01
     );
+    // Mais perto do dia do extrato primeiro — é quase sempre a conta certa.
+    if (t.data) {
+      const dia = new Date(t.data + 'T00:00:00');
+      candidatos.sort((a, b) =>
+        Math.abs(new Date(a.vencimento + 'T00:00:00') - dia) -
+        Math.abs(new Date(b.vencimento + 'T00:00:00') - dia));
+    }
     if (candidatos.length > 0) {
-      const nomes = candidatos.slice(0, 2).map(l => {
+      // Botão por candidata: o sistema NÃO vincula sozinho quando o nome do
+      // favorecido não bate (ver autoMatchConciliacao). Aqui ele mostra a conta
+      // parecida e deixa um clique para quem conferiu dizer que é aquela.
+      const nomes = candidatos.slice(0, 3).map(l => {
         const forn = l.fornecedores?.nome ? ` — ${l.fornecedores.nome}` : '';
-        return `<strong>${l.descricao}${forn}</strong> (${formatarData(l.vencimento)})`;
-      }).join('<br>');
-      const mais = candidatos.length > 2 ? `<br>+${candidatos.length - 2} outro(s)` : '';
+        return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;">
+            <span><strong>${l.descricao}${forn}</strong> (${formatarData(l.vencimento)})</span>
+            <button class="btn btn-sm" style="background:#fff;color:#856404;border:1px solid #f39c12;border-radius:6px;padding:1px 8px;font-size:11px;cursor:pointer;white-space:nowrap;"
+              onclick="selecionarConciliacaoOFX(${i}, '${l.id}')">É esta conta</button>
+          </div>`;
+      }).join('');
+      const mais = candidatos.length > 3 ? `<div style="margin-top:3px;">+${candidatos.length - 3} outro(s) na lista acima.</div>` : '';
       badgeDuplicata = `
         <div style="margin-top:5px;padding:6px 8px;background:#fff8e1;border:1px solid #f39c12;border-radius:6px;font-size:11px;color:#856404;">
-          <div style="font-weight:600;margin-bottom:3px;"><i class="fas fa-exclamation-triangle"></i> Possível duplicata — há ${candidatos.length} lançamento(s) pendente(s) com mesmo valor:</div>
+          <div style="font-weight:600;"><i class="fas fa-exclamation-triangle"></i> Não vinculei sozinho: ${candidatos.length} conta(s) pendente(s) com este mesmo valor</div>
           ${nomes}${mais}
-          <div style="margin-top:3px;color:#888;">Selecione acima para conciliar em vez de criar um novo lançamento.</div>
+          <div style="margin-top:4px;color:#888;">Se não for nenhuma delas, deixe em "Novo lançamento" — nada será dado como pago.</div>
         </div>`;
     }
   }
