@@ -8448,8 +8448,15 @@ async function importarTransacoes() {
     // Marca cada lançamento como pago (ofx_id de referência = um dos débitos).
     for (let j = 0; j < lancIds.length; j++) {
       const ofxIdRef = fitIdsRef.length ? fitIdsRef[j % fitIdsRef.length] : null;
+      // valor_pago também: sem ele a conta fica paga com "R$ 0,00 pago" no
+      // histórico de pagamentos e na planilha do Contas a Pagar. 134 contas de
+      // setembro/2026 ficaram assim (corrigidas em 24/09/2026).
+      const refLanc  = lancamentosPendentes.find(l => l.id === lancIds[j]);
       const { error } = await db.from('lancamentos')
-        .update({ status: 'pago', data_pagamento: t.data, banco_id: bancoId, ofx_id: ofxIdRef })
+        .update({
+          status: 'pago', data_pagamento: t.data, banco_id: bancoId, ofx_id: ofxIdRef,
+          ...(refLanc && refLanc.valor != null ? { valor_pago: Number(refLanc.valor) } : {})
+        })
         .eq('id', lancIds[j]);
       if (error) erros++;
     }
@@ -8612,6 +8619,7 @@ async function importarTransacoes() {
       const { data: novo, error } = await q(db.from('lancamentos').insert({
         descricao:      `${dp.descricao} (${k}/${n})`,
         valor:          valorParte,
+        valor_pago:     valorParte,
         vencimento:     p.data,
         data_pagamento: p.data,
         status:         'pago',
