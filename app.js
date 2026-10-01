@@ -4380,7 +4380,7 @@ async function ccCarregarPalpites(db, de, ate) {
   const dias = [...diasSet].sort();
   // Só a forma interessa do `raw`; puxar o jsonb inteiro de milhares de vendas
   // a cada abertura da tela seria desperdício.
-  const COLS = 'id,valor_bruto,bandeira,caixa_ext,data_hora_utc';
+  const COLS = 'id,valor_bruto,bandeira,caixa_ext,data_hora_utc,data_hora_local,forma_pagamento';
   const buscaV = extra => ccFetchPaginado(() => db.from('pdv_vendas')
     .select(COLS + extra)
     .gte('data_hora_utc', dias[0] + 'T00:00:00-04:00')
@@ -4428,7 +4428,12 @@ async function ccCarregarPalpites(db, de, ate) {
       const escolhidos = idx.map(i => livres[i]);
       escolhidos.forEach(i => {
         const g = classificarFormaPDV(f.forma).grupo;
-        ccPalpiteForma.set(pend[i].v.id, { de: ccBucketLbl(pend[i].de), para: ccBucketLbl(f), grupo: g });
+        const vd = pend[i].v;
+        // Valor, hora e caixa vão junto porque a aba Dinheiro mostra a venda
+        // pelo nome — lá não existe lista de vendas onde pendurar o botão.
+        ccPalpiteForma.set(vd.id, { de: ccBucketLbl(pend[i].de), para: ccBucketLbl(f), grupo: g,
+          valor: Number(vd.valor_bruto || 0), hora: (vd.data_hora_local || '').slice(11, 16),
+          dia: vd._dia, caixa: vd.caixa_ext, atual: vd.forma_pagamento });
       });
       livres = livres.filter(i => escolhidos.indexOf(i) < 0);
     });
@@ -4700,6 +4705,22 @@ function cxqFormas(c) {
   try { return typeof f === 'string' ? JSON.parse(f) : f; } catch (e) { return null; }
 }
 
+// Vendas que o fechamento da loja identificou como forma trocada e que caíram
+// no dinheiro DESTE caixa. É a prova com nome e sobrenome. Sem ela a única
+// pista é a soma dos desvios de todas as formas, que um centavo de gaveta já
+// derruba: em 25/09/2026, caixa 12999, um cartão de R$ 33,79 entrou como
+// dinheiro e a soma deu R$ 1,01 — o caixa foi acusado de falta de dinheiro.
+function cxqTrocadas(c) {
+  if (!c || !ccPalpiteForma || !ccPalpiteForma.size) return [];
+  const out = [];
+  ccPalpiteForma.forEach((g, id) => {
+    if (g.dia !== c.data || String(g.caixa) !== String(c.caixa_ext)) return;
+    if (!/^dinheiro/i.test(g.de || '')) return;
+    out.push({ id, ...g });
+  });
+  return out.sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
+}
+
 // Diagnóstico do caixa: o que a nuvem trocou e se o caixa fecha assim mesmo.
 // A soma dos desvios de TODAS as formas é o teste: se dá zero, nada sumiu —
 // a nuvem só pendurou o dinheiro na forma errada.
@@ -4716,7 +4737,12 @@ function cxqDiag(c) {
   const soma = desvios.reduce((s, d) => s + d.valor, 0);
   const din = desvios.find(d => /inheiro/.test(d.forma));
   const difDin = din ? din.valor : 0;
+  const trocadas = cxqTrocadas(c);
+  const trocadoDin = trocadas.reduce((s, t) => s + Number(t.valor || 0), 0);
   return { formas, desvios, grandes, soma,
+    // Vendas apontadas uma a uma e o que sobra no dinheiro depois de tirá-las.
+    trocadas, trocadoDin,
+    difDinLiq: Math.round((difDin - trocadoDin) * 100) / 100,
     // Os desvios se anulam dentro do caixa → a nuvem só trocou os rótulos.
     troca: Math.abs(soma) < CXQ_RUIDO,
     // A troca chegou a mexer no dinheiro? Se não, não há o que corrigir aqui —
@@ -4796,7 +4822,7 @@ function cxqPrevia(confId) {
 // o certo ali é adotar o fechamento da loja.
 function cxqTrocaExplica(c) {
   const dg = cxqDiag(c);
-  return !!(dg && dg.troca && dg.mexeNoDinheiro);
+  return !!(dg && dg.mexeNoDinheiro && (dg.troca || dg.trocadas.length));
 }
 
 async function cxqDespesasDb(db, c) {
@@ -4837,6 +4863,11 @@ async function renderCaixaEspecie() {
     cal.innerHTML = cxqCalNav() + '<div class="sem-dados" style="padding:30px;color:#999">Rode o SQL_CAIXA_CONCILIACAO.sql e espere o robô do caixa rodar.</div>';
     return;
   }
+
+  // O mesmo motor da aba Cartão: cruza o fechamento da loja com as vendas do
+  // dia e diz qual venda a nuvem pendurou na forma errada.
+  ccPalpiteForma = new Map();
+  try { await ccCarregarPalpites(db, mesIni, mesFim); } catch (e) { /* segue sem palpite */ }
 
   // Valores das diferenças já lançadas, para abater do esperado.
   cxqDifValor = {};
@@ -5139,20 +5170,39 @@ function cxqTrocaHTML(c) {
   if (!dg) return '';
   // Se a única divergência é o próprio dinheiro, a linha "dif" logo acima já
   // conta a história inteira — repetir aqui só polui o card.
-  if (!dg.troca && dg.grandes.length === 1 && /inheiro/.test(dg.grandes[0].forma)) return '';
+  if (!dg.troca && !dg.trocadas.length && dg.grandes.length === 1 && /inheiro/.test(dg.grandes[0].forma)) return '';
   const { pares, faltou, sobrou } = cxqPares(dg.grandes);
   const lista = l => l.map(x => `${x.forma} ${ccBRL(x.valor)}`).join(' · ');
   // Só oferece adotar o fechamento da loja quando a troca de fato sujou o
   // dinheiro deste caixa. Senão, trocar o número só perderia centavos à toa.
-  const podeAdotar = dg.troca && dg.mexeNoDinheiro && dg.dinheiroLoja != null
+  const podeAdotar = (dg.troca || dg.trocadas.length > 0) && dg.mexeNoDinheiro && dg.dinheiroLoja != null
     && ('esperado_ajuste' in c) && c.esperado_ajuste == null;
 
-  let corpo = pares.map(p => `<div style="padding:1px 0"><strong>${p.real} ${ccBRL(p.valor)}</strong> entrou como ${p.virou}</div>`).join('');
-  if (faltou.length) corpo += `<div style="padding:1px 0">a nuvem contou <strong>a menos</strong> em: ${lista(faltou)}</div>`;
-  if (sobrou.length) corpo += `<div style="padding:1px 0">a nuvem contou <strong>a mais</strong> em: ${lista(sobrou)}</div>`;
+  // Quando a venda foi identificada, ela aparece com hora e valor e já traz o
+  // botão que corrige a forma — é o que faltava na aba Dinheiro.
+  const trocadasHTML = dg.trocadas.map(t => {
+    const feito = t.atual && t.atual !== 'dinheiro';
+    const acao = feito
+      ? `<span style="font-size:11px;color:#2e7d32;white-space:nowrap">✔️ já corrigida</span>`
+      : `<button onclick="ccTrocarForma('${t.id}','${t.grupo}',this,'caixa')" style="font-size:11px;border:1px solid #8e44ad;background:#f6effa;color:#8e44ad;font-weight:600;border-radius:5px;padding:3px 8px;cursor:pointer;white-space:nowrap">⇢ corrigir para ${ccFormaLbl(t.grupo)}</button>`;
+    return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0">
+      <span>${t.hora || ''} · <strong>${ccBRL(t.valor)}</strong> entrou como ${t.de}, e a loja fechou esse valor em ${t.para}</span>${acao}</div>`;
+  }).join('');
+
+  let corpo = trocadasHTML + pares.map(p => `<div style="padding:1px 0"><strong>${p.real} ${ccBRL(p.valor)}</strong> entrou como ${p.virou}</div>`).join('');
+  // Com a venda apontada acima, repetir "sobrou aqui, faltou ali" só confunde:
+  // os dois números são a mesma venda vista de dois lados.
+  if (!dg.trocadas.length) {
+    if (faltou.length) corpo += `<div style="padding:1px 0">a nuvem contou <strong>a menos</strong> em: ${lista(faltou)}</div>`;
+    if (sobrou.length) corpo += `<div style="padding:1px 0">a nuvem contou <strong>a mais</strong> em: ${lista(sobrou)}</div>`;
+  }
 
   let tit, cor, rodape;
-  if (dg.troca && dg.mexeNoDinheiro) {
+  if (dg.trocadas.length && dg.mexeNoDinheiro) {
+    tit = '⚠️ O PDV lançou como Dinheiro uma venda que foi paga em outra forma';
+    cor = '#e67e22';
+    rodape = `Não falta dinheiro: tirando essa venda, o PDV esperaria ${ccBRL(dg.dinheiroNuvem - dg.trocadoDin)} na gaveta e a loja contou ${ccBRL(dg.dinheiroLoja)}.`;
+  } else if (dg.troca && dg.mexeNoDinheiro) {
     tit = '⚠️ O PDV trocou a forma de pagamento — o caixa fecha assim mesmo';
     cor = '#e67e22';
     rodape = 'O total do caixa está certo: nada sumiu, só foi pendurado na forma errada.';
@@ -5229,7 +5279,7 @@ async function cxqUsarLoja(confId) {
   const { data: c, error: e0 } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
   if (e0 || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
   const dg = cxqDiag(c);
-  if (!dg || !dg.troca || !dg.mexeNoDinheiro || dg.dinheiroLoja == null) {
+  if (!dg || !(dg.troca || dg.trocadas.length) || !dg.mexeNoDinheiro || dg.dinheiroLoja == null) {
     mostrarToast('Este caixa não fecha só com a troca de formas — confira à mão.', 'erro'); return;
   }
   if (c.dif_lancamento_id) {
@@ -5626,7 +5676,7 @@ const ccFormaLbl = f => CC_FORMA_LBL[f] || f || '—';
 // Corrige a forma de pagamento de UMA venda do PDV. O robô do PDV nunca
 // sobrescreve linha já existente (insert com ignore-duplicates), então a
 // correção fica de pé mesmo se ele reprocessar o dia.
-async function ccTrocarForma(id, nova, el) {
+async function ccTrocarForma(id, nova, el, origem) {
   if (!nova) return;
   const voltar = () => { if (el) { el.disabled = false; el.value = ''; } };
   if (el) el.disabled = true;
@@ -5651,7 +5701,7 @@ async function ccTrocarForma(id, nova, el) {
   }
   if (error) { mostrarToast('Erro ao corrigir: ' + error.message, 'erro'); voltar(); return; }
   mostrarToast(`Venda corrigida para ${ccFormaLbl(nova)} ✔️`, 'sucesso');
-  renderCartao();
+  if (origem === 'caixa') renderCaixaEspecie(); else renderCartao();
 }
 
 // Desfaz a resolução (remove a marca) → o caso volta a aparecer como pendência.
