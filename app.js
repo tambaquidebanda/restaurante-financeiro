@@ -4380,7 +4380,7 @@ async function ccCarregarPalpites(db, de, ate) {
   const dias = [...diasSet].sort();
   // Só a forma interessa do `raw`; puxar o jsonb inteiro de milhares de vendas
   // a cada abertura da tela seria desperdício.
-  const COLS = 'id,valor_bruto,bandeira,caixa_ext,data_hora_utc,data_hora_local,forma_pagamento';
+  const COLS = 'id,valor_bruto,bandeira,caixa_ext,data_hora_utc,forma_pagamento';
   const buscaV = extra => ccFetchPaginado(() => db.from('pdv_vendas')
     .select(COLS + extra)
     .gte('data_hora_utc', dias[0] + 'T00:00:00-04:00')
@@ -4390,7 +4390,10 @@ async function ccCarregarPalpites(db, de, ate) {
     try { vendas = await buscaV(',forma_raw:raw->>forma'); }
     catch (semSeta) { vendas = await buscaV(',raw'); }
   } catch (e) { return; }
-  vendas.forEach(v => { v._dia = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString().slice(0, 10); });
+  // Hora de Manaus, como no resto da tela — `data_hora_local` está gravada
+  // com fuso errado e mostraria 4 horas a mais.
+  vendas.forEach(v => { const m = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString();
+    v._dia = m.slice(0, 10); v._hora = m.slice(11, 16); });
   vendas = vendas.filter(v => diasSet.has(v._dia));
   // Venda sem caixa pode ser de qualquer caixa daquele dia; para não deixar dois
   // caixas do mesmo dia disputarem a mesma venda, quem pega primeiro fica com ela.
@@ -4432,7 +4435,7 @@ async function ccCarregarPalpites(db, de, ate) {
         // Valor, hora e caixa vão junto porque a aba Dinheiro mostra a venda
         // pelo nome — lá não existe lista de vendas onde pendurar o botão.
         ccPalpiteForma.set(vd.id, { de: ccBucketLbl(pend[i].de), para: ccBucketLbl(f), grupo: g,
-          valor: Number(vd.valor_bruto || 0), hora: (vd.data_hora_local || '').slice(11, 16),
+          valor: Number(vd.valor_bruto || 0), hora: vd._hora,
           dia: vd._dia, caixa: vd.caixa_ext, atual: vd.forma_pagamento });
       });
       livres = livres.filter(i => escolhidos.indexOf(i) < 0);
