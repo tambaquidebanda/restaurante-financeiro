@@ -754,6 +754,17 @@ body {
   background: white;
 }
 
+.rateio-unid {
+  flex: 1.3;
+  min-width: 120px;
+  padding: 7px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+  color: #555;
+}
+
 .rateio-valor {
   flex: 1;
   min-width: 90px;

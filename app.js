@@ -2529,7 +2529,10 @@ async function salvarLancamento(tipo, btnEl) {
           lancamento_id:  lancamentoId,
           plano_conta_id: r.plano_conta_id,
           valor:          r.valor,
-          descricao:      r.descricao || null
+          descricao:      r.descricao || null,
+          // Em branco = a loja do lançamento. Sem regravar isto, editar uma conta
+          // de pedido conjunto apagaria a loja das linhas.
+          unidade_id:     r.unidade_id || null
         }));
       if (rateioData.length > 0) {
         await q(db.from('rateio_itens').insert(rateioData))
@@ -2602,7 +2605,8 @@ async function editarLancamento(id, tipo) {
       rateioAtualPagar = (rateioData || []).map(r => ({
         plano_conta_id: r.plano_conta_id || '',
         valor:          Number(r.valor),
-        descricao:      r.descricao || ''
+        descricao:      r.descricao || '',
+        unidade_id:     r.unidade_id || ''
       }));
       renderizarRateio('pagar');
     }
@@ -2694,7 +2698,7 @@ function toggleRateio(tipo) {
 }
 
 function adicionarLinhaRateio(tipo) {
-  rateioAtualPagar.push({ plano_conta_id: '', valor: 0, descricao: '' });
+  rateioAtualPagar.push({ plano_conta_id: '', valor: 0, descricao: '', unidade_id: '' });
   renderizarRateio(tipo);
 }
 
@@ -2720,9 +2724,13 @@ function renderizarRateio(tipo) {
       });
       opts += '</optgroup>';
     });
+    // Loja da linha: em branco mantém o comportamento antigo (vale a loja do lançamento).
+    const optsUni = '<option value="">Loja do lançamento</option>' + unidades.map(u =>
+      `<option value="${u.id}" ${u.id === item.unidade_id ? 'selected' : ''}>${u.nome}</option>`).join('');
     return `
       <div class="rateio-item">
         <select class="rateio-cat" onchange="rateioAtualPagar[${i}].plano_conta_id=this.value">${opts}</select>
+        <select class="rateio-unid" title="Loja desta linha" onchange="rateioAtualPagar[${i}].unidade_id=this.value">${optsUni}</select>
         <input type="text" inputmode="decimal" class="rateio-valor input-moeda" value="${item.valor > 0 ? Number(item.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : ''}"
           placeholder="R$ valor"
           onchange="rateioAtualPagar[${i}].valor=parseMoeda(this.value); atualizarTotalRateio('${tipo}')"
@@ -9483,7 +9491,7 @@ async function _expandirRateios(db, lancamentos, inconsist) {
   const CH = 150;
   for (let i = 0; i < ids.length; i += CH) {
     const { data } = await db.from('rateio_itens')
-      .select('lancamento_id, plano_conta_id, valor')
+      .select('lancamento_id, plano_conta_id, valor, unidade_id')
       .in('lancamento_id', ids.slice(i, i + CH));
     (data || []).forEach(r => { (mapa[r.lancamento_id] = mapa[r.lancamento_id] || []).push(r); });
   }
@@ -9499,7 +9507,9 @@ async function _expandirRateios(db, lancamentos, inconsist) {
           somaRateio: soma, tipo: l.tipo, unidade_id: l.unidade_id || null, data: l.data_pagamento });
       }
       const fator = (soma > 0.01 && Math.abs(soma - Number(l.valor)) > 0.01) ? Number(l.valor) / soma : 1;
-      itens.forEach(r => out.push({ ...l, plano_conta_id: r.plano_conta_id, valor: Number(r.valor) * fator, _viaRateio: true }));
+      // A loja da linha manda; linha sem loja (todo rateio antigo) fica com a do lançamento.
+      itens.forEach(r => out.push({ ...l, plano_conta_id: r.plano_conta_id, valor: Number(r.valor) * fator,
+        unidade_id: r.unidade_id || l.unidade_id || null, _viaRateio: true }));
     } else {
       if (l.tem_rateio && inconsist) {   // marcado como rateio mas sem itens → também é inconsistência
         inconsist.push({ id: l.id, descricao: l.descricao || '(sem descrição)', valor: Number(l.valor),
@@ -9556,19 +9566,51 @@ async function _executarDre() {
     return todos;
   }
 
-  const [dadosMes, dadosAno, dadosHist] = await Promise.all([
+  // Pedido conjunto (Centro + Delivery P10) é UM lançamento com linhas de rateio
+  // de lojas diferentes. Filtrado no banco pela unidade do lançamento, a parte da
+  // outra loja sumiria. Então as contas rateadas do período são buscadas à parte —
+  // são poucas dezenas no ano inteiro — e o filtro por loja passa a valer depois da
+  // expansão, linha a linha. Rateio antigo (linha sem loja) herda a do lançamento,
+  // e o resultado fica igual ao de hoje.
+  async function buscarRateados(de, ate) {
+    if (!filtrarUnid) return [];
+    const { data } = await db.from('lancamentos')
+      .select('id, tipo, plano_conta_id, valor, data_pagamento, descricao, unidade_id, tem_rateio')
+      .eq('status', 'pago').eq('tem_rateio', true)
+      .gte('data_pagamento', de).lte('data_pagamento', ate);
+    return data || [];
+  }
+  const juntar = (base, extra) => {
+    if (!extra.length) return base;
+    const vistos = new Set(base.map(l => l.id));
+    return base.concat(extra.filter(l => !vistos.has(l.id)));
+  };
+  const porUnidade = linhas => filtrarUnid ? linhas.filter(l => unidadesSel.includes(l.unidade_id)) : linhas;
+
+  const [dadosMes, dadosAno, dadosHist, ratMes, ratAno, ratHist] = await Promise.all([
     buscarPaginado(mesIni, mesFim),
     buscarPaginado(anoIni, mesFim),
     buscarPaginado(`${ano}-01-01`, `${ano}-12-31`),
+    buscarRateados(mesIni, mesFim),
+    buscarRateados(anoIni, mesFim),
+    buscarRateados(`${ano}-01-01`, `${ano}-12-31`),
   ]);
 
   // Expande rateio para que a categorização feita na divisão entre na DRE
   const rateioInconsist = [];
-  const [exMes, exAno, exHist] = await Promise.all([
-    _expandirRateios(db, dadosMes, rateioInconsist),
-    _expandirRateios(db, dadosAno),
-    _expandirRateios(db, dadosHist),
-  ]);
+  const [exMes, exAno, exHist] = (await Promise.all([
+    _expandirRateios(db, juntar(dadosMes, ratMes), rateioInconsist),
+    _expandirRateios(db, juntar(dadosAno, ratAno)),
+    _expandirRateios(db, juntar(dadosHist, ratHist)),
+  ])).map(porUnidade);
+
+  // Conta rateada de outra loja entrou só para que suas linhas fossem avaliadas.
+  // Se nenhuma linha dela ficou, ela também não entra no aviso de rateio torto.
+  if (filtrarUnid) {
+    const vivos = new Set(exMes.map(l => l.id));
+    for (let i = rateioInconsist.length - 1; i >= 0; i--)
+      if (!vivos.has(rateioInconsist[i].id)) rateioInconsist.splice(i, 1);
+  }
 
   const calMes = _calcularDre(exMes);
   const calAno = _calcularDre(exAno);
@@ -10792,7 +10834,7 @@ async function carregarIntegracoes() {
   if (idsComRateio.length) {
     const { data: rateios } = await q(db
       .from('rascunho_rateio_itens')
-      .select('rascunho_id, valor, descricao, plano_contas(nome)')
+      .select('rascunho_id, valor, descricao, unidade_id, plano_contas(nome)')
       .in('rascunho_id', idsComRateio));
     (rateios || []).forEach(ri => {
       if (!_integRateioMap[ri.rascunho_id]) _integRateioMap[ri.rascunho_id] = [];
@@ -10914,11 +10956,14 @@ function renderIntegracoes(rascunhos) {
     const rateioMini = rateioItens.length
       ? `<div style="margin-top:6px;padding:4px 6px;background:#fff9e6;border-radius:4px;border:1px solid #f39c12;font-size:.7rem">
            <div style="color:#999;margin-bottom:2px;font-weight:600">RATEIO</div>
-           ${rateioItens.map(ri => `
-             <div style="display:flex;justify-content:space-between">
-               <span>${ri.plano_contas?.nome || ri.descricao || '—'}</span>
-               <span style="font-weight:600">${formatarMoeda(ri.valor)}</span>
-             </div>`).join('')}
+           ${rateioItens.map(ri => {
+             // Pedido de duas lojas: mostra de quem é cada parte antes de aprovar.
+             const loja = ri.unidade_id ? (unidades.find(u => u.id === ri.unidade_id) || {}).nome : '';
+             return `
+             <div style="display:flex;justify-content:space-between;gap:6px">
+               <span>${ri.plano_contas?.nome || ri.descricao || '—'}${loja ? ` <span style="color:#b9770e">· ${loja}</span>` : ''}</span>
+               <span style="font-weight:600;white-space:nowrap">${formatarMoeda(ri.valor)}</span>
+             </div>`; }).join('')}
          </div>` : '';
 
     return `
@@ -11173,6 +11218,9 @@ async function aprovarIntegracao(rascunhoId, contaId) {
         plano_conta_id: ri.plano_conta_id,
         valor:          ri.valor,
         descricao:      ri.descricao,
+        // Pedido de duas lojas vem com a loja em cada linha. Vazio = a unidade
+        // do lançamento, que é como sempre foi.
+        unidade_id:     ri.unidade_id || null,
       }))
     ));
   }
@@ -11738,9 +11786,12 @@ function pkMontar(per, pagos, pendentes, transf, rateios) {
                               : Math.round((v - acum) * 100) / 100;
         acum += val;
         const pcI = pcPorId.get(it.plano_conta_id);
+        // A empresa do pacote continua vindo do lançamento (conta bancária); aqui
+        // só a coluna Unidade do Razão passa a dizer a loja certa de cada parte.
         return { ...o,
           grupo: grupoDe(it.plano_conta_id) || (ent ? 'Receitas sem categoria' : 'Despesas sem categoria'),
           conta: pcI ? pcI.nome : '(sem categoria)',
+          unid:  (it.unidade_id ? nomeDe(unidades, it.unidade_id) : '') || o.unid,
           hist:  `${o.hist} [rateio ${i + 1} de ${n}]`,
           valor: ent ? val : -val };
       });
@@ -12127,13 +12178,13 @@ function pkVerItens(idAviso) {
 async function pkBuscarRateios(db, ids) {
   const mapa = {};
   for (let i = 0; i < ids.length; i += 150) {
-    const { data, error } = await q(db.from('rateio_itens').select('lancamento_id, plano_conta_id, valor')
+    const { data, error } = await q(db.from('rateio_itens').select('lancamento_id, plano_conta_id, valor, unidade_id')
       .in('lancamento_id', ids.slice(i, i + 150)));
     if (error) throw error;   // sem isso, todo rateio apareceria como "sem itens"
     (data || []).forEach(r => {
       const m = mapa[r.lancamento_id] || (mapa[r.lancamento_id] = { soma: 0, n: 0, itens: [] });
       m.soma += Number(r.valor) || 0; m.n++;
-      m.itens.push({ plano_conta_id: r.plano_conta_id, valor: Number(r.valor) || 0 });
+      m.itens.push({ plano_conta_id: r.plano_conta_id, valor: Number(r.valor) || 0, unidade_id: r.unidade_id || null });
     });
   }
   return mapa;
@@ -13251,19 +13302,29 @@ async function pdlGerar() {
   const vFim = ultDom > fim ? ultDom : fim;
 
   box.innerHTML = '<div class="sem-dados" style="padding:30px;color:#999"><i class="fas fa-spinner fa-spin"></i> Montando o painel…</div>';
-  let vendas, lanc, expandidos;
+  let vendas, lanc, lancRat, expandidos;
   try {
     const db = obterSupabase();
-    [vendas, lanc] = await Promise.all([
+    [vendas, lanc, lancRat] = await Promise.all([
       ccFetchPaginado(() => db.from('pdv_vendas').select('id,data_hora_utc,forma_pagamento,valor_bruto,raw')
         .ilike('unidade_nome', '%Parque%')
         .gte('data_hora_utc', ini + 'T00:00:00-04:00').lte('data_hora_utc', vFim + 'T23:59:59-04:00')),
       ccFetchPaginado(() => db.from('lancamentos').select('id,tipo,valor,plano_conta_id,descricao,data_pagamento,tem_rateio,unidade_id')
         .eq('status', 'pago').eq('unidade_id', DEL)
+        .gte('data_pagamento', ini).lte('data_pagamento', dlvSomaDias(vFim, 7))),
+      // Pedido conjunto Centro + Delivery P10 é um lançamento só, pendurado na loja
+      // de maior valor. Se ela for o Centro, a parte do P10 não viria na busca acima.
+      ccFetchPaginado(() => db.from('lancamentos').select('id,tipo,valor,plano_conta_id,descricao,data_pagamento,tem_rateio,unidade_id')
+        .eq('status', 'pago').eq('tem_rateio', true)
         .gte('data_pagamento', ini).lte('data_pagamento', dlvSomaDias(vFim, 7)))
     ]);
-    // Conta com rateio entra pelas categorias da divisão, como na DRE.
-    expandidos = await _expandirRateios(db, lanc.filter(l => (l.data_pagamento || '').slice(0, 10) <= fim));
+    // Conta com rateio entra pelas categorias da divisão, como na DRE. Depois de
+    // expandir, cada linha já sabe a sua loja e só ficam as do Delivery P10.
+    const ateFim = l => (l.data_pagamento || '').slice(0, 10) <= fim;
+    const vistos = new Set(lanc.map(l => l.id));
+    const todosLanc = lanc.concat((lancRat || []).filter(l => !vistos.has(l.id)));
+    expandidos = (await _expandirRateios(db, todosLanc.filter(ateFim)))
+      .filter(l => l.unidade_id === DEL);
   } catch (e) {
     console.error(e);
     box.innerHTML = pdlAviso('#e74c3c', 'Não consegui ler os dados agora. Tente de novo em instantes.');
