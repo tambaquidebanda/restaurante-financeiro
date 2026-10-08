@@ -6597,7 +6597,17 @@ async function verificarDuplicatas(transacoes) {
   const bancoId = document.getElementById('banco-importar')?.value || null;
   const dia = s => (s || '').substring(0, 10);
   const igual = (a, b) => Math.abs(Number(a) - Number(b)) < 0.01;
-  const marcar = (t, ofxId) => { t.jaImportado = true; t.selecionado = false; t.ofxIdExistente = ofxId || null; };
+  // `motivo` = o que reconheceu a linha, em texto, para a prévia poder dizer.
+  // Sem isso o aviso "Já importado anteriormente" não explica nada e, quando a
+  // evidência não tem código do extrato, não sobra nem o que desfazer: foi o que
+  // aconteceu em 07/10/2026 com o PIX de R$ 182,00 do motoboy, engolido pela
+  // transferência de mesmo valor e dia do Pedido #01655.
+  const marcar = (t, ofxId, motivo) => {
+    t.jaImportado    = true;
+    t.selecionado    = false;
+    t.ofxIdExistente = ofxId || null;
+    t.jaImportadoPor = motivo || null;
+  };
 
   // 1. Mesmo FITID em lancamentos.ofx_id ou pagamentos.ofx_id (bancos de código
   //    estável: Nubank, Itaú, Cora). Em lotes de 100, porque a lista vai na URL.
@@ -6613,7 +6623,7 @@ async function verificarDuplicatas(transacoes) {
     if (rPag.error) throw rPag.error;
     [...(rLanc.data || []), ...(rPag.data || [])].forEach(r => { if (r.ofx_id) conhecidos.add(r.ofx_id); });
   }
-  transacoes.forEach(t => { if (t.fitId && conhecidos.has(t.fitId)) marcar(t, t.fitId); });
+  transacoes.forEach(t => { if (t.fitId && conhecidos.has(t.fitId)) marcar(t, t.fitId, 'o código desta linha (FITID) já está gravado em um lançamento ou pagamento'); });
 
   // 2. Banco + dia + tipo + valor, contra tudo que já está gravado no período do arquivo.
   const semMatch = transacoes.filter(t => !t.jaImportado && t.data);
@@ -6630,7 +6640,7 @@ async function verificarDuplicatas(transacoes) {
         .eq('origem', 'ofx').eq('banco_id', bancoId)
         .gte('data', de).lte('data', ate)),
       ccFetchPaginado(() => db.from('transferencias')
-        .select('id, banco_origem_id, banco_destino_id, valor, data')
+        .select('id, banco_origem_id, banco_destino_id, valor, data, descricao')
         .or(`banco_origem_id.eq.${bancoId},banco_destino_id.eq.${bancoId}`)
         .gte('data', de).lte('data', ate))
     ]);
@@ -6651,7 +6661,7 @@ async function verificarDuplicatas(transacoes) {
     const grupo = (d, ofx, tipo, chaves) => {
       const k = `${d}|${ofx}`;
       if (!grupos.has(k)) {
-        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx, chaves: new Set(chaves || []) };
+        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx, chaves: new Set(chaves || []), rotulo: null };
         grupos.set(k, e);
         evidencias.push(e);
       }
@@ -6666,6 +6676,7 @@ async function verificarDuplicatas(transacoes) {
       if (!p.ofx_id || !tipo) continue;
       const e = grupo(dia(p.data), p.ofx_id, tipo, chavesDe(LancPorId.get(p.lancamento_id) || {}));
       chavesDe(LancPorId.get(p.lancamento_id) || {}).forEach(x => e.chaves.add(x));
+      if (!e.rotulo) e.rotulo = `pagamento já registrado da conta "${LancPorId.get(p.lancamento_id)?.descricao || 'sem descrição'}"`;
       e.soma += Number(p.valor) || 0;
       e.membros.push(Number(p.valor) || 0);
     }
@@ -6677,11 +6688,13 @@ async function verificarDuplicatas(transacoes) {
         // Nasceu do extrato, ou é parte de um depósito repartido: soma no grupo do código.
         const e = grupo(d, l.ofx_id, l.tipo, chavesDe(l));
         chavesDe(l).forEach(x => e.chaves.add(x));
+        if (!e.rotulo) e.rotulo = `o lançamento "${l.descricao || 'sem descrição'}" já conciliado neste dia`;
         e.soma += Number(l.valor) || 0;
         e.membros.push(Number(l.valor) || 0);
       } else if (!l.ofx_id) {
         // Pago à mão, sem vínculo com extrato.
-        evidencias.push({ data: d, tipo: l.tipo, valores: [l.valor, Number(l.valor_pago) || l.valor], membros: [], ofxId: null, chaves: chavesDe(l) });
+        evidencias.push({ data: d, tipo: l.tipo, valores: [l.valor, Number(l.valor_pago) || l.valor], membros: [], ofxId: null, chaves: chavesDe(l),
+                          rotulo: `a conta "${l.descricao || 'sem descrição'}", já paga em ${formatarData(d)} sem passar pelo extrato` });
       } else {
         // Já entrou pelo pagamento; o valor cheio da conta só serve de "parte".
         const e = grupos.get(`${d}|${l.ofx_id}`);
@@ -6689,10 +6702,22 @@ async function verificarDuplicatas(transacoes) {
       }
     }
     grupos.forEach(e => { e.valores = [e.soma]; });
+    // Transferencia e a evidencia mais fraca da lista: nao tem codigo do extrato,
+    // nao tem conta por tras e o nome de quem recebeu nao da para conferir (a conta
+    // de destino e um apelido nosso, "Nubank", e no extrato a linha vem no nome do
+    // titular). Por isso ela so bate por banco + dia + tipo + valor e qualquer
+    // outro pagamento do mesmo valor no mesmo dia cai na armadilha — foi assim que
+    // o PIX de R$ 182,00 do motoboy, em 07/10/2026, foi dado como ja importado pela
+    // transferencia do Pedido #01655. A trava continua (senao a transferencia entra
+    // em dobro), mas agora ela se identifica e a previa oferece "Nao e esta".
+    const nomeBanco = id => (bancosCadastrados || []).find(x => x.id === id)?.nome || 'conta';
     for (const tr of transfs) {
       const sai = tr.banco_origem_id === bancoId, entra = tr.banco_destino_id === bancoId;
       evidencias.push({ data: dia(tr.data), tipo: sai && !entra ? 'pagar' : entra && !sai ? 'receber' : null,
-                        valores: [tr.valor], membros: [], ofxId: null, chaves: new Set() });
+                        valores: [tr.valor], membros: [], ofxId: null, chaves: new Set(),
+                        rotulo: `a transferência ${nomeBanco(tr.banco_origem_id)} → ${nomeBanco(tr.banco_destino_id)} `
+                              + `de ${formatarMoeda(tr.valor)} em ${formatarData(dia(tr.data))}`
+                              + (tr.descricao ? ` ("${tr.descricao}")` : '') });
     }
 
     // Casa primeiro as linhas que batem TAMBÉM no favorecido: com três Pix de
@@ -6711,7 +6736,7 @@ async function verificarDuplicatas(transacoes) {
         const e = evidencias.find(e => !usadas.has(e) && e.data === t.data &&
           (!e.tipo || e.tipo === t.tipo) && e[campo].some(v => igual(v, t.valor)) &&
           (!porNome || ofxMesmoFavorecido(chaves, e.chaves)));
-        if (e) { usadas.add(e); marcar(t, e.ofxId); }
+        if (e) { usadas.add(e); marcar(t, e.ofxId, e.rotulo); }
       }
     };
     casar('valores', true);
@@ -6730,7 +6755,7 @@ async function verificarDuplicatas(transacoes) {
       .in('vencimento', datas));
     const existentes = new Set(jaExistem.map(l => `${Number(l.valor).toFixed(2)}|${l.vencimento}|${l.tipo}`));
     semFitId.forEach(t => {
-      if (existentes.has(`${t.valor.toFixed(2)}|${t.data}|${t.tipo}`)) marcar(t, null);
+      if (existentes.has(`${t.valor.toFixed(2)}|${t.data}|${t.tipo}`)) marcar(t, null, 'já existe conta paga de mesmo valor e data');
     });
   }
 
@@ -7273,13 +7298,24 @@ function renderizarPreviewOFX(transacoes) {
 
     if (t.jaImportado) {
       // Desfazer usa o código GRAVADO no sistema, não o do arquivo: no Santander o
-      // FITID muda a cada download e o do arquivo novo não acha nada. Linha
-      // reconhecida por conta paga à mão ou transferência não tem o que desfazer aqui.
+      // FITID muda a cada download e o do arquivo novo não acha nada.
+      // Linha reconhecida por transferência ou por conta paga à mão não tem código,
+      // então não há importação para desfazer — mas pode ter sido reconhecida pela
+      // evidência ERRADA, porque essas duas só batem por banco + dia + tipo + valor.
+      // Nesse caso o botão é "Não é esta", que devolve a linha para conciliar sem
+      // tocar em nada do que já está gravado.
       const btnDesfazer = t.ofxIdExistente
         ? `<button class="btn btn-sm" style="margin-left:10px;background:#fef0ee;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer;"
              onclick="desfazerImportacaoOFX('${t.ofxIdExistente}', ${i})">
              <i class="fas fa-undo"></i> Desfazer
            </button>`
+        : `<button class="btn btn-sm" style="margin-left:10px;background:#eaf4fb;color:#2980b9;border:1px solid #2980b9;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer;"
+             title="Devolve esta linha para conciliar. Nada do que já está gravado é alterado."
+             onclick="liberarLinhaJaImportada(${i})">
+             <i class="fas fa-hand-point-right"></i> Não é esta — conciliar
+           </button>`;
+      const porQue = t.jaImportadoPor
+        ? `<div style="font-weight:400;color:#8a6d3b;margin-top:3px;">Reconhecida por ${t.jaImportadoPor}.</div>`
         : '';
       return `
         <tr style="opacity:0.6; background:#fff8e1;">
@@ -7291,6 +7327,7 @@ function renderizarPreviewOFX(transacoes) {
           <td colspan="3" style="color:#e67e22;font-size:12px;font-weight:600;">
             <i class="fas fa-exclamation-triangle"></i> Já importado anteriormente
             ${btnDesfazer}
+            ${porQue}
           </td>
         </tr>`;
     }
@@ -7449,6 +7486,25 @@ async function desfazerImportacaoOFX(fitId, i) {
   // Tenta re-fazer o auto-match só para essa transação
   autoMatchConciliacao([transacoesOFX[i]]);
   renderizarPreviewOFX(transacoesOFX);
+}
+
+// "Nao e esta" do aviso de ja importado. A linha foi reconhecida por uma evidencia
+// SEM codigo do extrato (transferencia, ou conta paga a mao), que bate so por banco
+// + dia + tipo + valor e nao olha o favorecido. Quando a linha e outro pagamento de
+// mesmo valor no mesmo dia (07/10/2026: PIX do motoboy x transferencia do Pedido
+// #01655), isto devolve a linha para conciliar. Nao apaga nem altera nada no banco:
+// o que a evidencia representa continua gravado do mesmo jeito.
+function liberarLinhaJaImportada(i) {
+  const t = transacoesOFX[i];
+  if (!t) return;
+  t.jaImportado    = false;
+  t.ofxIdExistente = null;
+  t.jaImportadoPor = null;
+  t.selecionado    = true;
+  t.lancamento_id  = null;
+  autoMatchConciliacao([t]);
+  renderizarPreviewOFX(transacoesOFX);
+  mostrarToast('Linha liberada para conciliar. Nada do que já estava gravado foi alterado.', 'sucesso');
 }
 
 let _concilMultiplaIdx = null;
@@ -8466,7 +8522,54 @@ async function importarTransacoes() {
   // ainda não existe no banco, fica vazio e o insert continua funcionando.
   const marcaOFX = (await temColunaOfxCriado(db)) ? { ofx_criado: true } : {};
 
-  // Transferências entre contas
+  // Transferências entre contas.
+  // Antes de gravar, confere se o mesmo dinheiro já não está lançado como
+  // transferência de OUTRA origem. A do comprador externo nasce nas Integrações
+  // Pendentes com a data do pedido; quando essa data não é a do PIX, a linha de
+  // verdade chega aqui sem par, é marcada à mão, e o valor sai duas vezes do
+  // Santander. Aconteceu 4 vezes até 08/10/2026, R$ 823,98: Pedido #00905 (500,00),
+  // #01550 (90,00), #01552 (51,98) e #01655 (182,00 — este engoliu o PIX do motoboy
+  // na conciliação do dia seguinte).
+  // Só avisa quando a descrição gravada é DIFERENTE da linha do extrato. PIX de
+  // mesmo valor que se repete a cada poucos dias (o da STONE, R$ 1.995,00) vem com
+  // a mesma descrição nas duas e não pode virar pergunta a cada importação.
+  if (aTransferencias.length) {
+    const _nomeB = id => bancosCadastrados.find(b => b.id === id)?.nome || 'conta';
+    const _dias  = (a, b) => Math.abs(new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000;
+    const _norm  = txt => String(txt || '').toUpperCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+    const avisos = [];
+    for (const t of aTransferencias) {
+      const origemId  = t.tipo === 'pagar' ? bancoId : t.transferencia_destino_id;
+      const destinoId = t.tipo === 'pagar' ? t.transferencia_destino_id : bancoId;
+      const { data: iguais } = await q(db.from('transferencias')
+        .select('data, valor, descricao')
+        .eq('banco_origem_id', origemId).eq('banco_destino_id', destinoId)
+        .eq('valor', t.valor));
+      (iguais || [])
+        .filter(x => _dias(x.data, t.data) <= 3 && _norm(x.descricao) !== _norm(t.descricao))
+        .forEach(x => avisos.push(
+          `• ${formatarMoeda(t.valor)} — linha do extrato de ${formatarData(t.data)}: "${t.descricao}"\n` +
+          `   já existe transferência ${_nomeB(origemId)} → ${_nomeB(destinoId)} em ${formatarData(x.data)}` +
+          (x.descricao ? `: "${x.descricao}"` : '')
+        ));
+    }
+    if (avisos.length) {
+      const ok = confirm(
+        `Atenção: ${avisos.length} linha(s) marcada(s) como transferência já parece(m) estar lançada(s):\n\n` +
+        `${avisos.slice(0, 8).join('\n\n')}${avisos.length > 8 ? `\n\n…e mais ${avisos.length - 8}.` : ''}\n\n` +
+        `Se for o MESMO dinheiro, cancele e desmarque a linha: a transferência já está ` +
+        `lançada e esta linha não precisa de nada. Se a data da que já existe estiver ` +
+        `errada, corrija em Transferências.\n\n` +
+        `Gravar mesmo assim?`
+      );
+      if (!ok) {
+        restaurarBtn();
+        mostrarToast('Importação pausada. Confira a tela de Transferências antes de confirmar.');
+        return;
+      }
+    }
+  }
   for (const t of aTransferencias) {
     const origemId  = t.tipo === 'pagar'   ? bancoId : t.transferencia_destino_id;
     const destinoId = t.tipo === 'pagar'   ? t.transferencia_destino_id : bancoId;
@@ -10360,6 +10463,13 @@ function formatarMoeda(valor) {
   return 'R$ ' + Number(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Hoje no fuso do restaurante (Manaus, UTC-4). `new Date().toISOString()` devolve
+// o dia em UTC: das 20h à meia-noite daqui, ele já virou AMANHÃ. Usar em qualquer
+// lugar onde a data gravada representa "o dia em que isso aconteceu".
+function hojeManaus() {
+  return new Date(Date.now() - 4 * 3600 * 1000).toISOString().split('T')[0];
+}
+
 function formatarData(dataStr) {
   if (!dataStr) return '-';
   const [ano, mes, dia] = dataStr.split('-');
@@ -11279,15 +11389,26 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
     if (!ok) { mostrarToast('Operação cancelada. Nada foi gravado.'); return; }
   }
 
-  // Aviso B: data distante de hoje. A transferência herda o vencimento do pedido,
-  // mas o PIX sai no dia da aprovação. No #00616 isso gravou 15/08 numa saída de 22/07.
-  const _hoje = new Date().toISOString().split('T')[0];
+  // Aviso B: a data da transferência é o dia em que o PIX sai, que é HOJE — não o
+  // vencimento nem a data de entrega do pedido, que são futuros. Até 08/10/2026 a
+  // data vinha do vencimento e só havia pergunta acima de 7 dias de diferença; de
+  // 1 a 3 dias passava calado. Foi o que aconteceu com o Pedido #01655: entrega em
+  // 07/10, PIX enviado em 06/10, transferência gravada em 07/10. A linha real de
+  // 06/10 do extrato ficou sem par e foi marcada à mão como transferência (os
+  // R$ 182,00 saíram em dobro do Santander), e a de 07/10, que nunca existiu no
+  // banco, engoliu o PIX do motoboy de mesmo valor na conciliação do dia seguinte.
+  // Agora: data no futuro nunca é aceita (vira hoje, em silêncio, porque é o único
+  // valor possível); data no passado ainda pergunta, porque pode ser um PIX de
+  // outro dia sendo registrado agora.
+  const _hoje = hojeManaus();
   let dataTransf = vencimento || _hoje;
-  const _diasFora = Math.abs(new Date(dataTransf + 'T00:00:00') - new Date(_hoje + 'T00:00:00')) / 86400000;
-  if (_diasFora > 7) {
+  if (dataTransf > _hoje) {
+    dataTransf = _hoje;
+  } else if (dataTransf < _hoje) {
     const usarHoje = confirm(
       `Esta transferência será registrada em ${formatarData(dataTransf)}, mas hoje é ${formatarData(_hoje)}.\n\n` +
-      `A data veio do vencimento do pedido. Se o PIX está saindo agora, use a data de hoje.\n\n` +
+      `A data veio do pedido. Se o PIX está saindo agora, use a data de hoje — ` +
+      `transferência com data errada não casa com a linha do extrato e acaba lançada em dobro.\n\n` +
       `OK = usar ${formatarData(_hoje)}   ·   Cancelar = manter ${formatarData(dataTransf)}`
     );
     if (usarHoje) dataTransf = _hoje;
@@ -11307,6 +11428,33 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
         `Atenção: já existe ${jaExiste.length} transferência registrada para o pedido ${r.pedido_num}:\n\n` +
         `${lista}\n\n` +
         `Só continue se o PIX foi mesmo enviado mais de uma vez para este pedido.\n\n` +
+        `Registrar outra transferência mesmo assim?`
+      );
+      if (!ok) { mostrarToast('Operação cancelada. Nada foi gravado.'); return; }
+    }
+  }
+
+  // Trava 2b: a MESMA quantia já lançada como transferência entre as mesmas duas
+  // contas, até 3 dias para cada lado. A Trava 2 acima só procura pelo número do
+  // pedido, então não vê a linha do extrato que o financeiro já marcou como
+  // transferência à mão — e é esse o caminho que duplicou os pedidos #01550 e
+  // #01552 em 28/09/2026 (extrato conciliado 17:27, pedido aprovado 17:48).
+  {
+    const _d3 = new Date(new Date(dataTransf + 'T00:00:00').getTime() - 3 * 86400000).toISOString().split('T')[0];
+    const _d4 = new Date(new Date(dataTransf + 'T00:00:00').getTime() + 3 * 86400000).toISOString().split('T')[0];
+    const { data: mesmoValor } = await q(db.from('transferencias')
+      .select('data, valor, descricao')
+      .eq('banco_origem_id', origemId).eq('banco_destino_id', destinoId)
+      .eq('valor', valor).gte('data', _d3).lte('data', _d4));
+    const outras = (mesmoValor || []).filter(t => !r.pedido_num || !(t.descricao || '').includes(r.pedido_num));
+    if (outras.length) {
+      const lista = outras.map(t => `• ${formatarData(t.data)} — ${formatarMoeda(t.valor)}${t.descricao ? ` — "${t.descricao}"` : ''}`).join('\n');
+      const ok = confirm(
+        `Atenção: já existe ${formatarMoeda(valor)} lançado como transferência ` +
+        `${_bancoNome(origemId)} → ${_bancoNome(destinoId)} por estes dias:\n\n` +
+        `${lista}\n\n` +
+        `Se essa é a linha do extrato deste mesmo PIX, cancele — o dinheiro já está ` +
+        `lançado e registrar de novo tira o valor duas vezes do ${_bancoNome(origemId)}.\n\n` +
         `Registrar outra transferência mesmo assim?`
       );
       if (!ok) { mostrarToast('Operação cancelada. Nada foi gravado.'); return; }
