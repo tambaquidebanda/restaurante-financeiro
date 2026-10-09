@@ -11285,6 +11285,41 @@ function imprimirVizPedido() {
   setTimeout(() => w.print(), 400);
 }
 
+// Copia a divisão por categoria do rascunho para o lançamento recém-criado.
+// Os TRÊS botões de aprovar precisam dela (Gerar Conta, Transferência e Dinheiro):
+// quando o pedido tem mais de uma categoria o estoque manda `tem_rateio: true` e
+// deixa `plano_conta_id` NULO, porque a categoria está linha a linha em
+// `rascunho_rateio_itens`. Quem não copiar essas linhas joga a classificação fora
+// e a conta inteira cai na DRE como "sem categoria" — foi o que aconteceu com o
+// Pedido #01456 (Hortifruti 344,00 + Estivas 87,00 viraram 431,00 sem categoria
+// nenhuma) e com mais 30 pedidos de comprador externo entre julho e outubro/2026.
+async function _copiarRateioDoRascunho(db, rascunhoId, lancamentoId) {
+  if (!lancamentoId) return false;
+  const { data: itens } = await q(db.from('rascunho_rateio_itens').select('*').eq('rascunho_id', rascunhoId));
+  if (!itens?.length) {
+    mostrarToast('Atenção: o pedido veio com rateio, mas não encontrei as linhas. '
+               + 'A conta ficou sem categoria — classifique à mão no Contas a Pagar.', 'erro');
+    return false;
+  }
+  const { error } = await q(db.from('rateio_itens').insert(
+    itens.map(ri => ({
+      lancamento_id:  lancamentoId,
+      plano_conta_id: ri.plano_conta_id,
+      valor:          ri.valor,
+      descricao:      ri.descricao,
+      // Pedido de duas lojas vem com a loja em cada linha. Vazio = a unidade
+      // do lançamento, que é como sempre foi.
+      unidade_id:     ri.unidade_id || null,
+    }))
+  ));
+  if (error) {
+    mostrarToast('Atenção: não consegui gravar o rateio (' + error.message + '). '
+               + 'A conta ficou sem categoria — classifique à mão no Contas a Pagar.', 'erro');
+    return false;
+  }
+  return true;
+}
+
 async function aprovarIntegracao(rascunhoId, contaId) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
@@ -11292,13 +11327,6 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   // Busca o rascunho
   const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
   if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
-
-  // Busca rateio (se tiver)
-  let rateioItens = [];
-  if (r.tem_rateio) {
-    const { data: ri } = await q(db.from('rascunho_rateio_itens').select('*').eq('rascunho_id', rascunhoId));
-    rateioItens = ri || [];
-  }
 
   // Insere em lancamentos
   const { data: lanc, error } = await q(db.from('lancamentos').insert([{
@@ -11321,19 +11349,7 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   if (error) { mostrarToast('Erro ao aprovar: ' + error.message, 'erro'); return; }
 
   // Cria rateio_itens no financeiro
-  if (r.tem_rateio && lanc?.id && rateioItens.length) {
-    await q(db.from('rateio_itens').insert(
-      rateioItens.map(ri => ({
-        lancamento_id:  lanc.id,
-        plano_conta_id: ri.plano_conta_id,
-        valor:          ri.valor,
-        descricao:      ri.descricao,
-        // Pedido de duas lojas vem com a loja em cada linha. Vazio = a unidade
-        // do lançamento, que é como sempre foi.
-        unidade_id:     ri.unidade_id || null,
-      }))
-    ));
-  }
+  if (r.tem_rateio) await _copiarRateioDoRascunho(db, rascunhoId, lanc?.id);
 
   // Atualiza cmp_contas_pagar com lancamento_id (avisa o estoque que já foi enviado).
   // Fallback: se não veio contaId, localiza a conta pelo pedido_num do rascunho.
@@ -11495,10 +11511,11 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
       data_pagamento: null,
       banco_id:       null,
       fornecedor_id:  r.fornecedor_id  || null,
-      plano_conta_id: r.plano_conta_id || null,
+      // Pedido rateado vem com plano_conta_id nulo: a categoria está no rateio.
+      plano_conta_id: r.tem_rateio ? null : (r.plano_conta_id || null),
       numero_pedido:  r.numero_pedido,
       observacoes:    r.observacoes,
-      tem_rateio:     false,
+      tem_rateio:     r.tem_rateio || false,
       unidade_id:     r.unidade_id || null,
     }]).select('id').single());
 
@@ -11517,6 +11534,9 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
       );
       return;
     }
+
+    // 2b. Leva junto a divisão por categoria do pedido.
+    if (r.tem_rateio) await _copiarRateioDoRascunho(db, rascunhoId, lanc?.id);
 
     // 3. Atualiza cmp_contas_pagar com adiantamento_lancamento_id
     if (contaId && lanc?.id) {
@@ -11541,7 +11561,7 @@ async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixa
   const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
   if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
 
-  const dataPag = vencimento || new Date().toISOString().split('T')[0];
+  const dataPag = vencimento || hojeManaus();
 
   const { data: lanc, error: errLanc } = await q(db.from('lancamentos').insert([{
     descricao:      r.descricao,
@@ -11554,13 +11574,19 @@ async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixa
     data_pagamento: dataPag,
     banco_id:       caixaBancoId || null,
     fornecedor_id:  r.fornecedor_id  || null,
-    plano_conta_id: r.plano_conta_id || null,
+    // Pedido rateado vem com plano_conta_id nulo: a categoria está no rateio.
+    plano_conta_id: r.tem_rateio ? null : (r.plano_conta_id || null),
     numero_pedido:  r.numero_pedido,
     observacoes:    r.observacoes,
-    tem_rateio:     false,
+    tem_rateio:     r.tem_rateio || false,
     unidade_id:     r.unidade_id || null,
   }]).select('id').single());
   if (errLanc) { mostrarToast('Erro ao registrar lançamento: ' + errLanc.message, 'erro'); return; }
+
+  // Pagamento em dinheiro de comprador externo é a despesa DEFINITIVA do pedido:
+  // o estoque vê o adiantamento já pago no Caixa e não gera outra conta. Então é
+  // aqui que a categoria do pedido tem de entrar, ou ela se perde de vez.
+  if (r.tem_rateio) await _copiarRateioDoRascunho(db, rascunhoId, lanc?.id);
 
   if (contaId && lanc?.id) {
     await q(db.from('cmp_contas_pagar').update({ adiantamento_lancamento_id: lanc.id }).eq('id', contaId));
