@@ -4183,11 +4183,36 @@ async function computePix(db, de, ate) {
   // Mesma regra da Etapa A: ordem fixa = resultado sempre igual.
   pool.forEach(arr => arr.sort((a, b) => a.data.localeCompare(b.data)));
   const diaDiff = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
+  // O banco não mexe em sábado, domingo nem feriado: a venda de sábado só aparece no
+  // extrato na segunda, e com feriado emendado só na terça. Com a janela de 1 dia que
+  // havia aqui, o sábado 03/10/2026 teve 50 de 51 Pix marcados como "não caíram" — e
+  // 46 deles estavam no extrato do dia 05/10, com o centavo exato. No feriado de
+  // 12/10/2026 foram 171 vendas (sáb 10, dom 11) pelo mesmo motivo: o banco lançou os
+  // três dias juntos em 13/10.
+  // Em vez de cadastrar feriado, pergunta ao próprio extrato: `proxDiaComPix` é o
+  // primeiro dia DEPOIS da venda em que o banco teve algum Pix. Sábado e domingo não
+  // têm, então a venda de sábado procura direto na segunda.
+  const diasComPix = [...new Set(banco.map(b => (b.data_pagamento || '').slice(0, 10)).filter(Boolean))].sort();
+  const proxCache = new Map();
+  const proxDiaComPix = dia => {
+    if (!proxCache.has(dia)) proxCache.set(dia, diasComPix.find(d => d > dia) || null);
+    return proxCache.get(dia);
+  };
+  // Teto de 4 dias: sexta → terça (sáb, dom e feriado na segunda) é o maior buraco
+  // normal. Mais do que isso é extrato que ninguém importou, e aí é melhor acusar do
+  // que casar com a semana seguinte.
+  const MAX_DIAS_SEM_BANCO = 4;
+  const janelaOk = (diaVenda, dataBanco) => {
+    const gap = diaDiff(dataBanco, diaVenda);
+    if (gap >= -1 && gap <= 1) return true;              // regra antiga, intacta
+    if (gap < -1 || gap > MAX_DIAS_SEM_BANCO) return false;
+    return dataBanco === proxDiaComPix(diaVenda);        // primeiro dia útil com movimento
+  };
   pdv.forEach(p => { const m = new Date(Date.parse(p.data_hora_utc) - 4 * 3600000).toISOString(); p.dia = m.slice(0, 10); p.hora = m.slice(11, 16); });
   const casar = p => {
     const k = Math.round((p.valor_bruto || 0) * 100); const arr = pool.get(k); if (!arr) return false;
     let best = null;
-    for (const b of arr) { if (b.used) continue; const gap = Math.abs(diaDiff(p.dia, b.data)); if (gap > 1) continue; if (!best || gap < best.gap) best = { b, gap }; }
+    for (const b of arr) { if (b.used) continue; if (!janelaOk(p.dia, b.data)) continue; const gap = Math.abs(diaDiff(p.dia, b.data)); if (!best || gap < best.gap) best = { b, gap }; }
     if (best) { best.b.used = true; p.bid = best.b.id; return true; }   // bid = lançamento do banco
     return false;
   };
