@@ -6754,20 +6754,52 @@ async function verificarDuplicatas(transacoes) {
     // senão outra linha do arquivo, de mesmo valor e dia, se aproveita dela.
     const jaPeloCodigo = new Set(transacoes.filter(t => t.jaImportado && t.fitId).map(t => t.fitId));
     evidencias.forEach(e => { if (e.ofxId && jaPeloCodigo.has(e.ofxId)) usadas.add(e); });
-    const casar = (campo, porNome) => {
+    const casar = campo => {
       for (const t of semMatch) {
         if (t.jaImportado) continue;
-        const chaves = porNome ? ofxPalavrasChave(t.descricao) : null;
         const e = evidencias.find(e => !usadas.has(e) && e.data === t.data &&
-          (!e.tipo || e.tipo === t.tipo) && e[campo].some(v => igual(v, t.valor)) &&
-          (!porNome || ofxMesmoFavorecido(chaves, e.chaves)));
+          (!e.tipo || e.tipo === t.tipo) && e[campo].some(v => igual(v, t.valor)));
         if (e) { usadas.add(e); marcar(t, e.ofxId, e.rotulo); }
       }
     };
-    casar('valores', true);
-    casar('membros', true);
-    casar('valores', false);
-    casar('membros', false);
+    // Pelo favorecido: casa PRIMEIRO os pares que mais se parecem, e nao o
+    // primeiro par com UMA palavra em comum. Sobrenome brasileiro se repete
+    // demais ("SILVA", "SANTOS", "JOSE") e, na segunda-feira, quando o banco
+    // empilha sabado e domingo (19/10/2026: 202 linhas no dia, 51 delas com
+    // valor repetido), isso trocava os pares: o Pix de R$ 120,00 do RODRIGO
+    // COSTA DA SILVA foi dado como ja importado por causa do lancamento do LEON
+    // SILVA DOS SANTOS — so o "SILVA" batia — e quem sobrou na previa foi a
+    // linha do LEON, que ja estava conciliada de manha. O dono desfez o
+    // lancamento bom achando que era repetido: R$ 120,00 do Rodrigo e R$ 160,00
+    // do Welington sumiram do dia 19/10/2026.
+    // Agora: LEON x LEON tem 3 palavras em comum e RODRIGO x LEON tem 1, entao
+    // o LEON casa com o LEON e a linha que fica para conciliar e a do Rodrigo.
+    const casarPorNome = campo => {
+      const pares = [];
+      semMatch.forEach((t, ti) => {
+        if (t.jaImportado) return;
+        const chaves = ofxPalavrasChave(t.descricao);
+        if (!chaves.size) return;
+        evidencias.forEach((e, ei) => {
+          if (usadas.has(e) || e.data !== t.data) return;
+          if (e.tipo && e.tipo !== t.tipo) return;
+          if (!e[campo].some(v => igual(v, t.valor))) return;
+          let iguais = 0;
+          for (const palavra of chaves) if (e.chaves.has(palavra)) iguais++;
+          if (iguais) pares.push({ t, e, iguais, ti, ei });
+        });
+      });
+      // Mais palavras em comum primeiro; empate resolve na ordem do arquivo.
+      pares.sort((a, b) => b.iguais - a.iguais || a.ti - b.ti || a.ei - b.ei);
+      for (const par of pares) {
+        if (par.t.jaImportado || usadas.has(par.e)) continue;
+        usadas.add(par.e); marcar(par.t, par.e.ofxId, par.e.rotulo);
+      }
+    };
+    casarPorNome('valores');
+    casarPorNome('membros');
+    casar('valores');
+    casar('membros');
   }
 
   // 3. Planilha (sem fitId): verifica por valor + data + tipo já pagos
