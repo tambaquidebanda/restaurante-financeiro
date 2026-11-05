@@ -4332,6 +4332,11 @@ function ccStatusBancoTxt(DB) {
 // Onde as duas pontas batem, dá pra apontar a venda com nome e sobrenome.
 // Conferido em agosto/2026: 13 vendas identificadas em 15 dias.
 let ccPalpiteForma = new Map();
+// Vendas que a nuvem marcou como DINHEIRO, por "dia|caixa". A aba Dinheiro nao
+// tinha lista de vendas: quando o casador automatico nao apontava a venda, uma
+// venda rotulada como dinheiro por engano NAO tinha como ser corrigida por tela
+// nenhuma (a de Cartao/Pix so lista cartao e pix). Caixa 13125 de 26/10/2026.
+let ccVendasDinheiro = new Map();
 
 // Sobras e faltas por forma (e por bandeira, quando a API detalha).
 function ccBuckets(formas) {
@@ -4395,6 +4400,7 @@ function ccSubset(valores, alvo, tol) {
 
 async function ccCarregarPalpites(db, de, ate) {
   ccPalpiteForma = new Map();
+  ccVendasDinheiro = new Map();
   let confs = [];
   try {
     confs = await ccFetchPaginado(() => db.from('caixa_dia_conf')
@@ -4428,6 +4434,14 @@ async function ccCarregarPalpites(db, de, ate) {
   vendas.forEach(v => { const m = new Date(Date.parse(v.data_hora_utc) - 4 * 3600000).toISOString();
     v._dia = m.slice(0, 10); v._hora = m.slice(11, 16); });
   vendas = vendas.filter(v => diasSet.has(v._dia));
+  // Guarda as de dinheiro para a aba Dinheiro poder lista-las e corrigi-las.
+  // Sai de graca: a busca acima ja trouxe todas as formas.
+  vendas.forEach(v => {
+    if (!/^dinheiro$/i.test((v.forma_pagamento || '').trim())) return;
+    const k = v._dia + '|' + (v.caixa_ext == null ? '' : v.caixa_ext);
+    if (!ccVendasDinheiro.has(k)) ccVendasDinheiro.set(k, []);
+    ccVendasDinheiro.get(k).push(v);
+  });
   // Venda sem caixa pode ser de qualquer caixa daquele dia; para não deixar dois
   // caixas do mesmo dia disputarem a mesma venda, quem pega primeiro fica com ela.
   const usadosDia = {};
@@ -5209,10 +5223,23 @@ function cxqTrocaHTML(c) {
   if (!dg.troca && !dg.trocadas.length && dg.grandes.length === 1 && /inheiro/.test(dg.grandes[0].forma)) return '';
   const { pares, faltou, sobrou } = cxqPares(dg.grandes);
   const lista = l => l.map(x => `${x.forma} ${ccBRL(x.valor)}`).join(' · ');
-  // Só oferece adotar o fechamento da loja quando a troca de fato sujou o
-  // dinheiro deste caixa. Senão, trocar o número só perderia centavos à toa.
-  const podeAdotar = (dg.troca || dg.trocadas.length > 0) && dg.mexeNoDinheiro && dg.dinheiroLoja != null
-    && ('esperado_ajuste' in c) && c.esperado_ajuste == null;
+  // O dinheiro que sobrou na nuvem tem para onde ir? Se existe falta em OUTRA
+  // forma que cubra essa sobra, o dinheiro nao sumiu: esta pendurado na forma
+  // errada, e adotar o fechamento da loja e legitimo mesmo sem a venda apontada
+  // com nome e sobrenome.
+  //
+  // Antes o botao exigia `dg.troca` (o dia inteiro fechando) ou uma venda
+  // identificada. Caixa 13125 de 26/10/2026 mostrou o buraco: a nuvem poe
+  // R$ 131,59 em dinheiro, a loja poe R$ 44,00 e o caixa contou R$ 44,00 - mas
+  // as formas do dia ficaram R$ 3,13 fora de zero (em cartao, nada a ver com a
+  // gaveta) e o casador de vendas nao fechou por R$ 0,60. Resultado: os dois
+  // caminhos certos sumiram da tela e sobrou so "lancar a falta como despesa",
+  // que teria criado uma despesa falsa de R$ 87,59 no DRE.
+  const faltaTotal = faltou.reduce((s, x) => s + x.valor, 0);
+  const dinheiroCoberto = dg.difDinheiro > CXQ_TOL && faltaTotal >= dg.difDinheiro - CXQ_RUIDO;
+  // Senão, trocar o número só perderia centavos à toa.
+  const podeAdotar = (dg.troca || dg.trocadas.length > 0 || dinheiroCoberto) && dg.mexeNoDinheiro
+    && dg.dinheiroLoja != null && ('esperado_ajuste' in c) && c.esperado_ajuste == null;
 
   // Quando a venda foi identificada, ela aparece com hora e valor e já traz o
   // botão que corrige a forma — é o que faltava na aba Dinheiro.
@@ -5249,7 +5276,9 @@ function cxqTrocaHTML(c) {
   } else if (dg.mexeNoDinheiro) {
     tit = `⚠️ Em dinheiro, o PDV e a loja divergem em ${ccBRL(Math.abs(dg.difDinheiro))}`;
     cor = '#c0392b';
-    rodape = 'Não é troca de rótulo: sobra diferença de verdade. Se ela se explicar (devolução, sangria não registrada), use o botão de lançar a falta como despesa.';
+    rodape = dinheiroCoberto
+      ? `Esse dinheiro tem para onde ir: falta ${ccBRL(faltaTotal)} em outra forma, ou seja a venda existe e foi paga de outro jeito — nao sumiu da gaveta. Se o que voce contou bate com o fechamento da loja (${ccBRL(dg.dinheiroLoja)}), use <strong>usar o fechamento da loja</strong>. So lance como despesa se faltou dinheiro de verdade.`
+      : 'Não é troca de rótulo: sobra diferença de verdade. Se ela se explicar (devolução, sangria não registrada), use o botão de lançar a falta como despesa.';
   } else {
     tit = 'ℹ️ O PDV divergiu da loja em outras formas (o dinheiro está certo)';
     cor = '#7f8c8d';
