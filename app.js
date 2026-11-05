@@ -4789,7 +4789,13 @@ function cxqDiag(c) {
   const difDin = din ? din.valor : 0;
   const trocadas = cxqTrocadas(c);
   const trocadoDin = trocadas.reduce((s, t) => s + Number(t.valor || 0), 0);
-  return { formas, desvios, grandes, soma,
+  // O dinheiro que sobrou na nuvem tem para onde ir? Se falta, em OUTRA forma,
+  // pelo menos o que sobrou aqui, entao a venda existe e so foi paga de outro
+  // jeito - nao sumiu da gaveta. Fica no diagnostico porque a tela (o botao) e
+  // o clique (cxqUsarLoja) precisam decidir pela mesma regra.
+  const faltaTotal = cxqPares(grandes).faltou.reduce((t, x) => t + x.valor, 0);
+  const dinheiroCoberto = difDin > CXQ_TOL && faltaTotal >= difDin - CXQ_RUIDO;
+  return { formas, desvios, grandes, soma, faltaTotal, dinheiroCoberto,
     // Vendas apontadas uma a uma e o que sobra no dinheiro depois de tirá-las.
     trocadas, trocadoDin,
     difDinLiq: Math.round((difDin - trocadoDin) * 100) / 100,
@@ -5214,6 +5220,38 @@ async function cxqMudarCat(confId) {
   mostrarToast(sel.value ? 'Categoria gravada no Contas a Receber ✔️' : 'Categoria removida', 'sucesso');
 }
 
+// Lista as vendas que entraram como DINHEIRO neste caixa, cada uma com o mesmo
+// seletor "era outra forma" da tela de Cartao/Pix. Sem isto, uma venda que a
+// nuvem rotulou como dinheiro por engano so podia ser corrigida quando o
+// casador automatico a apontava sozinho - e quando ele falha (caixa 13125 de
+// 26/10/2026: errou por R$ 0,60) nao havia tela nenhuma onde mexer, porque a de
+// Cartao/Pix nao mostra venda de dinheiro.
+function cxqVendasDinHTML(c) {
+  const lista = ccVendasDinheiro.get(c.data + '|' + (c.caixa_ext == null ? '' : c.caixa_ext)) || [];
+  if (!lista.length) return '';
+  const tid = 'cxq-vdin-' + c.id;
+  const opcoes = [['pix', 'Pix'], ['cartao', 'Cartão'], ['voucher', 'Voucher/Refeição'],
+    ['ifood', 'iFood'], ['outro', 'Outro']];
+  const linhas = lista.map(v => {
+    const sel = `<select onchange="ccTrocarForma('${v.id}',this.value,this,'caixa')" style="font-size:11px;border:1px solid #ddd;border-radius:5px;padding:2px 5px;cursor:pointer;background:#fff;color:#555">
+        <option value="">🔀 era outra forma…</option>
+        ${opcoes.map(o => `<option value="${o[0]}">era ${o[1]}</option>`).join('')}
+      </select>`;
+    return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0;font-size:11px">
+      <span style="color:#666;font-variant-numeric:tabular-nums">${v._hora || ''}</span>
+      <strong style="font-variant-numeric:tabular-nums">${ccBRL(Number(v.valor_bruto) || 0)}</strong>
+      ${sel}</div>`;
+  }).join('');
+  const soma = lista.reduce((t, v) => t + (Number(v.valor_bruto) || 0), 0);
+  return `<div style="margin-top:6px">
+    <button onclick="cxqToggleFech('${tid}')" style="font-size:11px;border:none;background:none;color:#777;cursor:pointer;text-decoration:underline;padding:0">ver as ${lista.length} vendas em dinheiro (${ccBRL(soma)})</button>
+    <div id="${tid}" style="display:none;margin-top:4px;padding-left:2px;border-left:2px solid #eee">
+      <div style="font-size:11px;color:#8a8a8a;padding:2px 0 4px">Se alguma delas na verdade foi paga de outro jeito, corrija aqui: ela sai do dinheiro e vai para a conferência certa.</div>
+      ${linhas}
+    </div>
+  </div>`;
+}
+
 // Aviso de "a nuvem do PDV trocou a forma de pagamento" + tabela nuvem × loja.
 function cxqTrocaHTML(c) {
   const dg = cxqDiag(c);
@@ -5235,10 +5273,8 @@ function cxqTrocaHTML(c) {
   // gaveta) e o casador de vendas nao fechou por R$ 0,60. Resultado: os dois
   // caminhos certos sumiram da tela e sobrou so "lancar a falta como despesa",
   // que teria criado uma despesa falsa de R$ 87,59 no DRE.
-  const faltaTotal = faltou.reduce((s, x) => s + x.valor, 0);
-  const dinheiroCoberto = dg.difDinheiro > CXQ_TOL && faltaTotal >= dg.difDinheiro - CXQ_RUIDO;
   // Senão, trocar o número só perderia centavos à toa.
-  const podeAdotar = (dg.troca || dg.trocadas.length > 0 || dinheiroCoberto) && dg.mexeNoDinheiro
+  const podeAdotar = (dg.troca || dg.trocadas.length > 0 || dg.dinheiroCoberto) && dg.mexeNoDinheiro
     && dg.dinheiroLoja != null && ('esperado_ajuste' in c) && c.esperado_ajuste == null;
 
   // Quando a venda foi identificada, ela aparece com hora e valor e já traz o
@@ -5276,8 +5312,8 @@ function cxqTrocaHTML(c) {
   } else if (dg.mexeNoDinheiro) {
     tit = `⚠️ Em dinheiro, o PDV e a loja divergem em ${ccBRL(Math.abs(dg.difDinheiro))}`;
     cor = '#c0392b';
-    rodape = dinheiroCoberto
-      ? `Esse dinheiro tem para onde ir: falta ${ccBRL(faltaTotal)} em outra forma, ou seja a venda existe e foi paga de outro jeito — nao sumiu da gaveta. Se o que voce contou bate com o fechamento da loja (${ccBRL(dg.dinheiroLoja)}), use <strong>usar o fechamento da loja</strong>. So lance como despesa se faltou dinheiro de verdade.`
+    rodape = dg.dinheiroCoberto
+      ? `Esse dinheiro tem para onde ir: falta ${ccBRL(dg.faltaTotal)} em outra forma, ou seja a venda existe e foi paga de outro jeito — nao sumiu da gaveta. Se o que voce contou bate com o fechamento da loja (${ccBRL(dg.dinheiroLoja)}), use <strong>usar o fechamento da loja</strong>. So lance como despesa se faltou dinheiro de verdade.`
       : 'Não é troca de rótulo: sobra diferença de verdade. Se ela se explicar (devolução, sangria não registrada), use o botão de lançar a falta como despesa.';
   } else {
     tit = 'ℹ️ O PDV divergiu da loja em outras formas (o dinheiro está certo)';
@@ -5323,6 +5359,7 @@ function cxqTrocaHTML(c) {
     <div style="font-size:12px;font-weight:700;color:${cor};margin-bottom:4px">${tit}</div>
     <div style="font-size:12px;color:#5a5a5a">${corpo}</div>
     <div style="font-size:11px;color:#8a8a8a;margin-top:5px">${rodape}</div>
+    ${cxqVendasDinHTML(c)}
     <div style="display:flex;gap:8px;align-items:center;margin-top:7px;flex-wrap:wrap">
       ${podeAdotar ? `<button onclick="cxqUsarLoja('${c.id}')" style="font-size:11px;border:1px solid #2e7d32;background:#fff;color:#2e7d32;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ usar o fechamento da loja</button>` : ''}
       <button onclick="cxqToggleFech('${tid}')" style="font-size:11px;border:none;background:none;color:#777;cursor:pointer;text-decoration:underline">ver fechamento da loja</button>
@@ -5344,7 +5381,9 @@ async function cxqUsarLoja(confId) {
   const { data: c, error: e0 } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
   if (e0 || !c) { mostrarToast('Conferência não encontrada.', 'erro'); return; }
   const dg = cxqDiag(c);
-  if (!dg || !(dg.troca || dg.trocadas.length) || !dg.mexeNoDinheiro || dg.dinheiroLoja == null) {
+  // Mesma regra do botao em cxqTrocaHTML. Sem `dinheiroCoberto` aqui, o botao
+  // aparecia e o clique era recusado.
+  if (!dg || !(dg.troca || dg.trocadas.length || dg.dinheiroCoberto) || !dg.mexeNoDinheiro || dg.dinheiroLoja == null) {
     mostrarToast('Este caixa não fecha só com a troca de formas — confira à mão.', 'erro'); return;
   }
   if (c.dif_lancamento_id) {
