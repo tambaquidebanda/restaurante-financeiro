@@ -4039,20 +4039,42 @@ async function computeEtapaA(db, de, ate) {
     resol.forEach(r => { if (r.venda_pdv_id) resPdv.set(r.venda_pdv_id, r); if (r.transacao_id) resGnet.set(r.transacao_id, r); });
   } catch (e) { /* tabela pode não ter linhas ainda */ }
 
+  // Dias de venda que ainda nao tem NENHUMA linha da Getnet. O arquivo de um dia
+  // so chega na tarde seguinte (medido em 20 dias: entre 12h e 18h de Manaus),
+  // entao as vendas do dia corrente nunca casam. Isso e espera, nao divergencia:
+  // vao para "aguardando" em vez de "invest", para nao pintar a tela de vermelho
+  // todo dia de manha com o dia inteiro de vendas.
+  const diasComGnet = new Set();
+  gnet.forEach(g => { if (g.data_venda) diasComGnet.add(g.data_venda); });
+  // Prazo de espera: 3 dias. Depois disso o arquivo nao vem mais sozinho, e o dia
+  // volta a ser divergencia de verdade (vermelho) — para nao enterrar calado um
+  // dia em que a Getnet realmente falhou. Medido de 01/07 a 06/11: em 113 dias de
+  // venda, o unico sem nenhuma linha da Getnet e sempre o dia corrente.
+  const limiteEspera = (() => {
+    const d = new Date(hojeManaus() + 'T12:00:00'); d.setDate(d.getDate() - 3);
+    return d.toISOString().slice(0, 10);
+  })();
+
   const dias = {};
-  const novoD = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], pdvBruto: 0, gnetBruto: 0, caixas: {} });
+  const novoD = () => ({ n: 0, ok: 0, invest: [], aguardando: [], ruido: [], gAlone: [], resolv: [], pdvBruto: 0, gnetBruto: 0, aguardaGnet: false, caixas: {} });
   pdv.forEach(p => {
     const D = (dias[p.dia] = dias[p.dia] || novoD());
     D.n++;
+    D.aguardaGnet = !diasComGnet.has(p.dia) && p.dia >= limiteEspera;
     D.pdvBruto += (Number(p.valor_bruto) || 0);
     // Quebra por caixa: só o lado do PDV sabe o caixa. A Getnet traz terminal
     // (10 a 17 por dia contra ~4 caixas), então o bruto dela continua do dia.
     const ck = ccCaixaChave(p);
     const C  = (D.caixas[ck] = D.caixas[ck] || { chave: ck, ext: p.caixa_ext || null,
-      usuario: p.caixa_usuario || null, loja: p.unidade_nome || null, bruto: 0, n: 0, inv: 0 });
+      usuario: p.caixa_usuario || null, loja: p.unidade_nome || null, bruto: 0, n: 0, inv: 0, aguard: 0 });
     C.bruto += (Number(p.valor_bruto) || 0); C.n++;
     if (p.ok) D.ok++;
-    else if (p.investigar) { const r = resPdv.get(p.id); if (r) { p.resol = r; D.resolv.push(p); } else { D.invest.push(p); C.inv++; } }
+    else if (p.investigar) {
+      const r = resPdv.get(p.id);
+      if (r) { p.resol = r; D.resolv.push(p); }
+      else if (D.aguardaGnet) { D.aguardando.push(p); C.aguard++; }
+      else { D.invest.push(p); C.inv++; }
+    }
     else D.ruido.push(p);
   });
   gUnmatched.forEach(g => { if (!g.noise) { const D = (dias[g.data] = dias[g.data] || novoD()); const r = resGnet.get(g.id); if (r) { g.resol = r; D.resolv.push(g); } else D.gAlone.push(g); } });
@@ -4512,7 +4534,7 @@ async function renderCartao() {
   // Regroup por dia de liquidação (proxCredito), igual à versão em tabela.
   const creditDates = B.creditDates || [];
   const proxCredito = sd => { for (const cd of creditDates) { if (cd > sd) return cd; } return null; };
-  const novoT = () => ({ n: 0, ok: 0, invest: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set(), pdvBruto: 0, gnetBruto: 0, caixas: {} });
+  const novoT = () => ({ n: 0, ok: 0, invest: [], aguardando: [], ruido: [], gAlone: [], resolv: [], saleDays: new Set(), aguardDays: new Set(), pdvBruto: 0, gnetBruto: 0, caixas: {} });
   const diasA = {}, pixG = {};
   Object.keys(A.dias).forEach(sd => {
     const c = proxCredito(sd) || sd;
@@ -4520,11 +4542,12 @@ async function renderCartao() {
     const DA = A.dias[sd];
     T.n += DA.n; T.ok += DA.ok; T.pdvBruto += DA.pdvBruto || 0; T.gnetBruto += DA.gnetBruto || 0;
     Object.values(DA.caixas || {}).forEach(c => {
-      const t = (T.caixas[c.chave] = T.caixas[c.chave] || { ...c, bruto: 0, n: 0, inv: 0 });
-      t.bruto += c.bruto; t.n += c.n; t.inv += c.inv;
+      const t = (T.caixas[c.chave] = T.caixas[c.chave] || { ...c, bruto: 0, n: 0, inv: 0, aguard: 0 });
+      t.bruto += c.bruto; t.n += c.n; t.inv += c.inv; t.aguard += (c.aguard || 0);
     });
-    ['invest', 'ruido', 'gAlone', 'resolv'].forEach(k => DA[k].forEach(x => { x._vd = sd; T[k].push(x); }));
+    ['invest', 'aguardando', 'ruido', 'gAlone', 'resolv'].forEach(k => DA[k].forEach(x => { x._vd = sd; T[k].push(x); }));
     if (sd !== c) T.saleDays.add(sd);
+    if (DA.aguardando.length) T.aguardDays.add(sd);
   });
   const novoP = () => ({ n: 0, ok: 0, total: 0, semBanco: [], resolv: [], gapN: 0, caixas: {} });
   Object.keys(P.dias).forEach(sd => {
@@ -4576,12 +4599,12 @@ async function renderCartao() {
   const linhaVal = (lbl, val, forte) => `<div style="display:flex;justify-content:space-between;font-size:13px;padding:1px 0"><span style="color:#777">${lbl}</span><span style="${forte ? 'font-weight:700;' : ''}font-variant-numeric:tabular-nums">${val}</span></div>`;
 
   ccDetalhes = {}; ccResumoDia = {};
-  let totInv = 0, totGA = 0, totDivB = 0, totRec = 0, totPixOk = 0, totPixKO = 0;
+  let totInv = 0, totAg = 0, totGA = 0, totDivB = 0, totRec = 0, totPixOk = 0, totPixKO = 0;
   const allDays = [...new Set([...Object.keys(diasA), ...Object.keys(diasB), ...Object.keys(pixG)])].filter(d => d >= mesIni && d <= ate);
 
   allDays.forEach(d => {
     const DA = diasA[d], DB = diasB[d], PG = pixG[d];
-    const invN = DA ? DA.invest.length : 0, gaN = DA ? DA.gAlone.length : 0;
+    const invN = DA ? DA.invest.length : 0, gaN = DA ? DA.gAlone.length : 0, agN = DA ? DA.aguardando.length : 0;
     const pixKO = PG ? PG.semBanco.length : 0;
     const confN = PG ? (PG.n - PG.gapN) : 0;
     const recebeuMenos = DB && DB.txt.indexOf('recebeu menos') >= 0;
@@ -4593,6 +4616,8 @@ async function renderCartao() {
     if (recebeuMenos) { cor = '#e74c3c'; chip = '🔴 faltou ' + ccBRL(DB.dif); }
     else if (invN) { cor = '#e74c3c'; chip = '⚠️ ' + invN + ' a investigar'; }
     else if (gaN || pixKO) { cor = '#e67e22'; chip = [gaN ? '🟠 ' + gaN + ' cobrança' : '', pixKO ? '⚡ ' + pixKO + ' pix' : ''].filter(Boolean).join(' · '); }
+    // Sem nenhuma linha da Getnet para o dia de venda: é espera, não problema.
+    else if (agN) { cor = '#c9930a'; chip = '⏳ ' + agN + ' esperando a Getnet'; }
     else if (estimado) { cor = '#c9930a'; chip = '⏳ fecha amanhã'; }
     else if (DB && DB.aguardando) { cor = DB.cor; chip = DB.txt; }
     else if (!DB) { cor = '#bbb'; chip = 'sem liquidação'; }
@@ -4601,6 +4626,7 @@ async function renderCartao() {
 
     // Totais dos cards
     if (invN) totInv += invN;
+    if (agN) totAg += agN;
     if (gaN) totGA += gaN;
     if (recebeuMenos) totDivB++;
     totRec += rec;
@@ -4618,12 +4644,26 @@ async function renderCartao() {
     const cxs = DA ? ccCaixasOrdenados(DA.caixas) : [];
     if (cxs.length > 1) {
       b1 += cxs.map(c => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:0 0 0 10px;color:#888">
-        <span>${ccCaixaLabel(c)}${c.inv ? ` <span style="color:#e74c3c;font-weight:700">⚠️ ${c.inv}</span>` : ''}</span>
+        <span>${ccCaixaLabel(c)}${c.inv ? ` <span style="color:#e74c3c;font-weight:700">⚠️ ${c.inv}</span>` : ''}${c.aguard ? ` <span style="color:#c9930a;font-weight:700" title="Esperando o arquivo da Getnet deste dia.">⏳ ${c.aguard}</span>` : ''}</span>
         <span style="font-variant-numeric:tabular-nums">${ccBRL(c.bruto)}</span></div>`).join('');
     }
     b1 += linhaVal('Getnet (bruto)', ccBRL(DA ? DA.gnetBruto : 0));
-    const stA = invN ? `<span style="color:#e74c3c">⚠️ ${invN} venda(s) a investigar</span>` : (gaN ? `<span style="color:#e67e22">🟠 ${gaN} cobrança sem venda</span>` : '<span style="color:#27ae60">✓ bate</span>');
+    const stA = invN ? `<span style="color:#e74c3c">⚠️ ${invN} venda(s) a investigar</span>`
+      : (gaN ? `<span style="color:#e67e22">🟠 ${gaN} cobrança sem venda</span>`
+      : (agN ? `<span style="color:#c9930a">⏳ ${agN} venda(s) esperando o arquivo da Getnet</span>`
+      : '<span style="color:#27ae60">✓ bate</span>'));
     b1 += `<div style="font-size:12px;margin-top:4px">${stA}</div>`;
+    // O arquivo da Getnet de um dia só chega na tarde seguinte. Até lá as vendas
+    // do dia não têm par nenhum — seria o dia inteiro em vermelho, todo dia de
+    // manhã. Aqui elas saem da conta de "a investigar" e viram um aviso de espera.
+    if (DA && agN) {
+      const dds = [...DA.aguardDays].sort().map(x => x.slice(8, 10) + '/' + x.slice(5, 7)).join(', ');
+      const vlr = DA.aguardando.reduce((t, x) => t + (Number(x.valor_bruto) || 0), 0);
+      b1 += `<div style="margin-top:6px;background:#fffbea;border:1px solid #f0d98a;border-radius:8px;padding:7px 10px;font-size:11px;color:#7a5c00;line-height:1.45">
+        ⏳ <strong>${agN} venda(s) de ${dds}</strong> (${ccBRL(vlr)}) ainda não têm nada da Getnet: <strong>o arquivo de cada dia só chega na tarde seguinte</strong>.
+        Elas já estão somadas no <em>Vendido (PDV)</em> aqui em cima, mas a Getnet delas não — por isso os dois valores não batem.
+        Não é divergência; some sozinho quando o arquivo entrar.</div>`;
+    }
     if (DA && invN) {
       // Agrupado por caixa: é o que permite ir direto conferir com quem operou.
       const porCx = {};
@@ -4699,7 +4739,7 @@ async function renderCartao() {
   if (cardsEl) {
     const card = (r, v, c) => `<div style="flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-left:4px solid ${c};border-radius:8px;padding:10px 14px"><div style="font-size:12px;color:#777">${r}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`;
     cardsEl.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
-      ${card('⚠️ Vendas a investigar', String(totInv), totInv ? '#e74c3c' : '#27ae60')}
+      ${card('⚠️ Vendas a investigar', String(totInv) + (totAg ? ` <span style="font-size:12px;font-weight:400;color:#c9930a">+ ${totAg} esperando a Getnet</span>` : ''), totInv ? '#e74c3c' : '#27ae60')}
       ${card('🟠 Cobrança sem venda', String(totGA), totGA ? '#e67e22' : '#27ae60')}
       ${card('🏦 Recebido no mês', ccBRL(totRec), '#27ae60')}
       ${card('⚡ Pix não caíram', totPixKO + (totPixOk + totPixKO ? ` <span style="font-size:12px;color:#888">de ${totPixOk + totPixKO}</span>` : ''), totPixKO ? '#e67e22' : '#16a085')}
