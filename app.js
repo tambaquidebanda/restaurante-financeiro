@@ -11123,7 +11123,7 @@ async function carregarIntegracoes() {
   if (pedidoNums.length) {
     const { data: itens } = await q(db
       .from('cmp_compras')
-      .select('pedido_num,produto,categoria,quantidade,unidade_med,custo_unit,fornecedor_nome,comprador,data')
+      .select('pedido_num,produto,categoria,quantidade,unidade_med,custo_unit,fornecedor_nome,comprador,data,forma_pagamento')
       .in('pedido_num', pedidoNums));
     (itens || []).forEach(it => {
       if (!_integItensMap[it.pedido_num]) _integItensMap[it.pedido_num] = [];
@@ -11210,8 +11210,15 @@ function renderIntegracoes(rascunhos) {
     const forn      = r.fornecedores?.nome || '—';
     const isCompExt  = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo'
                     || (r.descricao || '').toLowerCase().includes('comprador externo');
-    const isDinheiro = isCompExt && (r.observacoes || '').toLowerCase().includes('dinheiro');
     const itens     = _integItensMap[r.pedido_num] || [];
+    // Dinheiro = a observação diz "dinheiro" OU a forma de pagamento do PEDIDO é
+    // Dinheiro. Antes só valia a observação. Desde 05/11/2026 o recebimento do
+    // comprador externo manda a despesa para cá com a observação "Pedido #X", sem a
+    // forma de pagamento, e todo pedido em dinheiro caía no card de Transferência
+    // Interna (#02117, #02151, #02152 em 09/11/2026). A forma vem de cmp_compras.
+    const isDinheiro = isCompExt && (
+      (r.observacoes || '').toLowerCase().includes('dinheiro') ||
+      itens.some(it => (it.forma_pagamento || '').toLowerCase().includes('dinheiro')));
     const ref       = itens[0] || {};
     const dataBR    = (ref.data || '').split('-').reverse().join('/');
     const acrescimo = Number(r.acrescimo) || 0;
