@@ -11211,14 +11211,16 @@ function renderIntegracoes(rascunhos) {
     const isCompExt  = (r.fornecedores?.nome || '').toLowerCase().trim() === 'comprador externo'
                     || (r.descricao || '').toLowerCase().includes('comprador externo');
     const itens     = _integItensMap[r.pedido_num] || [];
-    // Dinheiro = a observação diz "dinheiro" OU a forma de pagamento do PEDIDO é
-    // Dinheiro. Antes só valia a observação. Desde 05/11/2026 o recebimento do
-    // comprador externo manda a despesa para cá com a observação "Pedido #X", sem a
-    // forma de pagamento, e todo pedido em dinheiro caía no card de Transferência
-    // Interna (#02117, #02151, #02152 em 09/11/2026). A forma vem de cmp_compras.
-    const isDinheiro = isCompExt && (
-      (r.observacoes || '').toLowerCase().includes('dinheiro') ||
-      itens.some(it => (it.forma_pagamento || '').toLowerCase().includes('dinheiro')));
+    // Quem decide Dinheiro x Transferência é a FORMA DE PAGAMENTO do pedido
+    // (cmp_compras.forma_pagamento). Antes a tela procurava a palavra "dinheiro" na
+    // observação; desde 05/11/2026 o recebimento manda a despesa com "Pedido #X",
+    // sem a forma, e #02117, #02151 e #02152 (Dinheiro) caíram no card de
+    // Transferência Interna (09/11/2026). A observação só vale para pedido sem forma
+    // de pagamento gravada (antigos).
+    const formaPed = itens.map(it => (it.forma_pagamento || '').trim()).find(Boolean) || '';
+    const isDinheiro = isCompExt && (formaPed
+      ? formaPed.toLowerCase().includes('dinheiro')
+      : (r.observacoes || '').toLowerCase().includes('dinheiro'));
     const ref       = itens[0] || {};
     const dataBR    = (ref.data || '').split('-').reverse().join('/');
     const acrescimo = Number(r.acrescimo) || 0;
