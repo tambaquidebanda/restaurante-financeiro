@@ -5442,22 +5442,37 @@ async function cxqUsarLojaAgora(confId) {
 
   const { error } = await db.from('caixa_dia_conf').update({ esperado_ajuste: dg.dinheiroLoja }).eq('id', confId);
   if (error) { mostrarToast('Erro ao ajustar: ' + error.message, 'erro'); return; }
-  // Se o recebimento já tinha sido lançado, corrige o valor junto.
-  if (c.recebimento_lancamento_id && novoBruto > 0) {
-    await db.from('lancamentos').update({ valor: novoBruto }).eq('id', c.recebimento_lancamento_id);
+  // Se o recebimento já tinha sido lançado, corrige o valor junto — pela MESMA
+  // conta do botão Confirmar (cxqReceber), não pelo faturado. Gravar o bruto
+  // aqui jogava fora a diferença de contagem: o caixa passava a receber o que a
+  // loja apurou em vez do que a gerente contou, e os centavos ficavam presos no
+  // saldo do Caixa até alguém clicar em Confirmar de novo.
+  const cAjustado = { ...c, esperado_ajuste: dg.dinheiroLoja };
+  const novoValor = cxqReceber(cxqBruto(cAjustado, despesas), cxqEsperado(cAjustado), cxqContado(cAjustado));
+  if (c.recebimento_lancamento_id && novoValor > 0) {
+    await db.from('lancamentos').update({ valor: novoValor }).eq('id', c.recebimento_lancamento_id);
   }
   mostrarToast('Fechamento da loja adotado ✔️', 'sucesso');
   renderCaixaEspecie();
 }
 
 async function cxqDesfazerLoja(confId) {
+  return cxqUmaVez('loja:' + confId, null, () => cxqDesfazerLojaAgora(confId));
+}
+
+async function cxqDesfazerLojaAgora(confId) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
   const { data: c } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
   const { error } = await db.from('caixa_dia_conf').update({ esperado_ajuste: null }).eq('id', confId);
   if (error) { mostrarToast('Erro ao desfazer: ' + error.message, 'erro'); return; }
-  if (c && c.recebimento_lancamento_id && Number(c.vendas_dinheiro || 0) > 0) {
-    await db.from('lancamentos').update({ valor: Number(c.vendas_dinheiro) }).eq('id', c.recebimento_lancamento_id);
+  // Na volta, mesma conta do Confirmar: faturado do PDV mais a diferença que a
+  // gerente contou. Antes voltava o faturado puro e a diferença sumia.
+  if (c && c.recebimento_lancamento_id) {
+    const cVolta = { ...c, esperado_ajuste: null };
+    const despesas = await cxqDespesasDb(db, c);
+    const valor = cxqReceber(cxqBruto(cVolta, despesas), cxqEsperado(cVolta), cxqContado(cVolta));
+    if (valor > 0) await db.from('lancamentos').update({ valor }).eq('id', c.recebimento_lancamento_id);
   }
   mostrarToast('Voltou para o valor do PDV', 'sucesso');
   renderCaixaEspecie();
