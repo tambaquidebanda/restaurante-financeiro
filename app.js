@@ -5195,7 +5195,7 @@ function cxqDetalheHTML(d, confs, movs) {
               style="width:90px;text-align:right;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px">
             <span id="cxq-dif-${c.id}" style="font-size:12px;font-weight:700;color:${corDif}">dif ${dif > 0 ? '+' : ''}${ccBRL(dif)}</span>
             ${(dif < -CXQ_TOL && ('dif_lancamento_id' in c) && !c.dif_lancamento_id && !cxqTrocaExplica(c)) ? `<button onclick="cxqLancarDif('${c.id}')" title="O dinheiro saiu da gaveta mas não foi registrado no PDV (ex.: devolução ao cliente). Cria a despesa e a diferença zera." style="font-size:11px;border:1px solid #8e44ad;background:#fff;color:#8e44ad;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap">↳ lançar falta como despesa</button>` : ''}
-            <button onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
+            <button id="cxq-btn-${c.id}" onclick="cxqConfirmar('${c.id}')" style="margin-left:auto;font-size:12px;border:1px solid #2c3e50;background:#2c3e50;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer;white-space:nowrap">${c.confirmado ? 'Atualizar' : 'Confirmar'}</button>
           </div>
           ${cxqCategoriaHTML(c)}
           <div id="cxq-prev-${c.id}" style="font-size:11.5px;color:#16a085;margin-top:5px">${cxqPreviaHTML(bruto, esperado, contado)}</div>`;
@@ -5416,6 +5416,10 @@ function cxqToggleFech(id) {
 // Adota o fechamento da loja: o esperado passa a ser o que a loja apurou, a
 // diferença falsa some e o recebimento no Caixa é corrigido junto.
 async function cxqUsarLoja(confId) {
+  return cxqUmaVez('loja:' + confId, null, () => cxqUsarLojaAgora(confId));
+}
+
+async function cxqUsarLojaAgora(confId) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
   const { data: c, error: e0 } = await db.from('caixa_dia_conf').select('*').eq('id', confId).single();
@@ -5459,7 +5463,35 @@ async function cxqDesfazerLoja(confId) {
   renderCaixaEspecie();
 }
 
+// Trava contra duplo clique. Cada gravação destas cria lançamento no Caixa, e
+// o botão ficava vivo enquanto a primeira ainda ia e voltava do banco: o caixa
+// 13171 de 06/11/2026 foi confirmado duas vezes com 2 segundos de diferença e
+// gerou dois recebimentos (R$ 497,00 e R$ 497,99) — receita que nunca existiu.
+// Enquanto a gravação não termina, o mesmo botão não roda de novo.
+const cxqEmCurso = new Set();
+async function cxqUmaVez(chave, botaoId, fn) {
+  if (cxqEmCurso.has(chave)) return;
+  cxqEmCurso.add(chave);
+  const b = botaoId ? document.getElementById(botaoId) : null;
+  const txtAntes = b ? b.textContent : '';
+  if (b) { b.disabled = true; b.style.opacity = '0.6'; b.style.cursor = 'wait'; b.textContent = 'Salvando…'; }
+  try {
+    return await fn();
+  } finally {
+    cxqEmCurso.delete(chave);
+    // Se a tela já foi redesenhada, este botão não existe mais — não há o que
+    // restaurar (e mexer nele deixaria um botão fantasma habilitado).
+    if (b && document.body.contains(b)) {
+      b.disabled = false; b.style.opacity = ''; b.style.cursor = 'pointer'; b.textContent = txtAntes;
+    }
+  }
+}
+
 async function cxqConfirmar(confId) {
+  return cxqUmaVez('conf:' + confId, `cxq-btn-${confId}`, () => cxqConfirmarAgora(confId));
+}
+
+async function cxqConfirmarAgora(confId) {
   if (!(await garantirSessao())) return;
   const inp = document.getElementById(`cxq-cont-${confId}`);
   if (!inp) return;
@@ -5500,6 +5532,17 @@ async function cxqConfirmar(confId) {
     const obs  = Math.abs(dif) >= 0.005
       ? `Pelo dinheiro contado. Faturado em dinheiro no PDV: ${ccBRL(bruto)}; esperado na gaveta: ${ccBRL(esperado)}; contado: ${ccBRL(contado)}.`
       : null;
+    // Rede de segurança além da trava: se outra aba, outro usuário ou um clique
+    // que escapou já lançou o recebimento deste caixa, corrige o que existe em
+    // vez de criar um segundo. A descrição é única por caixa e por dia.
+    if (!recId) {
+      try {
+        const { data: ja } = await db.from('lancamentos').select('id')
+          .eq('banco_id', caixaBanco).eq('tipo', 'receber')
+          .eq('data_pagamento', c.data).eq('descricao', desc).limit(1);
+        if (ja && ja[0]) recId = ja[0].id;
+      } catch (e) { /* sem a rede, segue e insere */ }
+    }
     if (recId) {
       const { error } = await db.from('lancamentos')
         .update({ valor: receber, descricao: desc, observacoes: obs, unidade_id: c.unidade_id || null, plano_conta_id: plano })
