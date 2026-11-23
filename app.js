@@ -6852,7 +6852,7 @@ async function verificarDuplicatas(transacoes) {
     const grupo = (d, ofx, tipo, chaves) => {
       const k = `${d}|${ofx}`;
       if (!grupos.has(k)) {
-        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx, chaves: new Set(chaves || []), rotulo: null };
+        const e = { data: d, tipo, soma: 0, valores: [], membros: [], ofxId: ofx, chaves: new Set(chaves || []), rotulo: null, desc: null };
         grupos.set(k, e);
         evidencias.push(e);
       }
@@ -6868,6 +6868,7 @@ async function verificarDuplicatas(transacoes) {
       const e = grupo(dia(p.data), p.ofx_id, tipo, chavesDe(LancPorId.get(p.lancamento_id) || {}));
       chavesDe(LancPorId.get(p.lancamento_id) || {}).forEach(x => e.chaves.add(x));
       if (!e.rotulo) e.rotulo = `pagamento já registrado da conta "${LancPorId.get(p.lancamento_id)?.descricao || 'sem descrição'}"`;
+      if (!e.desc) e.desc = LancPorId.get(p.lancamento_id)?.descricao || '';
       e.soma += Number(p.valor) || 0;
       e.membros.push(Number(p.valor) || 0);
     }
@@ -6880,11 +6881,13 @@ async function verificarDuplicatas(transacoes) {
         const e = grupo(d, l.ofx_id, l.tipo, chavesDe(l));
         chavesDe(l).forEach(x => e.chaves.add(x));
         if (!e.rotulo) e.rotulo = `o lançamento "${l.descricao || 'sem descrição'}" já conciliado neste dia`;
+        if (!e.desc) e.desc = l.descricao || '';
         e.soma += Number(l.valor) || 0;
         e.membros.push(Number(l.valor) || 0);
       } else if (!l.ofx_id) {
         // Pago à mão, sem vínculo com extrato.
         evidencias.push({ data: d, tipo: l.tipo, valores: [l.valor, Number(l.valor_pago) || l.valor], membros: [], ofxId: null, chaves: chavesDe(l),
+                          desc: l.descricao || '',
                           rotulo: `a conta "${l.descricao || 'sem descrição'}", já paga em ${formatarData(d)} sem passar pelo extrato` });
       } else {
         // Já entrou pelo pagamento; o valor cheio da conta só serve de "parte".
@@ -6962,6 +6965,51 @@ async function verificarDuplicatas(transacoes) {
         usadas.add(par.e); marcar(par.t, par.e.ofxId, par.e.rotulo);
       }
     };
+    // Casamento EXATO da linha do extrato: data + tipo + valor + descricao.
+    //
+    // O Santander reescreve o FITID a cada download (ele carrega a hora em que o
+    // arquivo foi gerado), entao o passo 1 nunca pega nada la e tudo caia na
+    // deducao por valor e nome. Numa segunda-feira isso nao tem como acertar: em
+    // 23/11/2026 o extrato trouxe 22 saidas de exatamente R$ 100,00 e o sistema
+    // tinha 18 lancadas — ele casa 18 de 22, mas nao sabe QUAIS 18, e marcava
+    // como nova uma linha ja conciliada de manha enquanto bloqueava outra igual.
+    //
+    // A linha em si nao muda entre downloads: mesma data, mesmo valor, mesmo
+    // favorecido. Quando o mesmo favorecido recebe o mesmo valor varias vezes no
+    // dia (numa segunda-feira, metade das pessoas recebe mais de uma vez), a
+    // enesima linha casa com o enesimo lancamento. Se duas linhas iguais forem
+    // trocadas entre si nao muda nada: sao identicas em data, valor e descricao.
+    //
+    // NAO usar a posicao da linha dentro do FITID como identidade: ela e a
+    // posicao no ARQUIVO, nao da transacao. Em 26/10/2026 a posicao 307 e um Pix
+    // de R$ 108,57 num download e de R$ 59,18 em outro.
+    //
+    // So vale para lancamento que ainda tem a descricao do extrato. O que foi
+    // vinculado a um pedido perdeu o texto original e continua caindo nos
+    // casamentos por nome e valor, abaixo, como antes.
+    const normLinha = txt => (txt || '').toUpperCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]/g, '');
+    const porLinha = new Map();
+    for (const e of evidencias) {
+      if (!e.desc) continue;
+      const nd = normLinha(e.desc);
+      if (!nd) continue;
+      for (const v of (e.valores || [])) {
+        const k = `${e.data}|${e.tipo || ''}|${Number(v).toFixed(2)}|${nd}`;
+        if (!porLinha.has(k)) porLinha.set(k, []);
+        porLinha.get(k).push(e);
+      }
+    }
+    for (const t of semMatch) {
+      if (t.jaImportado) continue;
+      const nd = normLinha(t.descricao);
+      if (!nd) continue;
+      const fila = porLinha.get(`${t.data}|${t.tipo}|${Number(t.valor).toFixed(2)}|${nd}`);
+      if (!fila) continue;
+      const e = fila.find(x => !usadas.has(x));
+      if (e) { usadas.add(e); marcar(t, e.ofxId, e.rotulo || 'uma linha igual a esta (mesma data, valor e favorecido) já está conciliada'); }
+    }
+
     casarPorNome('valores');
     casarPorNome('membros');
     casar('valores');
