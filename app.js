@@ -11184,6 +11184,10 @@ function mostrarToast(mensagem, tipo = '') {
 let _integRascunhos = [];
 let _integItensMap  = {};
 let _integRateioMap = {};
+// Rascunho cujo pedido JA tem lancamento no financeiro, por descricao do rascunho.
+// Rascunho orfao: a aprovacao criou a conta e nao conseguiu apagar o rascunho.
+// Ver _removerRascunhoAprovado.
+let _integJaLancado = {};
 
 async function carregarIntegracoes() {
   if (!(await garantirSessao())) return;
@@ -11235,6 +11239,24 @@ async function carregarIntegracoes() {
       if (!_integItensMap[it.pedido_num]) _integItensMap[it.pedido_num] = [];
       _integItensMap[it.pedido_num].push(it);
     });
+  }
+
+  // Pedido que JA TEM lancamento no financeiro: o rascunho ficou para tras depois
+  // de uma aprovacao (ver _removerRascunhoAprovado). O card tem de avisar, senao
+  // alguem aprova de novo e a mesma compra entra duas vezes na despesa.
+  // A chave e a DESCRICAO, nao o numero do pedido: pedido parcelado gera um
+  // rascunho por parcela, todos com o mesmo numero_pedido, e a descricao e o unico
+  // campo que separa "(1/3)" de "(2/3)". Por numero_pedido as parcelas que ainda
+  // faltam aprovar apareceriam como orfas.
+  _integJaLancado = {};
+  if (pedidoNums.length) {
+    try {
+      const { data: lancs } = await q(db
+        .from('lancamentos')
+        .select('id,descricao,valor,vencimento,status,data_pagamento,numero_pedido')
+        .in('numero_pedido', pedidoNums));
+      (lancs || []).forEach(l => { _integJaLancado[(l.descricao || '').trim()] = l; });
+    } catch (e) { /* sem aviso no card; a trava do Aprovar ainda confere */ }
   }
 
   _integRascunhos = rascunhos;
@@ -11332,6 +11354,10 @@ function renderIntegracoes(rascunhos) {
     const acrescimo = Number(r.acrescimo) || 0;
     const total     = Number(r.valor) + acrescimo; // valor da nota + acréscimo do lançamento
     const rateioItens = r.tem_rateio && _integRateioMap[r.id]?.length ? _integRateioMap[r.id] : [];
+    // Rascunho orfao: o pedido ja tem lancamento. Nao oferece Aprovar — so Rejeitar.
+    const jaLanc  = _integJaLancado[(r.descricao || '').trim()];
+    const jaVenc  = jaLanc ? (jaLanc.vencimento || '').split('-').reverse().join('/') : '';
+    const jaPagEm = jaLanc ? (jaLanc.data_pagamento || '').split('-').reverse().join('/') : '';
 
     const linhasTabela = itens.length
       ? itens.map(it => `
@@ -11402,7 +11428,28 @@ function renderIntegracoes(rascunhos) {
         ${r.observacoes ? `<div style="margin-top:.3rem;font-size:.7rem;color:#555;background:#f8f9fa;border-radius:4px;padding:3px 6px">📝 ${r.observacoes}</div>` : ''}
       </div>
       <!-- Botões -->
-      ${isCompExt ? isDinheiro ? `
+      ${jaLanc ? `
+      <div style="padding:.6rem .8rem;background:#fef2f2;border-top:2px solid #dc2626">
+        <div style="font-size:.74rem;font-weight:700;color:#991b1b;margin-bottom:.25rem">
+          ⚠️ Este pedido JÁ TEM lançamento no financeiro
+        </div>
+        <div style="font-size:.7rem;color:#7f1d1d;line-height:1.35;margin-bottom:.45rem">
+          ${formatarMoeda(jaLanc.valor)} · vencimento ${jaVenc || '—'}${jaLanc.status === 'pago' ? ` · <strong>JÁ PAGO</strong>${jaPagEm ? ' em ' + jaPagEm : ''}` : ''}<br>
+          Este card é um rascunho que ficou para trás. Aprovar de novo lançaria a mesma
+          compra <strong>duas vezes</strong>. Use <strong>Rejeitar</strong>: ele só apaga o
+          rascunho e não mexe no lançamento nem no estoque.
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">
+          <button onclick="visualizarIntegracao('${r.pedido_num||''}','${r.id}')"
+            style="padding:.4rem;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-eye"></i> Visualizar
+          </button>
+          <button onclick="rejeitarIntegracao('${r.id}','${r.pedido_num||''}')"
+            style="padding:.4rem;background:#dc2626;color:#fff;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600">
+            <i class="fas fa-times"></i> Rejeitar (limpar)
+          </button>
+        </div>
+      </div>` : isCompExt ? isDinheiro ? `
       <div style="padding:.6rem .8rem;background:#fefce8;border-top:1px solid #fef08a">
         <div style="font-size:.72rem;font-weight:700;color:#854d0e;margin-bottom:.4rem">💵 Pagamento em Dinheiro — Caixa</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem">
@@ -11600,6 +11647,75 @@ async function _copiarRateioDoRascunho(db, rascunhoId, lancamentoId) {
   return true;
 }
 
+// Procura o lancamento real do pedido deste rascunho.
+// Casa pela DESCRICAO exata, nao pelo numero do pedido: pedido parcelado gera um
+// rascunho por parcela com o mesmo numero_pedido, e so a descricao separa "(1/3)"
+// de "(2/3)". Pelo numero, aprovar a 1a parcela travaria as outras duas.
+// Devolve { lanc, erro }: quem chama decide o que fazer quando a conferencia falha.
+async function _lancamentoDoRascunho(db, r) {
+  const num = r.numero_pedido || r.pedido_num || '';
+  const desc = (r.descricao || '').trim();
+  if (!num || !desc) return { lanc: null, erro: null };
+  try {
+    const { data, error } = await q(db.from('lancamentos')
+      .select('id,descricao,valor,vencimento,status,data_pagamento')
+      .eq('numero_pedido', num).limit(100));
+    if (error) return { lanc: null, erro: error };
+    const achou = (data || []).find(l => (l.descricao || '').trim() === desc);
+    return { lanc: achou || null, erro: null };
+  } catch (e) {
+    return { lanc: null, erro: e };
+  }
+}
+
+// TRAVA ANTI-DUPLICATA do Aprovar. O botao inseria o lancamento sem olhar se o
+// pedido ja tinha um, e rascunho orfao (ver _removerRascunhoAprovado) fica na tela
+// convidando ao segundo clique: dois cliques = a mesma compra duas vezes na
+// despesa. E a mesma trava que o estoque ja tem antes de criar o rascunho.
+// Devolve true quando a aprovacao deve PARAR.
+async function _travaPedidoJaLancado(db, r) {
+  const { lanc, erro } = await _lancamentoDoRascunho(db, r);
+  if (erro) {
+    return !confirm('Não consegui conferir se este pedido já tem lançamento no financeiro'
+      + ' (' + (erro.message || 'falha de conexão') + ').\n\nSe ele já tiver, aprovar agora'
+      + ' lança a mesma compra DUAS VEZES.\n\nContinuar mesmo assim?');
+  }
+  if (!lanc) return false;
+  const venc  = (lanc.vencimento || '').split('-').reverse().join('/');
+  const pagEm = (lanc.data_pagamento || '').split('-').reverse().join('/');
+  alert('O pedido ' + (r.pedido_num || '') + ' JÁ TEM lançamento no financeiro:\n\n'
+    + lanc.descricao + '\n' + formatarMoeda(lanc.valor) + ' — vencimento ' + (venc || '—')
+    + (lanc.status === 'pago' ? '\nJÁ PAGO' + (pagEm ? ' em ' + pagEm : '') : '')
+    + '\n\nAprovar de novo lançaria a mesma compra duas vezes.\n\n'
+    + 'Este card é um rascunho que ficou para trás. Use o botão Rejeitar: ele só apaga'
+    + ' o rascunho e não mexe no lançamento nem no estoque.');
+  return true;
+}
+
+// Ultimo passo de toda aprovacao: tirar o rascunho das Integracoes Pendentes.
+// Em 10/11/2026 o pedido #02155 foi aprovado (lancamento criado, pago em 19/11),
+// mas o rascunho ficou no banco e o card continuou na tela — para quem clicou,
+// parecia que a integracao havia "voltado". Causa: o delete passa pelo q() de 15 s;
+// quando ele estoura, o await LANCA, a funcao morre dentro do onclick (que nao tem
+// catch) e nem o toast de sucesso nem o carregarIntegracoes() chegam a rodar.
+// Ninguem via o erro. Agora o delete e conferido e o aviso aparece: a conta JA FOI
+// criada, entao o caminho e o Rejeitar, nunca aprovar de novo.
+async function _removerRascunhoAprovado(db, rascunhoId, oQueFoiFeito) {
+  let erro = null;
+  try {
+    const { error } = await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
+    erro = error || null;
+  } catch (e) { erro = e; }
+  if (erro) {
+    mostrarToast('⚠️ ' + oQueFoiFeito + ' MAS o rascunho não saiu da lista ('
+      + (erro.message || 'falha de conexão') + '). O card vai continuar aparecendo:'
+      + ' use o botão Rejeitar para limpá-lo. NÃO aprove de novo — a despesa entraria em dobro.', 'erro');
+  } else {
+    mostrarToast('✅ ' + oQueFoiFeito, 'sucesso');
+  }
+  carregarIntegracoes();
+}
+
 async function aprovarIntegracao(rascunhoId, contaId) {
   if (!(await garantirSessao())) return;
   const db = obterSupabase();
@@ -11607,6 +11723,8 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   // Busca o rascunho
   const { data: r } = await q(db.from('lancamentos_rascunho').select('*').eq('id', rascunhoId).single());
   if (!r) { mostrarToast('Rascunho não encontrado.', 'erro'); return; }
+
+  if (await _travaPedidoJaLancado(db, r)) return;
 
   // Insere em lancamentos
   const { data: lanc, error } = await q(db.from('lancamentos').insert([{
@@ -11643,10 +11761,7 @@ async function aprovarIntegracao(rascunhoId, contaId) {
   }
 
   // Remove rascunho (cascade apaga rascunho_rateio_itens automaticamente)
-  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
-
-  mostrarToast('✅ Conta a pagar gerada com sucesso!', 'sucesso');
-  carregarIntegracoes();
+  await _removerRascunhoAprovado(db, rascunhoId, 'Conta a pagar gerada com sucesso!');
 }
 
 // Pedidos cuja transferência está sendo gravada agora (trava contra clique duplo).
@@ -11824,10 +11939,7 @@ async function aprovarComoTransferencia(rascunhoId, contaId, valor, vencimento) 
     }
 
     // 4. Remove rascunho
-    await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
-
-    mostrarToast('✅ Transferência registrada!', 'sucesso');
-    carregarIntegracoes();
+    await _removerRascunhoAprovado(db, rascunhoId, 'Transferência registrada!');
   } finally {
     destravar();
   }
@@ -11872,10 +11984,7 @@ async function aprovarComoDinheiro(rascunhoId, contaId, valor, vencimento, caixa
     await q(db.from('cmp_contas_pagar').update({ adiantamento_lancamento_id: lanc.id }).eq('id', contaId));
   }
 
-  await q(db.from('lancamentos_rascunho').delete().eq('id', rascunhoId));
-
-  mostrarToast('✅ Pagamento em dinheiro registrado!', 'sucesso');
-  carregarIntegracoes();
+  await _removerRascunhoAprovado(db, rascunhoId, 'Pagamento em dinheiro registrado!');
 }
 
 // Rejeitar só apaga o rascunho. NÃO mexe em nenhuma tabela do estoque.
